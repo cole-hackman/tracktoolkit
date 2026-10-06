@@ -6,7 +6,7 @@ import { logOperation } from '../lib/analytics.js';
 import { authenticateUser } from '../middleware/auth.js';
 import { heavyOperationRateLimiter } from '../middleware/rateLimiter.js';
 import { soundcloudClient } from '../lib/soundcloud-client.js';
-import { sleep } from '../lib/pacing.js';
+import { sleep, SC_WRITE_PACING_MS } from '../lib/pacing.js';
 import {
   invalidateUserCollections,
   loadCachedFollowings,
