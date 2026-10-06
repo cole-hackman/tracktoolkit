@@ -7,20 +7,20 @@
  */
 
 export const GENRE_FOCUS_OPTIONS = [
-  { slug: 'house', label: 'House', aliases: [] },
+  { slug: 'house', label: 'House', aliases: ['deephouse', 'techhouse', 'housemusic'] },
   { slug: 'techno', label: 'Techno', aliases: [] },
   { slug: 'ambient', label: 'Ambient', aliases: [] },
   { slug: 'hip-hop', label: 'Hip-hop', aliases: ['hiphop', 'hip hop', 'rap'] },
-  { slug: 'drum-and-bass', label: 'Drum & bass', aliases: ['dnb', 'd&b', 'drum & bass', 'drum n bass'] },
-  { slug: 'dubstep', label: 'Dubstep', aliases: [] },
-  { slug: 'trance', label: 'Trance', aliases: [] },
+  { slug: 'drum-and-bass', label: 'Drum & bass', aliases: ['dnb', 'd&b', 'drum & bass', 'drum n bass', 'drumandbass', 'drumnbass', 'jungle'] },
+  { slug: 'dubstep', label: 'Dubstep', aliases: ['brostep'] },
+  { slug: 'trance', label: 'Trance', aliases: ['psytrance'] },
   { slug: 'jazz', label: 'Jazz', aliases: [] },
-  { slug: 'classical', label: 'Classical', aliases: [] },
-  { slug: 'electronic', label: 'Electronic', aliases: ['electronica', 'edm'] },
-  { slug: 'indie', label: 'Indie', aliases: [] },
-  { slug: 'pop', label: 'Pop', aliases: [] },
+  { slug: 'classical', label: 'Classical', aliases: ['neoclassical'] },
+  { slug: 'electronic', label: 'Electronic', aliases: ['electronica', 'edm', 'indietronica'] },
+  { slug: 'indie', label: 'Indie', aliases: ['indietronica'] },
+  { slug: 'pop', label: 'Pop', aliases: ['kpop', 'synthpop', 'hyperpop'] },
   { slug: 'r-b-soul', label: 'R&B / Soul', aliases: ['r&b', 'rnb', 'r n b', 'rhythm and blues', 'soul'] },
-  { slug: 'metal', label: 'Metal', aliases: [] },
+  { slug: 'metal', label: 'Metal', aliases: ['metalcore'] },
   { slug: 'folk', label: 'Folk', aliases: [] },
 ];
 
@@ -32,6 +32,8 @@ export const GENRE_FOCUS_SLUGS = GENRE_FOCUS_OPTIONS.map((o) => o.slug);
  */
 export function normalizeGenreToken(value) {
   return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/&/g, ' and ')
     .replace(/[^a-z0-9]+/g, '-')
@@ -48,13 +50,13 @@ function containsWholeWords(token, needle) {
 }
 
 /**
- * True when the slug or one of its aliases appears as a whole-word
- * (dash-delimited) sequence inside any token of the set: "deep-house" matches
- * "house"; "housewife" does not.
+ * The first token in the set that carries the slug or one of its aliases as a
+ * whole-word (dash-delimited) sequence, or null. "deep-house" matches "house";
+ * "housewife" does not.
  */
-export function matchesGenreFocus(genreSet, slug) {
+export function findGenreFocusMatch(genreSet, slug) {
   const option = getGenreFocusOption(slug);
-  if (!option || !genreSet) return false;
+  if (!option || !genreSet) return null;
   const needles = [option.slug, ...option.aliases]
     .map(normalizeGenreToken)
     .filter(Boolean);
@@ -62,8 +64,12 @@ export function matchesGenreFocus(genreSet, slug) {
     const token = normalizeGenreToken(raw);
     if (!token) continue;
     for (const needle of needles) {
-      if (containsWholeWords(token, needle)) return true;
+      if (containsWholeWords(token, needle)) return raw;
     }
   }
-  return false;
+  return null;
+}
+
+export function matchesGenreFocus(genreSet, slug) {
+  return findGenreFocusMatch(genreSet, slug) !== null;
 }

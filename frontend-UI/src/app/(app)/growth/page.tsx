@@ -159,6 +159,8 @@ interface DiscoveryStats {
   genreChecked?: number | null;
   genreMatched?: number | null;
   genreUnknown?: number | null;
+  /** Candidates whose lookup never ran because the time budget was spent. */
+  genreSkipped?: number | null;
   durationMs?: number;
   sampleCapPerSeed?: number;
   sampledFollowers?: boolean;
@@ -588,9 +590,13 @@ export default function GrowthPage() {
     const crawlSeconds = (totalPages * 1.2) / 2; // ~1.2s per page, 2 seeds crawled concurrently
     // + auth lists / related artists + track lookups. A genre focus looks up
     // up to 150 candidates' tracks instead of ~50: ~100 more calls, 5 at a time.
-    const focusSeconds = genreFocus !== "any" ? 12 : 0;
+    const focusSeconds = genreFocus !== "any" ? 16 : 0;
     return Math.min(60, Math.round(10 + crawlSeconds + 8 + focusSeconds));
   })();
+
+  // A focus only explains an empty result when it actually checked someone;
+  // with nothing checked (e.g. no candidates at all) the genre is not to blame.
+  const focusBlamesGenre = Boolean(discoveryStats?.genreFocus) && (discoveryStats?.genreChecked ?? 0) > 0;
 
   const handleInspirationClick = (id: number) => {
     setSelectedInspirations(prev => {
@@ -803,24 +809,27 @@ export default function GrowthPage() {
                   <option value="both">Scan Both</option>
                 </Select>
 
-                <div className="grid gap-1.5 sm:col-span-2">
-                  <Select
-                    id="growth-genre-focus"
-                    label="Genre focus"
-                    value={genreFocus}
-                    onChange={(e) => setGenreFocus(e.target.value)}
-                    aria-describedby="growth-genre-focus-hint"
-                    className="bg-secondary/20"
-                  >
-                    <option value="any">Any genre</option>
-                    {GENRE_FOCUS_OPTIONS.map((o) => (
-                      <option key={o.slug} value={o.slug}>{o.label}</option>
-                    ))}
-                  </Select>
-                  <p id="growth-genre-focus-hint" className="text-sm text-muted-foreground">
-                    Only suggests accounts whose recent tracks match; checks more accounts, so the scan takes a little longer.
-                  </p>
-                </div>
+                <Field
+                  id="growth-genre-focus"
+                  label="Genre focus"
+                  hint="Only suggests accounts whose recent tracks match; checks more accounts, so the scan takes a little longer."
+                  className="sm:col-span-2"
+                >
+                  {(field) => (
+                    <Select
+                      {...field}
+                      aria-label="Genre focus"
+                      value={genreFocus}
+                      onChange={(e) => setGenreFocus(e.target.value)}
+                      className="bg-secondary/20"
+                    >
+                      <option value="any">Any genre</option>
+                      {GENRE_FOCUS_OPTIONS.map((o) => (
+                        <option key={o.slug} value={o.slug}>{o.label}</option>
+                      ))}
+                    </Select>
+                  )}
+                </Field>
               </div>
 
               <div className="text-sm text-muted-foreground mb-3 flex items-center justify-between gap-3">
@@ -943,9 +952,14 @@ export default function GrowthPage() {
                         Large seeds were sampled: most recent {(discoveryStats.sampleCapPerSeed ?? 1000).toLocaleString()} followers per seed — the slice most likely to still be active.
                       </p>
                     )}
-                    {discoveryStats?.partial && (
+                    {discoveryStats?.partial && (discoveryStats.genreSkipped ?? 0) === 0 && (
                       <p className="text-xs text-warning-text mt-1">
                         The scan hit its time budget, so results come from a partial crawl. Everything shown is fully scored and ready to use.
+                      </p>
+                    )}
+                    {(discoveryStats?.genreSkipped ?? 0) > 0 && (
+                      <p className="text-xs text-warning-text mt-1">
+                        The scan hit its time budget before every candidate could be checked for genre, so {discoveryStats?.genreSkipped} were left out. Everything shown is fully scored and ready to use.
                       </p>
                     )}
                     {discoveryStats?.genreFocus && (
@@ -953,9 +967,14 @@ export default function GrowthPage() {
                         <span className="font-semibold">Focus: {genreLabel(discoveryStats.genreFocus)}</span>
                         {" · "}
                         {discoveryStats.genreMatched ?? 0} of {discoveryStats.genreChecked ?? 0} checked matched
-                        {(discoveryStats.genreUnknown ?? 0) > 0 && (
+                        {(discoveryStats.genreMatched ?? 0) > suggestions.length && ` (showing top ${suggestions.length})`}
+                        {((discoveryStats.genreUnknown ?? 0) > 0 || (discoveryStats.genreSkipped ?? 0) > 0) && (
                           <span className="text-muted-foreground">
-                            {" "}({discoveryStats.genreUnknown} had no genre info and were left out)
+                            {" "}
+                            ({[
+                              (discoveryStats.genreUnknown ?? 0) > 0 ? `${discoveryStats.genreUnknown} had no genre info` : null,
+                              (discoveryStats.genreSkipped ?? 0) > 0 ? `${discoveryStats.genreSkipped} not checked in time` : null,
+                            ].filter(Boolean).join(", ")}; left out)
                           </span>
                         )}
                       </p>
@@ -1003,14 +1022,16 @@ export default function GrowthPage() {
                 {suggestions.length === 0 ? (
                   <EmptyState
                     icon={<Info className="w-12 h-12" />}
-                    title={discoveryStats?.genreFocus ? `No ${genreLabel(discoveryStats.genreFocus)} matches` : "No suggestions found"}
+                    title={focusBlamesGenre ? `No ${genreLabel(discoveryStats!.genreFocus!)} matches` : "No suggestions found"}
                     description={
-                      discoveryStats?.genreFocus
-                        ? `None of the ${discoveryStats.genreChecked ?? 0} accounts checked had recent tracks tagged ${genreLabel(discoveryStats.genreFocus)}. Scan again with any genre, or pick different seeds.`
+                      focusBlamesGenre
+                        ? ((discoveryStats!.genreSkipped ?? 0) === 0 && (discoveryStats!.genreUnknown ?? 0) === 0
+                          ? `None of the ${discoveryStats!.genreChecked} accounts checked had recent tracks tagged ${genreLabel(discoveryStats!.genreFocus!)}. Scan again with any genre, or pick different seeds.`
+                          : `None of the ${discoveryStats!.genreChecked} accounts checked matched ${genreLabel(discoveryStats!.genreFocus!)}, but ${(discoveryStats!.genreUnknown ?? 0) + (discoveryStats!.genreSkipped ?? 0)} could not be placed (no genre info, or not checked in time), so a match may exist among them. Scan again with any genre, or pick different seeds.`)
                         : "Try selecting different inspiration users or strategy."
                     }
                     action={
-                      discoveryStats?.genreFocus ? (
+                      focusBlamesGenre ? (
                         <Button
                           variant="outline"
                           size="sm"

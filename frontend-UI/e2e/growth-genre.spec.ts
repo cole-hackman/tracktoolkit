@@ -60,9 +60,14 @@ test("a focused scan sends the genre and shows focus stats and card genres: /gro
   expect(body.genre).toBe("house");
 
   await expect(page.getByText("Focus: House")).toBeVisible();
-  await expect(page.getByText(/23 of 150 checked matched/)).toBeVisible();
+  await expect(page.getByText(/2 of 150 checked matched/)).toBeVisible();
   await expect(page.getByText("deep house", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("tech house", { exact: true })).toBeVisible();
+  // The card with chips AND the track row/preview renders at every width.
+  await expect(page.getByText("Warehouse Sunrise Extended Mix")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Preview Warehouse Sunrise Extended Mix on SoundCloud" }),
+  ).toBeVisible();
 
   await expectNoBlockingViolations(page);
   await expectNoHorizontalOverflow(page);
@@ -104,6 +109,7 @@ test("zero matches explains itself and offers a rescan with any genre: /growth/"
           genreChecked: 150,
           genreMatched: 0,
           genreUnknown: 12,
+          genreSkipped: 0,
         },
       }),
     });

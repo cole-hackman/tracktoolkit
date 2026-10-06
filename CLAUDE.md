@@ -183,8 +183,12 @@ alias as a whole word (`deep-house` matches `house`, `housewife` does not),
 and returns the top `limit`. Candidates whose genre could not be established
 (deadline, failed lookup, no tracks, no genre metadata) are **excluded and
 counted** in `stats.genreUnknown`, never guessed. Cost: up to +100 track calls
-per scan inside the same 45 s budget; it is still one of the 20/hour discover
-budget, and follow caps are unchanged. With no focus the call count is
+per scan inside the same 45 s budget; it is still one request against the
+shared 20/hour `heavyOperationRateLimiter` budget (shared with merge, clone and
+every bulk write), and follow caps are unchanged. `stats` separates
+`genreChecked` (lookups attempted), `genreUnknown` (attempted, no usable genre)
+and `genreSkipped` (deadline hit before the lookup ran). The chosen `genre` is
+recorded in the `OperationLog` metadata. With no focus the call count is
 identical to before. `genre` validates `.isString()` first (array bypass).
 
 ### Feedback (`routes/feedback.js`)

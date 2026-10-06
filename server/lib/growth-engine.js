@@ -1,6 +1,6 @@
 import logger from './logger.js';
 import { sleep } from './pacing.js';
-import { matchesGenreFocus } from './genres.js';
+import { findGenreFocusMatch } from './genres.js';
 
 const DISCOVERY_TRACK_CONCURRENCY = 5;
 // Per seed and per direction (followers/followings), sample only the most
@@ -324,10 +324,12 @@ export class GrowthEngine {
       let genreAffinity = null;
       let candidateGenres = [];
       let genreTokens = new Set();
+      let skipped = false;
       // Past the time budget, skip the lookup: null affinity keeps the score
       // neutral, exactly like the failed-fetch path below.
       try {
-        const tracks = Date.now() >= deadlineAt
+        if (Date.now() >= deadlineAt) skipped = true;
+        const tracks = skipped
           ? null
           : await this.soundcloudClient.getUserTracks(sug.user.id, accessToken, refreshToken, 5);
         if (tracks && tracks.length > 0) {
@@ -368,21 +370,37 @@ export class GrowthEngine {
         suggestedTrack,
         genres: candidateGenres,
         _genreTokens: genreTokens,
+        _genreSkipped: skipped,
       };
     });
 
     // With a focus keep only candidates whose fetched tracks match. A candidate
-    // whose genre could not be established (deadline, failed lookup, no tracks,
-    // no genre metadata) is excluded and counted, never guessed.
+    // whose genre could not be established is excluded and counted, never
+    // guessed. Skipped = the deadline passed before its lookup ran; unknown =
+    // the lookup ran but gave no genre (failed, no tracks, no metadata).
     let finalResults = results;
+    let genreChecked = null;
     let genreMatched = null;
     let genreUnknown = null;
+    let genreSkipped = null;
     if (genre) {
-      genreUnknown = results.filter((r) => r._genreTokens.size === 0).length;
-      finalResults = results.filter((r) => matchesGenreFocus(r._genreTokens, genre));
+      genreSkipped = results.filter((r) => r._genreSkipped).length;
+      genreChecked = results.length - genreSkipped;
+      genreUnknown = results.filter((r) => !r._genreSkipped && r._genreTokens.size === 0).length;
+      finalResults = [];
+      for (const r of results) {
+        const hit = findGenreFocusMatch(r._genreTokens, genre);
+        if (hit === null) continue;
+        // The token that matched leads, so the chip explains the match.
+        r.genres = [hit, ...r.genres.filter((g) => g !== hit)].slice(0, 3);
+        finalResults.push(r);
+      }
       genreMatched = finalResults.length;
     }
-    for (const r of results) delete r._genreTokens;
+    for (const r of results) {
+      delete r._genreTokens;
+      delete r._genreSkipped;
+    }
 
     // Genre affinity can reorder the top set
     finalResults.sort((a, b) => b.score - a.score);
@@ -396,9 +414,10 @@ export class GrowthEngine {
         afterDedup: filteredCandidates.length,
         suggestionsReturned: finalResults.length,
         genreFocus: genre || null,
-        genreChecked: genre ? results.length : null,
+        genreChecked,
         genreMatched,
         genreUnknown,
+        genreSkipped,
         seedGenres: Array.from(seedGenres.keys()).slice(0, 10),
         trackLookupConcurrency: DISCOVERY_TRACK_CONCURRENCY,
         durationMs: Date.now() - startedAt,

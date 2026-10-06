@@ -335,6 +335,15 @@ function growthDiscoverResponse(genre: string | undefined) {
     followings_count: 300,
     track_count: 6,
   });
+  const track = (id: number, title: string) => ({
+    id,
+    title,
+    artwork_url: "",
+    likes_count: 1234,
+    playback_count: 56000,
+    permalink_url: `https://soundcloud.com/x/${id}`,
+    created_at: "2026-09-01T00:00:00Z",
+  });
   const base = {
     inspirationUsers: 1,
     candidatesScanned: 480,
@@ -354,7 +363,7 @@ function growthDiscoverResponse(genre: string | undefined) {
           scoreLabel: "high",
           signals: { followBackRatio: 0.7, sharedInspirationCount: 1, isRelatedArtist: true, isCreator: true, genreAffinity: 1 },
           genres: ["deep house", "house", "groove"],
-          suggestedTrack: null,
+          suggestedTrack: track(9001, "Warehouse Sunrise Extended Mix"),
         },
         {
           user: user(7002, "housefocus-two"),
@@ -362,7 +371,7 @@ function growthDiscoverResponse(genre: string | undefined) {
           scoreLabel: "medium",
           signals: { followBackRatio: 1.1, sharedInspirationCount: 1, isRelatedArtist: false, isCreator: true, genreAffinity: 0.5 },
           genres: ["tech house"],
-          suggestedTrack: null,
+          suggestedTrack: track(9002, "Late Night Tools"),
         },
       ],
       stats: {
@@ -370,8 +379,9 @@ function growthDiscoverResponse(genre: string | undefined) {
         suggestionsReturned: 2,
         genreFocus: genre,
         genreChecked: 150,
-        genreMatched: 23,
+        genreMatched: 2,
         genreUnknown: 4,
+        genreSkipped: 0,
       },
     };
   }
@@ -386,7 +396,7 @@ function growthDiscoverResponse(genre: string | undefined) {
         suggestedTrack: null,
       },
     ],
-    stats: { ...base, suggestionsReturned: 1, genreFocus: null, genreChecked: null, genreMatched: null, genreUnknown: null },
+    stats: { ...base, suggestionsReturned: 1, genreFocus: null, genreChecked: null, genreMatched: null, genreUnknown: null, genreSkipped: null },
   };
 }
 
