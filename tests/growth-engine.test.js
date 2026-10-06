@@ -272,6 +272,146 @@ describe('GrowthEngine', () => {
       });
     });
   });
+
+  describe('genre focus', () => {
+    const focusOpts = {
+      authUserId: 'user-cuid',
+      authSoundCloudId: 50,
+      accessToken: 'token',
+      refreshToken: 'refresh',
+      strategy: 'followers',
+      limit: 5,
+      inspirationUserIds: [1],
+    };
+
+    // 200 candidates, ids 1001..1200; those in `houseIds` have house tracks.
+    function setup({ houseIds = new Set(), count = 200, trackFor } = {}) {
+      mockSoundCloudClient.getFollowings.mockResolvedValue([]);
+      mockSoundCloudClient.getFollowers.mockResolvedValue([]);
+      mockSoundCloudClient.getRelatedArtists.mockResolvedValue([]);
+      mockSoundCloudClient.getUserFollowers.mockResolvedValue(
+        Array.from({ length: count }, (_, i) => ({
+          id: 1001 + i,
+          username: `u${i}`,
+          // descending followers keep the genre-neutral first pass order stable
+          followers_count: 1000 - i,
+          followings_count: 100,
+          track_count: 3,
+        }))
+      );
+      mockSoundCloudClient.getUserTracks.mockImplementation(async (id) => {
+        if (id === 1) return [{ id: 1, title: 'seed', genre: 'House', tag_list: '' }];
+        if (trackFor) return trackFor(id);
+        const isHouse = houseIds.has(id);
+        return [{
+          id: id * 10,
+          title: `t${id}`,
+          genre: isHouse ? 'Deep House' : 'Country',
+          tag_list: isHouse ? '"deep house" groove' : 'twang',
+          likes_count: 5,
+        }];
+      });
+    }
+
+    test('a focus widens the track lookup to 150 and keeps only matches', async () => {
+      // matches sit well beyond the first `limit` (5) candidates
+      const houseIds = new Set([1100, 1120, 1140]);
+      setup({ houseIds });
+
+      const result = await growthEngine.discoverSuggestions({ ...focusOpts, genre: 'house' });
+
+      // 1 seed lookup + 150 candidate lookups
+      expect(mockSoundCloudClient.getUserTracks).toHaveBeenCalledTimes(151);
+      expect(result.suggestions.map((s) => s.user.id).sort()).toEqual([1100, 1120, 1140]);
+      expect(result.stats).toMatchObject({
+        genreFocus: 'house',
+        genreChecked: 150,
+        genreMatched: 3,
+        genreUnknown: 0,
+      });
+      for (const s of result.suggestions) {
+        expect(s.genres).toEqual(expect.arrayContaining(['deep house']));
+        expect(s.genres.length).toBeLessThanOrEqual(3);
+      }
+    });
+
+    test('matches aliases and whole-word substrings, not partial words', async () => {
+      setup({
+        count: 4,
+        trackFor: (id) => ({
+          1001: [{ id: 1, genre: 'DnB', tag_list: '' }],
+          1002: [{ id: 2, genre: 'Drum & Bass', tag_list: '' }],
+          1003: [{ id: 3, genre: 'Housewife anthems', tag_list: 'housewives' }],
+          1004: [{ id: 4, genre: 'Jazz', tag_list: '' }],
+        }[id]),
+      });
+
+      const dnb = await growthEngine.discoverSuggestions({ ...focusOpts, genre: 'drum-and-bass' });
+      expect(dnb.suggestions.map((s) => s.user.id).sort()).toEqual([1001, 1002]);
+
+      const house = await growthEngine.discoverSuggestions({ ...focusOpts, genre: 'house' });
+      expect(house.suggestions).toEqual([]);
+      expect(house.stats.genreMatched).toBe(0);
+    });
+
+    test('candidates whose genre is unknown past the deadline are excluded and counted', async () => {
+      mockSoundCloudClient.getFollowings.mockResolvedValue([]);
+      mockSoundCloudClient.getFollowers.mockResolvedValue([]);
+      mockSoundCloudClient.getRelatedArtists.mockResolvedValue([]);
+      mockSoundCloudClient.getUserFollowers.mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return [
+          { id: 1001, username: 'a', followers_count: 100, followings_count: 100, track_count: 2 },
+          { id: 1002, username: 'b', followers_count: 90, followings_count: 100, track_count: 2 },
+        ];
+      });
+      mockSoundCloudClient.getUserTracks.mockResolvedValue([
+        { id: 5, genre: 'House', tag_list: '' },
+      ]);
+
+      const result = await growthEngine.discoverSuggestions({
+        ...focusOpts,
+        genre: 'house',
+        timeBudgetMs: 50,
+      });
+
+      expect(result.suggestions).toEqual([]);
+      expect(result.stats).toMatchObject({
+        genreFocus: 'house',
+        genreChecked: 2,
+        genreMatched: 0,
+        genreUnknown: 2,
+      });
+    });
+
+    test('failed and empty lookups count as unknown, not as matches', async () => {
+      setup({
+        count: 3,
+        trackFor: (id) => {
+          if (id === 1001) throw new Error('boom');
+          if (id === 1002) return [];
+          return [{ id: 3, genre: 'House', tag_list: '' }];
+        },
+      });
+
+      const result = await growthEngine.discoverSuggestions({ ...focusOpts, genre: 'house' });
+
+      expect(result.suggestions.map((s) => s.user.id)).toEqual([1003]);
+      expect(result.stats).toMatchObject({ genreChecked: 3, genreMatched: 1, genreUnknown: 2 });
+    });
+
+    test('without a focus the lookup count is unchanged and stats stay unfocused', async () => {
+      setup({});
+
+      const result = await growthEngine.discoverSuggestions({ ...focusOpts });
+
+      // 1 seed lookup + `limit` (5) candidate lookups, exactly as before
+      expect(mockSoundCloudClient.getUserTracks).toHaveBeenCalledTimes(6);
+      expect(result.suggestions).toHaveLength(5);
+      expect(result.stats.genreFocus).toBeNull();
+      expect(result.suggestions[0].genres).toEqual(expect.any(Array));
+    });
+  });
 });
 
 describe('startEngagementJob onSettled', () => {

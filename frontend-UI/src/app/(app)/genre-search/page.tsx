@@ -24,12 +24,8 @@ import {
 } from "@/components/ui";
 import { invalidatePlaylistCaches, usePlaylistsQuery } from "@/lib/queries";
 import { asArray } from "@/lib/api-shape";
+import { COMMON_GENRES } from "@/lib/genres";
 
-const COMMON_GENRES = [
-  "house", "techno", "ambient", "hip-hop", "drum-and-bass",
-  "dubstep", "trance", "jazz", "classical", "electronic",
-  "indie", "pop", "r-b-soul", "metal", "folk",
-];
 
 interface Track {
   id: number;

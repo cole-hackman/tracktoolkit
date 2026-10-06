@@ -147,6 +147,27 @@ describe('growth discovery validators', () => {
     expect(result.statusCode).toBe(400);
   });
 
+  test('accepts a known genre focus slug', async () => {
+    const result = await runValidation(validateGrowthDiscover, {
+      body: { inspirationUserIds: [1], genre: 'house' },
+    });
+    expect(result.statusCode).toBeNull();
+  });
+
+  test('rejects an unknown genre focus slug', async () => {
+    const result = await runValidation(validateGrowthDiscover, {
+      body: { inspirationUserIds: [1], genre: 'polka' },
+    });
+    expect(result.statusCode).toBe(400);
+  });
+
+  test('rejects a genre focus sent as an array (element-wise validator bypass)', async () => {
+    const result = await runValidation(validateGrowthDiscover, {
+      body: { inspirationUserIds: [1], genre: ['house'] },
+    });
+    expect(result.statusCode).toBe(400);
+  });
+
   test('accepts a valid engagement batch payload', async () => {
     const result = await runValidation(validateGrowthEngageBatch, {
       body: {
