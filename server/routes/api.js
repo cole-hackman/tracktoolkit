@@ -54,6 +54,7 @@ import {
   validateResolve,
   validateMergePlaylists,
   validateUpdatePlaylist,
+  validateGetPlaylist,
   validatePlaylistTrackTransfer,
   validateCreateFromLikes,
   validateLikesPagination,
@@ -913,13 +914,17 @@ router.post(
  * GET /api/playlists/:id
  * Return single playlist with tracks included
  */
-router.get('/playlists/:id', authenticateUser, validatePlaylistId, async (req, res) => {
+router.get('/playlists/:id', authenticateUser, validateGetPlaylist, async (req, res) => {
   try {
     const id = req.params.id; // Already validated and converted to int by middleware
+    // `?access=all` includes blocked tracks. Pages that write the list back
+    // opt in so what they show matches what the server will compare against.
+    const allAccess = req.query.access === 'all';
     const playlist = await soundcloudClient.getPlaylistWithTracks(
       req.accessToken,
       req.refreshToken,
-      id
+      id,
+      allAccess ? { allAccess: true } : undefined
     );
     harvestTracks(Array.isArray(playlist.tracks) ? playlist.tracks : []);
     harvestPlaylists([playlist]);
@@ -938,20 +943,46 @@ router.get('/playlists/:id', authenticateUser, validatePlaylistId, async (req, r
 router.put('/playlists/:id', authenticateUser, validateUpdatePlaylist, async (req, res) => {
   try {
     const id = req.params.id; // Already validated and converted to int by middleware
-    const { tracks, title } = req.body || {};
+    const { title } = req.body || {};
+    const toId = (v) => (typeof v === 'string' ? parseInt(v, 10) : v);
+    const tracks = (req.body?.tracks || []).map(toId);
+    const remove = (req.body?.remove || []).map(toId);
 
     // The client sends a full replacement list it derived from its own read of
     // this playlist. If OUR read comes back short of the playlist's own
     // track_count, the client's almost certainly did too — and PUTting that
     // list would permanently delete whatever both reads dropped. Refuse
     // instead; the read costs one round trip and the write is irreversible.
+    let serverIds;
     try {
-      await readPlaylistForRewrite(soundcloudClient, req.accessToken, req.refreshToken, id);
+      ({ ids: serverIds } = await readPlaylistForRewrite(
+        soundcloudClient, req.accessToken, req.refreshToken, id,
+      ));
     } catch (error) {
       if (error instanceof PlaylistReadIncompleteError) {
-        return res.status(409).json({ error: error.message });
+        return res.status(409).json({
+          code: 'PLAYLIST_READ_INCOMPLETE',
+          error: error.message,
+          seen: error.seen,
+          expected: error.expected,
+        });
       }
       throw error;
+    }
+
+    // A track may only leave the playlist if the client named it. Anything the
+    // server read that is in neither list is something this client never saw
+    // (it changed on SoundCloud, or the page's read was narrower than ours),
+    // and writing the list back would delete it. Ids in `tracks` the server
+    // did not read are appends; ids in `remove` it did not read are ignored.
+    const declared = new Set([...tracks, ...remove]);
+    const undeclared = new Set(serverIds.filter((trackId) => !declared.has(trackId))).size;
+    if (undeclared > 0) {
+      return res.status(409).json({
+        code: 'PLAYLIST_OUT_OF_SYNC',
+        error: `This playlist has ${undeclared} track${undeclared === 1 ? '' : 's'} this page didn't load (it may have changed on SoundCloud). Reload and try again. Nothing was changed.`,
+        undeclared,
+      });
     }
 
     // Reuse addTracksToPlaylist to overwrite order by sending full list
@@ -1329,15 +1360,13 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
 
     // ── MERGE INTO EXISTING PLAYLIST ──────────────────────────────────────────
     if (targetPlaylistId) {
-      // Fetch existing target playlist tracks
-      const targetPlaylist = await soundcloudClient.getPlaylistWithTracks(
-        req.accessToken,
-        req.refreshToken,
-        targetPlaylistId
+      // Fetch existing target playlist tracks. The target is rewritten in
+      // full, so it is read the guarded way (all access levels, short read
+      // refused). The SOURCE reads above stay default access on purpose:
+      // blocked tracks are filtered out of what gets merged in.
+      const { playlist: targetPlaylist, ids: existingIds } = await readPlaylistForRewrite(
+        soundcloudClient, req.accessToken, req.refreshToken, targetPlaylistId,
       );
-      const existingIds = (Array.isArray(targetPlaylist.tracks) ? targetPlaylist.tracks : [])
-        .filter(t => t && t.id != null)
-        .map(t => t.id);
       const existingTrackCount = existingIds.length;
 
       // Merge: preserve existing order, append new unique source tracks
@@ -1673,6 +1702,10 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
       invalidatePlaylistState(req.user.id);
     }
   } catch (error) {
+    if (error instanceof PlaylistReadIncompleteError) {
+      // The target could not be read in full, so nothing was written.
+      return res.status(409).json({ error: error.message });
+    }
     logger.error('Merge playlists error:', safeError(error));
     logOperation({
       userId: req.user.id,
@@ -1739,10 +1772,11 @@ async function createOrAppendTrackIds({ accessToken, refreshToken, trackIds, tit
   const uniqueTrackIds = uniquePositiveIds(trackIds);
 
   if (targetPlaylistId) {
-    const targetPlaylist = await soundcloudClient.getPlaylistWithTracks(accessToken, refreshToken, targetPlaylistId);
-    const existingIds = (Array.isArray(targetPlaylist.tracks) ? targetPlaylist.tracks : [])
-      .filter((track) => track && track.id != null)
-      .map((track) => track.id);
+    // Throws PlaylistReadIncompleteError on a short read; the caller's catch
+    // turns that into a 409 (appending to a partial list deletes the rest).
+    const { playlist: targetPlaylist, ids: existingIds } = await readPlaylistForRewrite(
+      soundcloudClient, accessToken, refreshToken, targetPlaylistId,
+    );
     const { mergedIds, addedCount } = mergeIntoExisting(existingIds, uniqueTrackIds);
     const chunks = splitIntoChunks(mergedIds, MAX_TRACKS_PER_PLAYLIST);
     const targetChunk = chunks[0] || [];
@@ -1985,6 +2019,9 @@ router.post(
         },
       });
     } catch (error) {
+      if (error instanceof PlaylistReadIncompleteError) {
+        return res.status(409).json({ error: error.message });
+      }
       logger.error('Create playlist from followed likes error:', safeError(error));
       const status = error?.status || 500;
       res.status(status === 403 ? 403 : 500).json({
@@ -2104,15 +2141,11 @@ router.post('/playlists/from-likes', authenticateUser, heavyOperationRateLimiter
 
     // ── ADD TO EXISTING PLAYLIST ──────────────────────────────────────────────
     if (targetPlaylistId) {
-      // Fetch existing target playlist tracks
-      const targetPlaylist = await soundcloudClient.getPlaylistWithTracks(
-        req.accessToken,
-        req.refreshToken,
-        targetPlaylistId
+      // Fetch existing target playlist tracks (guarded: all access levels,
+      // short read refused — see readPlaylistForRewrite).
+      const { playlist: targetPlaylist, ids: existingIds } = await readPlaylistForRewrite(
+        soundcloudClient, req.accessToken, req.refreshToken, targetPlaylistId,
       );
-      const existingIds = (Array.isArray(targetPlaylist.tracks) ? targetPlaylist.tracks : [])
-        .filter(t => t && t.id != null)
-        .map(t => t.id);
       const existingTrackCount = existingIds.length;
 
       // Merge: preserve existing order, append new unique tracks
@@ -2259,6 +2292,9 @@ router.post('/playlists/from-likes', authenticateUser, heavyOperationRateLimiter
     invalidatePlaylistState(req.user.id);
     return;
   } catch (error) {
+    if (error instanceof PlaylistReadIncompleteError) {
+      return res.status(409).json({ error: error.message });
+    }
     logger.error('Create playlist from likes error:', safeError(error));
     res.status(500).json({ error: 'Failed to create playlist from likes' });
   }

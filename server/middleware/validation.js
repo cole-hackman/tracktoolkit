@@ -143,6 +143,25 @@ export const validateMergePlaylists = [
 ];
 
 /**
+ * GET /playlists/:id — `access=all` asks for blocked tracks as well. The only
+ * accepted value is `all`; `.isString()` leads because express-validator
+ * applies a validator element-wise to an array, so `?access=all&access=all`
+ * would otherwise satisfy `.isIn`.
+ */
+export const validateGetPlaylist = [
+  param('id')
+    .isInt({ min: 1 })
+    .withMessage('Playlist ID must be a positive integer')
+    .toInt(),
+  query('access')
+    .optional()
+    .isString()
+    .isIn(['all'])
+    .withMessage('access must be "all" when provided'),
+  handleValidationErrors
+];
+
+/**
  * Validation rules for update playlist endpoint
  */
 export const validateUpdatePlaylist = [
@@ -169,6 +188,29 @@ export const validateUpdatePlaylist = [
         if (!Number.isInteger(numId) || numId < 1) {
           throw new Error('All track IDs must be positive integers');
         }
+      }
+      return true;
+    }),
+  // The ids the client is deliberately taking out of the playlist. The route
+  // refuses a write that would drop anything the server read that is in
+  // neither `tracks` nor `remove`.
+  body('remove')
+    .optional()
+    .isArray({ max: 500 })
+    .withMessage('remove must be an array of at most 500 track IDs')
+    .custom((value, { req }) => {
+      const toId = (v) => (typeof v === 'string' ? parseInt(v, 10) : v);
+      for (const trackId of value) {
+        const numId = toId(trackId);
+        if (!Number.isInteger(numId) || numId < 1) {
+          throw new Error('All remove IDs must be positive integers');
+        }
+      }
+      const keep = new Set(
+        (Array.isArray(req.body.tracks) ? req.body.tracks : []).map(toId),
+      );
+      if (value.some((trackId) => keep.has(toId(trackId)))) {
+        throw new Error('A track cannot be in both tracks and remove');
       }
       return true;
     }),

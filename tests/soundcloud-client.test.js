@@ -157,6 +157,25 @@ describe('soundcloud client behaviors', () => {
     expect(url).toBe('https://api.soundcloud.com/users/42/likes/tracks?cursor=abc&limit=25');
   });
 
+  describe('getPlaylistWithTracks access levels', () => {
+    const okPlaylist = () => Promise.resolve(new Response(JSON.stringify({ id: 1, tracks: [] }), { status: 200 }));
+
+    test('allAccess asks SoundCloud for blocked tracks too', async () => {
+      fetch.mockReturnValueOnce(okPlaylist());
+      await soundcloudClient.getPlaylistWithTracks('a', 'r', 1, { allAccess: true });
+      const [url] = fetch.mock.calls[0];
+      expect(url).toBe('https://api.soundcloud.com/playlists/1?show_tracks=true&access=playable,preview,blocked');
+    });
+
+    test('the default sends no access parameter', async () => {
+      fetch.mockReturnValueOnce(okPlaylist());
+      await soundcloudClient.getPlaylistWithTracks('a', 'r', 1);
+      const [url] = fetch.mock.calls[0];
+      expect(url).toBe('https://api.soundcloud.com/playlists/1?show_tracks=true');
+      expect(url).not.toContain('access=');
+    });
+  });
+
   test('fetches a followed user playlists page without embedded tracks', async () => {
     const payload = { collection: [{ id: 99, title: 'Set', track_count: 12 }], next_href: null };
     fetch.mockReturnValueOnce(Promise.resolve(new Response(JSON.stringify(payload), { status: 200 })));

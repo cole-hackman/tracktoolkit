@@ -3,6 +3,8 @@
  * Preserves order; appends to target when adding.
  */
 
+import logger from './logger.js';
+
 export const MAX_PLAYLIST_TRACKS = 500;
 
 export function extractOrderedTrackIds(playlist) {
@@ -19,7 +21,11 @@ export function extractOrderedTrackIds(playlist) {
  */
 export class PlaylistReadIncompleteError extends Error {
   constructor(seen, expected) {
-    super(`Playlist read was incomplete (saw ${seen} of ${expected} tracks); not modified`);
+    super(
+      `SoundCloud returned only ${seen} of the ${expected} tracks in this playlist ` +
+      '(some may be deleted or private). Nothing was changed, because writing back ' +
+      'a partial list would delete the missing tracks.',
+    );
     this.name = 'PlaylistReadIncompleteError';
     this.seen = seen;
     this.expected = expected;
@@ -45,10 +51,18 @@ export class PlaylistReadIncompleteError extends Error {
  * @throws {PlaylistReadIncompleteError}
  */
 export async function readPlaylistForRewrite(client, accessToken, refreshToken, playlistId) {
-  const playlist = await client.getPlaylistWithTracks(accessToken, refreshToken, playlistId);
+  // All access levels: SoundCloud's default (playable,preview) omits blocked
+  // tracks while track_count still counts them, so a default read of any
+  // playlist with a blocked track looked "short" and was refused outright.
+  const playlist = await client.getPlaylistWithTracks(accessToken, refreshToken, playlistId, { allAccess: true });
   const ids = extractOrderedTrackIds(playlist);
 
   if (Number.isInteger(playlist?.track_count) && ids.length !== playlist.track_count) {
+    logger.warn('[playlist-rewrite] refused short read', {
+      playlistId,
+      seen: ids.length,
+      expected: playlist.track_count,
+    });
     throw new PlaylistReadIncompleteError(ids.length, playlist.track_count);
   }
 

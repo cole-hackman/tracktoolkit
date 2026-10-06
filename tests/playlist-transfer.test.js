@@ -36,7 +36,36 @@ describe('playlist-transfer', () => {
     const error = await readPlaylistForRewrite(client, accessToken, refreshToken, 1).catch((e) => e);
     expect(error.seen).toBe(98);
     expect(error.expected).toBe(100);
-    expect(error.message).toMatch(/saw 98 of 100/);
+    expect(error.message).toMatch(/only 98 of the 100 tracks/);
+  });
+
+  test('readPlaylistForRewrite requests every access level', async () => {
+    const client = {
+      getPlaylistWithTracks: jest.fn().mockResolvedValue({
+        id: 1, title: 'Whole', track_count: 1, tracks: [{ id: 7 }],
+      }),
+    };
+
+    await readPlaylistForRewrite(client, accessToken, refreshToken, 1);
+
+    expect(client.getPlaylistWithTracks).toHaveBeenCalledWith(accessToken, refreshToken, 1, { allAccess: true });
+  });
+
+  test('readPlaylistForRewrite does not refuse a playlist whose all-access read includes a blocked track', async () => {
+    // The default read omits blocked tracks but track_count counts them, which
+    // is what made every such playlist read "short". With all access the read
+    // agrees with the count and the guard stays quiet.
+    const client = {
+      getPlaylistWithTracks: jest.fn(async (a, r, id, opts = {}) => ({
+        id,
+        track_count: 3,
+        tracks: opts.allAccess ? [{ id: 1 }, { id: 2 }, { id: 3 }] : [{ id: 1 }, { id: 2 }],
+      })),
+    };
+
+    const { ids } = await readPlaylistForRewrite(client, accessToken, refreshToken, 9);
+
+    expect(ids).toEqual([1, 2, 3]);
   });
 
   test('readPlaylistForRewrite returns the ids when the counts agree', async () => {

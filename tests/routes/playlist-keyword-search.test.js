@@ -277,7 +277,7 @@ describe('POST /api/playlists/tracks/bulk-remove', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.results[0]).toMatchObject({ playlistId: 1, status: 'error', removed: 0 });
-    expect(res.body.results[0].error).toMatch(/saw 2 of 100/);
+    expect(res.body.results[0].error).toMatch(/only 2 of the 100 tracks/);
     // The short playlist is not rewritten; the intact one still is.
     expect(addTracksToPlaylist).toHaveBeenCalledTimes(1);
     expect(addTracksToPlaylist).toHaveBeenCalledWith('at', 'rt', 2, [20]);
@@ -428,7 +428,7 @@ describe('POST /api/playlists/tracks/bulk-add', () => {
       .send({ targetPlaylistId: 9, trackIds: [2] });
 
     expect(res.status).toBe(409);
-    expect(res.body.error).toMatch(/saw 1 of 10/);
+    expect(res.body.error).toMatch(/only 1 of the 10 tracks/);
     expect(addTracksToPlaylist).not.toHaveBeenCalled();
   });
 
@@ -461,7 +461,7 @@ describe('PUT /api/playlists/:id', () => {
       .send({ tracks: [1, 2] });
 
     expect(res.status).toBe(409);
-    expect(res.body.error).toMatch(/saw 2 of 50/);
+    expect(res.body.error).toMatch(/only 2 of the 50 tracks/);
     expect(addTracksToPlaylist).not.toHaveBeenCalled();
   });
 

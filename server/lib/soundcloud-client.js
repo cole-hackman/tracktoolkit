@@ -605,10 +605,16 @@ class SoundCloudClient {
   }
 
   /**
-   * Get a playlist with tracks included
+   * Get a playlist with tracks included.
+   *
+   * SoundCloud's `access` parameter defaults to `playable,preview`, so by
+   * default blocked tracks are left out of `tracks` while `track_count` still
+   * counts them. `allAccess` asks for all three levels; anything that will
+   * write the list back must use it (see readPlaylistForRewrite).
    */
-  async getPlaylistWithTracks(accessToken, refreshToken, playlistId) {
-    return this.scRequest(`/playlists/${playlistId}?show_tracks=true`, accessToken, refreshToken);
+  async getPlaylistWithTracks(accessToken, refreshToken, playlistId, { allAccess = false } = {}) {
+    const access = allAccess ? '&access=playable,preview,blocked' : '';
+    return this.scRequest(`/playlists/${playlistId}?show_tracks=true${access}`, accessToken, refreshToken);
   }
 
   /**
