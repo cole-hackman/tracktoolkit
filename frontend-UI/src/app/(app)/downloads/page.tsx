@@ -50,6 +50,7 @@ interface Track {
   duration: number;
   downloadable?: boolean | string;
   download_url?: string;
+  access?: string;
   purchase_url?: string;
   purchase_title?: string;
   permalink_url: string;
@@ -318,12 +319,23 @@ export default function DownloadsPage() {
     setHypedditProgress(null);
   };
 
+  // A blocked track can't be played or downloaded. It is read (allAccess) so
+  // the playlist can be rewritten whole, and it keeps its row so it can be
+  // selected and removed, but it is never counted or offered as a download.
+  const isBlocked = (t: Track) => t.access === "blocked";
+
   const downloadableTracks = useMemo(
     () =>
       tracks.filter(
-        (t) => Boolean(t.downloadable) || t.downloadable === "true" || !!t.download_url || !!t.purchase_url
+        (t) => t.access !== "blocked" && (Boolean(t.downloadable) || t.downloadable === "true" || !!t.download_url || !!t.purchase_url)
       ),
     [tracks],
+  );
+
+  // Rows on screen: everything downloadable, plus blocked tracks (no chip).
+  const listedTracks = useMemo(
+    () => tracks.filter((t) => t.access === "blocked" || downloadableTracks.includes(t)),
+    [tracks, downloadableTracks],
   );
 
   // Any track with a purchase_url can be queued — Hypeddit, ToneDen, link trees, etc.
@@ -390,6 +402,8 @@ export default function DownloadsPage() {
 
   const handleDownload = async (track: Track) => {
     setInlineError(null);
+
+    if (track.access === "blocked") return;
 
     if (!track.download_url) {
       window.open(track.purchase_url || track.permalink_url, "_blank", "noopener,noreferrer");
@@ -634,7 +648,7 @@ export default function DownloadsPage() {
             )}
 
             {/* Toolbar */}
-            {downloadableTracks.length > 0 && (
+            {listedTracks.length > 0 && (
               <div className="mb-6 flex flex-wrap items-center gap-2">
                 {/* Remove-from-playlist mode (playlists only, not likes) */}
                 {selectedSource.id !== LIKED_TRACKS_ID && !hypedditMode && (
@@ -750,7 +764,7 @@ export default function DownloadsPage() {
                     <Skeleton key={i} className="h-16 rounded-lg bg-gray-100 dark:bg-secondary/50" />
                   ))}
                 </div>
-              ) : downloadableTracks.length === 0 ? (
+              ) : listedTracks.length === 0 ? (
                 <EmptyState
                   icon={<Download className="w-12 h-12" />}
                   title="No downloadable tracks found"
@@ -758,7 +772,7 @@ export default function DownloadsPage() {
                 />
               ) : (
                 <div className="space-y-2">
-                  {(hypedditMode ? hypedditTracks : downloadableTracks).map((track, index) => {
+                  {(hypedditMode ? hypedditTracks : listedTracks).map((track, index) => {
                     const isHypeddit = isHypedditUrl(track.purchase_url);
 
                     if (selectionMode) {
@@ -773,21 +787,25 @@ export default function DownloadsPage() {
                               <span className="text-xs text-muted-foreground">
                                 {formatDuration(track.duration)}
                               </span>
-                              <IconButton
-                                label={getDownloadLabel(track)}
-                                disabled={downloadingTrackId === track.id}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDownload(track);
-                                }}
-                                className={getDownloadTone(track)}
-                              >
-                                {downloadingTrackId === track.id ? (
-                                  <LoadingSpinner className="h-5 w-5 text-current" />
-                                ) : (
-                                  <Download className="h-5 w-5" />
-                                )}
-                              </IconButton>
+                              {isBlocked(track) ? (
+                                <span className="text-xs font-medium text-destructive-text">Blocked</span>
+                              ) : (
+                                <IconButton
+                                  label={getDownloadLabel(track)}
+                                  disabled={downloadingTrackId === track.id}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDownload(track);
+                                  }}
+                                  className={getDownloadTone(track)}
+                                >
+                                  {downloadingTrackId === track.id ? (
+                                    <LoadingSpinner className="h-5 w-5 text-current" />
+                                  ) : (
+                                    <Download className="h-5 w-5" />
+                                  )}
+                                </IconButton>
+                              )}
                             </div>
                           }
                         />
@@ -850,18 +868,22 @@ export default function DownloadsPage() {
                             Hypeddit
                           </span>
                         )}
-                        <IconButton
-                          label={getDownloadLabel(track)}
-                          disabled={downloadingTrackId === track.id}
-                          onClick={() => handleDownload(track)}
-                          className={getDownloadTone(track)}
-                        >
-                          {downloadingTrackId === track.id ? (
-                            <LoadingSpinner className="h-5 w-5 text-current" />
-                          ) : (
-                            <Download className="w-5 h-5" />
-                          )}
-                        </IconButton>
+                        {isBlocked(track) ? (
+                          <span className="shrink-0 text-xs font-medium text-destructive-text">Blocked</span>
+                        ) : (
+                          <IconButton
+                            label={getDownloadLabel(track)}
+                            disabled={downloadingTrackId === track.id}
+                            onClick={() => handleDownload(track)}
+                            className={getDownloadTone(track)}
+                          >
+                            {downloadingTrackId === track.id ? (
+                              <LoadingSpinner className="h-5 w-5 text-current" />
+                            ) : (
+                              <Download className="w-5 h-5" />
+                            )}
+                          </IconButton>
+                        )}
                       </div>
                     );
                   })}
