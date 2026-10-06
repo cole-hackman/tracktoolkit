@@ -94,7 +94,14 @@ export function isApiError(error: unknown): error is ApiError {
 
 /** The server's `{ error }` string when the body has one, else `fallback`. */
 function errorMessageFromBody(data: unknown, fallback: string): string {
-  const error = (data as { error?: unknown } | null | undefined)?.error;
+  const body = data as { error?: unknown; details?: unknown } | null | undefined;
+  // A validation 400 carries a generic "Validation failed" plus the reason a
+  // user can act on in `details[0].message`; show the reason.
+  if (Array.isArray(body?.details)) {
+    const first = body.details[0] as { message?: unknown } | undefined;
+    if (typeof first?.message === "string" && first.message.trim() !== "") return first.message;
+  }
+  const error = body?.error;
   return typeof error === "string" && error.trim() !== "" ? error : fallback;
 }
 

@@ -108,6 +108,37 @@ test.describe("playlist health check: blocked tracks", () => {
     await expect(page.getByText("Failed to update playlist.")).toHaveCount(0);
   });
 
+  test("when every track is unhealthy it explains instead of sending an empty list", async ({ page }) => {
+    await mockApi(page);
+    let puts = 0;
+    await page.route(
+      (url) => url.pathname === "/api/playlists/1",
+      async (route) => {
+        if (route.request().method() === "PUT") {
+          puts += 1;
+          return route.fulfill(json({}));
+        }
+        return route.fulfill(
+          json({
+            ...FAKE_PLAYLIST_DETAIL,
+            track_count: 2,
+            tracks: FAKE_PLAYLIST_DETAIL.tracks
+              .filter((t) => t.id === 301 || t.id === 302)
+              .map((t) => ({ ...t })),
+          }),
+        );
+      },
+    );
+
+    await openHealthCheck(page);
+    await page.getByRole("button", { name: /Remove 2 Dead Tracks/ }).click();
+
+    await expect(
+      page.getByRole("alert").filter({ hasText: "Cannot remove all tracks from a playlist" }),
+    ).toBeVisible();
+    expect(puts).toBe(0);
+  });
+
   test("a non-JSON failure falls back to the generic message", async ({ page }) => {
     await mockApi(page);
     await page.route(

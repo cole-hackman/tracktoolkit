@@ -78,6 +78,10 @@ const isHypedditUrl = (url?: string) =>
 
 const hasGateUrl = (url?: string) => !!url;
 
+function wouldBeDownloadable(t: Track) {
+  return Boolean(t.downloadable) || t.downloadable === "true" || !!t.download_url || !!t.purchase_url;
+}
+
 export default function DownloadsPage() {
   const queryClient = useQueryClient();
   const announce = useAnnounce();
@@ -261,6 +265,11 @@ export default function DownloadsPage() {
         setSelectionMode(false);
         await invalidatePlaylistCaches(queryClient, selectedSource.id);
       } else {
+        // A 409 means the server's view differs from this page's: refetch so
+        // "reload and try again" has fresh data to work with.
+        if (response.status === 409) {
+          await invalidatePlaylistCaches(queryClient, selectedSource.id);
+        }
         setInlineError(
           await readApiErrorMessage(response, "Failed to update playlist. Please try again."),
         );
@@ -325,18 +334,18 @@ export default function DownloadsPage() {
   const isBlocked = (t: Track) => t.access === "blocked";
 
   const downloadableTracks = useMemo(
-    () =>
-      tracks.filter(
-        (t) => t.access !== "blocked" && (Boolean(t.downloadable) || t.downloadable === "true" || !!t.download_url || !!t.purchase_url)
-      ),
+    () => tracks.filter((t) => t.access !== "blocked" && wouldBeDownloadable(t)),
     [tracks],
   );
 
   // Rows on screen: everything downloadable, plus blocked tracks (no chip).
-  const listedTracks = useMemo(
-    () => tracks.filter((t) => t.access === "blocked" || downloadableTracks.includes(t)),
-    [tracks, downloadableTracks],
-  );
+  // A blocked track is listed only if it would otherwise count as
+  // downloadable, so a playlist with nothing downloadable still gets the
+  // "No downloadable tracks found" state.
+  const listedTracks = useMemo(() => {
+    const downloadable = new Set(downloadableTracks);
+    return tracks.filter((t) => downloadable.has(t) || (t.access === "blocked" && wouldBeDownloadable(t)));
+  }, [tracks, downloadableTracks]);
 
   // Any track with a purchase_url can be queued — Hypeddit, ToneDen, link trees, etc.
   const hypedditTracks = useMemo(

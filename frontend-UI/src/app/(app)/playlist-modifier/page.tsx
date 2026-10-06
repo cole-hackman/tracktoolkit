@@ -134,6 +134,7 @@ export default function PlaylistModifierPage() {
   const queryClient = useQueryClient();
   const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
+  const [baselineIds, setBaselineIds] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
   const [trackFilter, setTrackFilter] = useState<TrackFilter>("all");
   const [loadError, setLoadError] = useState(false);
@@ -286,7 +287,13 @@ export default function PlaylistModifierPage() {
     }
 
     if (selectedPlaylistQuery.data) {
-      setTracks(asArray<Track>(selectedPlaylistQuery.data.tracks));
+      const loaded = asArray<Track>(selectedPlaylistQuery.data.tracks);
+      setTracks(loaded);
+      // What this page actually showed the user. Removals are declared
+      // against this, not against whatever the query holds at save time: a
+      // refetch in between must not turn a track the user never saw into one
+      // they "removed".
+      setBaselineIds(loaded.map((t) => t.id));
       setTracksError(false);
     }
   }, [selectedPlaylistQuery.data, selectedPlaylistQuery.isError]);
@@ -486,13 +493,7 @@ export default function PlaylistModifierPage() {
       // removed on purpose; the server only lets a track go if it is named.
       const editedIds = tracks.map((t) => t.id);
       const kept = new Set(editedIds);
-      const removedIds = [
-        ...new Set(
-          asArray<Track>(selectedPlaylistQuery.data?.tracks)
-            .map((t) => t.id)
-            .filter((id) => !kept.has(id)),
-        ),
-      ];
+      const removedIds = [...new Set(baselineIds.filter((id) => !kept.has(id)))];
       const response = await apiFetch(`/api/playlists/${selectedPlaylist.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -502,6 +503,11 @@ export default function PlaylistModifierPage() {
         await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
         setBanner({ tone: "success", text: "Playlist saved successfully." });
       } else {
+        // A 409 means the server's view differs from this page's: refetch so
+        // "reload and try again" has fresh data to work with.
+        if (response.status === 409) {
+          await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
+        }
         setBanner({
           tone: "error",
           text: await readApiErrorMessage(response, "Failed to save playlist."),

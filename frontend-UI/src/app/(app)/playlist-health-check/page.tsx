@@ -85,12 +85,17 @@ export default function PlaylistHealthCheckPage() {
   // SoundCloud counts entries it will not hand back at any access level
   // (deleted or private). The server refuses to rewrite a playlist it cannot
   // read in full, so a shortfall here means the removal would be refused.
+  // Counted the way the server counts (usable integer ids >= 1, like
+  // extractOrderedTrackIds), and any mismatch with `track_count` — in either
+  // direction — is a read the server would refuse to write back.
   const detailTrackCount = playlistDetailQuery.data?.track_count;
-  const detailReadCount = asArray<Track>(playlistDetailQuery.data?.tracks).length;
-  const unreadableCount =
-    typeof detailTrackCount === "number" && detailTrackCount > detailReadCount
-      ? detailTrackCount - detailReadCount
-      : 0;
+  const detailReadCount = asArray<Track>(playlistDetailQuery.data?.tracks).filter((t) => {
+    const id = typeof t?.id === "number" ? t.id : parseInt(String(t?.id), 10);
+    return Number.isInteger(id) && id >= 1;
+  }).length;
+  const readMismatch =
+    typeof detailTrackCount === "number" && detailTrackCount !== detailReadCount;
+  const unreadableCount = readMismatch ? Math.abs(detailTrackCount - detailReadCount) : 0;
 
   const selectPlaylist = (playlist: Playlist) => {
     setSelectedPlaylist(playlist);
@@ -148,6 +153,13 @@ export default function PlaylistHealthCheckPage() {
   const removeDeadTracks = async () => {
     if (!selectedPlaylist) return;
     if (healthyTracks.length === tracks.length) return;
+    if (healthyTracks.length === 0) {
+      setNotice({
+        type: "error",
+        text: "Cannot remove all tracks from a playlist. Delete the playlist on SoundCloud instead.",
+      });
+      return;
+    }
     setShowRemoveConfirm(true);
   };
 
@@ -155,6 +167,7 @@ export default function PlaylistHealthCheckPage() {
     if (!selectedPlaylist) return;
     const removedCount = tracks.length - healthyTracks.length;
     setShowRemoveConfirm(false);
+    if (healthyTracks.length === 0) return;
     setSaving(true);
     setNotice(null);
     try {
@@ -172,9 +185,14 @@ export default function PlaylistHealthCheckPage() {
         await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
         setTracks(healthyTracks);
         const done = `Removed ${removedCount} unavailable track${removedCount === 1 ? "" : "s"}.`;
+        // The success alert is role=status, so it is already spoken.
         setNotice({ type: "success", text: done });
-        announce(done);
       } else {
+        // A 409 means the server's view differs from this page's: refetch so
+        // "reload and try again" has fresh data to work with.
+        if (response.status === 409) {
+          await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
+        }
         // The error notice renders as `InlineAlert variant="error"`, which is
         // `role="alert"` — announcing as well would say it twice.
         setNotice({
@@ -318,8 +336,17 @@ export default function PlaylistHealthCheckPage() {
 
             {unreadableCount > 0 && !loadingTracks && (
               <InlineAlert variant="warning" className="mb-6">
-                SoundCloud returned {detailReadCount} of {detailTrackCount} tracks; the other{" "}
-                {unreadableCount} can&rsquo;t be read here, so remove them on SoundCloud.
+                {detailReadCount < (detailTrackCount ?? 0) ? (
+                  <>
+                    SoundCloud returned {detailReadCount} of {detailTrackCount} tracks; the other{" "}
+                    {unreadableCount} can&rsquo;t be read here, so remove them on SoundCloud.
+                  </>
+                ) : (
+                  <>
+                    SoundCloud returned {detailReadCount} tracks but counts {detailTrackCount}.
+                    Reload the page, or check the playlist on SoundCloud.
+                  </>
+                )}{" "}
                 Removing tracks from this page is turned off for this playlist until then.
               </InlineAlert>
             )}

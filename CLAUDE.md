@@ -582,7 +582,7 @@ read that came back short of the playlist's own `track_count` would silently
 delete the difference. A mismatch throws `PlaylistReadIncompleteError`:
 bulk-remove reports that playlist as an error row and continues; bulk-add,
 `PUT /api/playlists/:id`, merge-into-existing, from-likes-into-existing and the
-followed-likes append (`createOrAppendTrackIds`) return 409. Playlists with no
+followed-likes append (`createOrAppendTrackIds`) and transfer-track return 409. Playlists with no
 `track_count` are not guarded.
 
 **Rewrite reads are all-access, because SoundCloud's default hides blocked
@@ -608,10 +608,16 @@ is in neither `tracks` nor `remove` is **undeclared** and the write is refused
 with 409 `{ code: 'PLAYLIST_OUT_OF_SYNC', error, undeclared }`. A short read is
 409 `{ code: 'PLAYLIST_READ_INCOMPLETE', error, seen, expected }`. Ids in
 `tracks` the server did not read are appends and allowed; ids in `remove` it did
-not read are ignored. Comparison is by id set. The five pages that PUT
+not read are ignored. The comparison is count-aware: if the server read more
+copies of an id than `tracks` carries and the id is not in `remove`, it is
+undeclared (an id in both lists is a 400, so deliberately dropping one copy of
+a duplicate is not expressible and is simply refused). The five pages that PUT
 (health-check, activity-to-playlist, recently-played, downloads,
-playlist-modifier) read with `allAccess` and send `remove`; they show the
-server's `error` text via `readApiErrorMessage`.
+playlist-modifier) read with `allAccess` and show the server's `error` text via
+`readApiErrorMessage`. health-check, downloads and playlist-modifier send
+`remove`; activity-to-playlist and recently-played are append-only and send
+none. On a 409 the removing pages invalidate the playlist caches so "reload and
+try again" fetches fresh data.
 
 **Both `/api/library/audit` and `/api/playlists/search-tracks` page by `offset`
 against the cached playlist list, not against SoundCloud.** `/me/playlists`

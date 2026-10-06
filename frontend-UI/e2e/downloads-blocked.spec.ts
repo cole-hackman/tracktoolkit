@@ -71,3 +71,32 @@ test("a blocked track has no download control, says Blocked, and is not counted"
   );
   expect(overflow).toBeLessThanOrEqual(0);
 });
+
+test("a playlist whose only tracks are blocked and not downloadable keeps the empty state", async ({ page }) => {
+  await mockApi(page);
+  await page.route(
+    (url) => url.pathname === "/api/playlists/1",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...FAKE_PLAYLIST_DETAIL,
+          track_count: 1,
+          tracks: [
+            {
+              ...track(900, "Locked Away Track", "blocked"),
+              downloadable: false,
+              download_url: undefined,
+            },
+          ],
+        }),
+      }),
+  );
+
+  await page.goto("/downloads/");
+  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+
+  await expect(page.getByText("No downloadable tracks found")).toBeVisible();
+  await expect(page.locator("main").getByText("Locked Away Track")).toHaveCount(0);
+});
