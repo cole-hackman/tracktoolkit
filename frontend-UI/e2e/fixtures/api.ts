@@ -322,6 +322,75 @@ const FAKE_GROWTH_STATS = {
 };
 
 /**
+ * `POST /api/growth/discover`. Answers by whether the body carries a `genre`,
+ * so one handler serves both the focused scan and "scan again with any genre".
+ */
+function growthDiscoverResponse(genre: string | undefined) {
+  const user = (id: number, name: string) => ({
+    id,
+    username: name,
+    avatar_url: "",
+    permalink_url: `https://soundcloud.com/${name}`,
+    followers_count: 420,
+    followings_count: 300,
+    track_count: 6,
+  });
+  const base = {
+    inspirationUsers: 1,
+    candidatesScanned: 480,
+    afterDedup: 350,
+    seedGenres: ["house", "deep house"],
+    durationMs: 21000,
+    sampleCapPerSeed: 1000,
+    sampledFollowers: false,
+    partial: false,
+  };
+  if (genre) {
+    return {
+      suggestions: [
+        {
+          user: user(7001, "housefocus-one"),
+          score: 78,
+          scoreLabel: "high",
+          signals: { followBackRatio: 0.7, sharedInspirationCount: 1, isRelatedArtist: true, isCreator: true, genreAffinity: 1 },
+          genres: ["deep house", "house", "groove"],
+          suggestedTrack: null,
+        },
+        {
+          user: user(7002, "housefocus-two"),
+          score: 61,
+          scoreLabel: "medium",
+          signals: { followBackRatio: 1.1, sharedInspirationCount: 1, isRelatedArtist: false, isCreator: true, genreAffinity: 0.5 },
+          genres: ["tech house"],
+          suggestedTrack: null,
+        },
+      ],
+      stats: {
+        ...base,
+        suggestionsReturned: 2,
+        genreFocus: genre,
+        genreChecked: 150,
+        genreMatched: 23,
+        genreUnknown: 4,
+      },
+    };
+  }
+  return {
+    suggestions: [
+      {
+        user: user(7003, "anygenre-one"),
+        score: 55,
+        scoreLabel: "medium",
+        signals: { followBackRatio: 0.9, sharedInspirationCount: 1, isRelatedArtist: false, isCreator: true, genreAffinity: 0.5 },
+        genres: ["country"],
+        suggestedTrack: null,
+      },
+    ],
+    stats: { ...base, suggestionsReturned: 1, genreFocus: null, genreChecked: null, genreMatched: null, genreUnknown: null },
+  };
+}
+
+/**
  * `POST /api/resolve?v=2` — the result state of /link-resolver/, which is the
  * half of that page with the layout, the copy buttons and the embed in it.
  * Without this the page only ever shows its empty form.
@@ -756,6 +825,10 @@ export async function mockApi(page: Page): Promise<void> {
     }
     if (method === "GET" && path === "/api/growth/analytics") {
       return route.fulfill(json(FAKE_GROWTH_ANALYTICS));
+    }
+    if (method === "POST" && path === "/api/growth/discover") {
+      const body = route.request().postDataJSON() as { genre?: string } | null;
+      return route.fulfill(json(growthDiscoverResponse(body?.genre)));
     }
     if (method === "POST" && path === "/api/resolve/batch") {
       return route.fulfill(json(FAKE_RESOLVE_BATCH));

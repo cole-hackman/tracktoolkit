@@ -172,6 +172,21 @@ All `/growth/*` routes are `authenticateUser`; the write-heavy ones also carry
 `heavyOperationRateLimiter`. Follow caps are enforced server-side (50/24h +
 30-minute session cooldown) regardless of what the client requests.
 
+**Genre focus** (`genre` on `POST /growth/discover`, one of
+`GENRE_FOCUS_SLUGS` in `server/lib/genres.js`; the client list is
+`frontend-UI/src/lib/genres.ts` and `tests/genre-list-parity.test.js` fails if
+they drift). SoundCloud users have no genre field, so a candidate's genre is
+only known after its `/users/:id/tracks` lookup. A focus therefore widens that
+lookup from `limit` (default 50) to the top `GENRE_FOCUS_LOOKUP_MAX` (150)
+candidates, keeps those whose recent `genre`/`tag_list` match the slug or an
+alias as a whole word (`deep-house` matches `house`, `housewife` does not),
+and returns the top `limit`. Candidates whose genre could not be established
+(deadline, failed lookup, no tracks, no genre metadata) are **excluded and
+counted** in `stats.genreUnknown`, never guessed. Cost: up to +100 track calls
+per scan inside the same 45 s budget; it is still one of the 20/hour discover
+budget, and follow caps are unchanged. With no focus the call count is
+identical to before. `genre` validates `.isString()` first (array bypass).
+
 ### Feedback (`routes/feedback.js`)
 
 The live in-app "Send feedback" form. Login-required by decision, so every row
