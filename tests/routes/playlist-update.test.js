@@ -129,6 +129,32 @@ describe('PUT /api/playlists/:id', () => {
     expect(addTracksToPlaylist.mock.calls[0][3]).toEqual([10, 11, 12, 13, 14, 99]);
   });
 
+  test('string ids are normalised: tracks ["10","11"] with remove ["13"] reaches SoundCloud as numbers', async () => {
+    installPlaylists({ 1: { tracks: [t(10), t(11), t(13)] } });
+    const res = await request(app).put('/api/playlists/1').send({ tracks: ['10', '11'], remove: ['13'] });
+
+    expect(res.status).toBe(200);
+    expect(addTracksToPlaylist.mock.calls[0][3]).toEqual([10, 11]);
+  });
+
+  test('dropping one copy of a duplicated track is refused with PLAYLIST_OUT_OF_SYNC', async () => {
+    installPlaylists({ 1: { tracks: [t(10), t(11), t(10)] } });
+    const res = await request(app).put('/api/playlists/1').send({ tracks: [10, 11] });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('PLAYLIST_OUT_OF_SYNC');
+    expect(res.body.undeclared).toBe(1);
+    expect(addTracksToPlaylist).not.toHaveBeenCalled();
+  });
+
+  test('reordering a playlist that holds a duplicate is allowed', async () => {
+    installPlaylists({ 1: { tracks: [t(10), t(11), t(10)] } });
+    const res = await request(app).put('/api/playlists/1').send({ tracks: [11, 10, 10] });
+
+    expect(res.status).toBe(200);
+    expect(addTracksToPlaylist.mock.calls[0][3]).toEqual([11, 10, 10]);
+  });
+
   test('ids in remove that the server never read are ignored', async () => {
     steve();
     const res = await request(app).put('/api/playlists/1').send({ tracks: [10, 11, 12], remove: [13, 14, 555] });

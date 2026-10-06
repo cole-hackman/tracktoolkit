@@ -424,7 +424,10 @@ router.post('/playlists/tracks/bulk-remove', authenticateUser, heavyOperationRat
           removed: currentIds.length - nextIds.length,
         };
       } catch (error) {
-        logger.warn('Bulk remove read failed for playlist:', { playlistId, error: safeError(error) });
+        // A short read is already logged by readPlaylistForRewrite.
+        if (!(error instanceof PlaylistReadIncompleteError)) {
+          logger.warn('Bulk remove read failed for playlist:', { playlistId, error: safeError(error) });
+        }
         return {
           playlistId,
           error: error instanceof PlaylistReadIncompleteError
@@ -938,7 +941,18 @@ router.get('/playlists/:id', authenticateUser, validateGetPlaylist, async (req, 
 /**
  * PUT /api/playlists/:id
  * Update playlist order/title by sending full track list
- * Body: { tracks: number[]; title?: string }
+ * Body: { tracks: number[]; remove?: number[]; title?: string }
+ *
+ * `remove` is the ids the client is deliberately taking out. A track may leave
+ * the playlist only if the client named it, so after the guarded all-access
+ * read the write is refused with 409 when:
+ *   - the read is short of track_count:
+ *     { code: 'PLAYLIST_READ_INCOMPLETE', error, seen, expected }
+ *   - the server read more copies of an id than `tracks` carries and the id is
+ *     not in `remove` (counts matter, so a dropped duplicate copy is refused):
+ *     { code: 'PLAYLIST_OUT_OF_SYNC', error, undeclared }
+ * Ids in `tracks` the server did not read are appends; ids in `remove` it did
+ * not read are ignored. An id in both lists is a 400.
  */
 router.put('/playlists/:id', authenticateUser, validateUpdatePlaylist, async (req, res) => {
   try {
@@ -975,8 +989,18 @@ router.put('/playlists/:id', authenticateUser, validateUpdatePlaylist, async (re
     // (it changed on SoundCloud, or the page's read was narrower than ours),
     // and writing the list back would delete it. Ids in `tracks` the server
     // did not read are appends; ids in `remove` it did not read are ignored.
-    const declared = new Set([...tracks, ...remove]);
-    const undeclared = new Set(serverIds.filter((trackId) => !declared.has(trackId))).size;
+    // Count-aware: a playlist can hold the same track twice, and writing back
+    // one copy would delete the other.
+    const removeSet = new Set(remove);
+    const clientCounts = new Map();
+    for (const trackId of tracks) clientCounts.set(trackId, (clientCounts.get(trackId) || 0) + 1);
+    const serverCounts = new Map();
+    for (const trackId of serverIds) serverCounts.set(trackId, (serverCounts.get(trackId) || 0) + 1);
+    let undeclared = 0;
+    for (const [trackId, serverCount] of serverCounts) {
+      if (removeSet.has(trackId)) continue;
+      undeclared += Math.max(0, serverCount - (clientCounts.get(trackId) || 0));
+    }
     if (undeclared > 0) {
       return res.status(409).json({
         code: 'PLAYLIST_OUT_OF_SYNC',
