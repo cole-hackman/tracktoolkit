@@ -28,6 +28,8 @@ export interface PlaylistDetail {
   id: number;
   title: string;
   tracks: Array<{ id: number } & Record<string, unknown>>;
+  /** SoundCloud's own count. Can exceed `tracks.length` (deleted/private entries). */
+  track_count?: number;
 }
 
 export interface DashboardSummary {
@@ -37,11 +39,24 @@ export interface DashboardSummary {
   playlist_count: number;
 }
 
+/**
+ * `allAccess` also returns blocked tracks (`?access=all`). Pages that write a
+ * playlist's list back use it so what the user sees is what the server will
+ * compare their write against. It is a separate cache entry; the key still
+ * starts with ["playlist-detail", id], so invalidatePlaylistCaches reaches it.
+ */
+export interface PlaylistDetailOptions {
+  allAccess?: boolean;
+}
+
 export const queryKeys = {
   me: () => ["me"] as const,
   dashboardSummary: () => ["dashboard-summary"] as const,
   playlists: () => ["playlists"] as const,
-  playlistDetail: (playlistId: number) => ["playlist-detail", playlistId] as const,
+  playlistDetail: (playlistId: number, options?: PlaylistDetailOptions) =>
+    options?.allAccess
+      ? (["playlist-detail", playlistId, "all"] as const)
+      : (["playlist-detail", playlistId] as const),
   likes: () => ["likes"] as const,
   likesPaged: (cursor: string | null, limit = 50) => ["likes-paged", { cursor, limit }] as const,
   followings: () => ["followings"] as const,
@@ -99,10 +114,11 @@ export function playlistsQueryOptions() {
   };
 }
 
-export function playlistDetailQueryOptions(playlistId: number) {
+export function playlistDetailQueryOptions(playlistId: number, detail?: PlaylistDetailOptions) {
+  const suffix = detail?.allAccess ? "?access=all" : "";
   return {
-    queryKey: queryKeys.playlistDetail(playlistId),
-    queryFn: () => apiFetchJson<PlaylistDetail>(`/api/playlists/${playlistId}`),
+    queryKey: queryKeys.playlistDetail(playlistId, detail),
+    queryFn: () => apiFetchJson<PlaylistDetail>(`/api/playlists/${playlistId}${suffix}`),
     enabled: playlistId > 0,
     ...timings.playlistDetail,
   };
@@ -241,9 +257,10 @@ export function usePlaylistsQuery(options?: QueryOverrides<CollectionResponse<Pl
 
 export function usePlaylistDetailQuery(
   playlistId: number,
-  options?: QueryOverrides<PlaylistDetail>,
+  options?: QueryOverrides<PlaylistDetail> & PlaylistDetailOptions,
 ) {
-  return useQuery({ ...playlistDetailQueryOptions(playlistId), ...options });
+  const { allAccess, ...overrides } = options ?? {};
+  return useQuery({ ...playlistDetailQueryOptions(playlistId, { allAccess }), ...overrides });
 }
 
 export function useLikesQuery(options?: QueryOverrides<CollectionResponse<Record<string, unknown>>>) {

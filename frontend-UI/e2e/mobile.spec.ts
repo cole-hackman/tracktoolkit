@@ -474,7 +474,9 @@ test("no clipped controls with a long title: /downloads/", async ({ page }, test
 
   await mockApi(page);
   // Registered after `mockApi`, so it wins for this one path.
-  await page.route("**/api/playlists/1", (route) =>
+  // A pathname predicate, not a glob: the page now reads `?access=all`, and a
+  // glob without a trailing `*` does not match a URL with a query string.
+  await page.route((url) => url.pathname === "/api/playlists/1", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",

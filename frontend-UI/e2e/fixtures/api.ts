@@ -138,7 +138,7 @@ const FAKE_PLAYLIST_DETAIL = {
   ],
 };
 
-export { LONG_TRACK_TITLE };
+export { LONG_TRACK_TITLE, FAKE_PLAYLIST_DETAIL };
 
 const FAKE_LIKES_PAGED = {
   collection: Array.from({ length: 5 }, (_, i) => ({

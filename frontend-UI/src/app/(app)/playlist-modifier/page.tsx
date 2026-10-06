@@ -36,7 +36,7 @@ import {
   Select,
   Skeleton,
 } from "@/components/ui";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, readApiErrorMessage } from "@/lib/api";
 import {
   invalidatePlaylistCaches,
   playlistDetailQueryOptions,
@@ -202,6 +202,9 @@ export default function PlaylistModifierPage() {
   );
   const selectedPlaylistQuery = usePlaylistDetailQuery(selectedPlaylist?.id ?? 0, {
     enabled: selectedPlaylist != null,
+    // Blocked tracks must be in the list: the server refuses a save that
+    // would drop a track this page did not explicitly remove.
+    allAccess: true,
   });
   const likesQuery = useLikesQuery({ enabled: isLikedTracksView });
   const loading = playlistsQuery.isLoading;
@@ -479,16 +482,30 @@ export default function PlaylistModifierPage() {
     setShowSaveConfirm(false);
     setSaving(true);
     try {
+      // Everything the page loaded that is no longer in the edited list was
+      // removed on purpose; the server only lets a track go if it is named.
+      const editedIds = tracks.map((t) => t.id);
+      const kept = new Set(editedIds);
+      const removedIds = [
+        ...new Set(
+          asArray<Track>(selectedPlaylistQuery.data?.tracks)
+            .map((t) => t.id)
+            .filter((id) => !kept.has(id)),
+        ),
+      ];
       const response = await apiFetch(`/api/playlists/${selectedPlaylist.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tracks: tracks.map((t) => t.id) }),
+        body: JSON.stringify({ tracks: editedIds, remove: removedIds }),
       });
       if (response.ok) {
         await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
         setBanner({ tone: "success", text: "Playlist saved successfully." });
       } else {
-        setBanner({ tone: "error", text: "Failed to save playlist." });
+        setBanner({
+          tone: "error",
+          text: await readApiErrorMessage(response, "Failed to save playlist."),
+        });
       }
     } catch (error) {
       console.error("Error saving playlist:", error);

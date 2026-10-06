@@ -92,6 +92,26 @@ export function isApiError(error: unknown): error is ApiError {
   return error instanceof Error && typeof (error as ApiError).status === "number";
 }
 
+/** The server's `{ error }` string when the body has one, else `fallback`. */
+function errorMessageFromBody(data: unknown, fallback: string): string {
+  const error = (data as { error?: unknown } | null | undefined)?.error;
+  return typeof error === "string" && error.trim() !== "" ? error : fallback;
+}
+
+/**
+ * The text to show for a non-OK response: the server's own `error` string
+ * (the 409 refusals on playlist writes carry a reason a user can act on),
+ * or `fallback` when the body is not JSON or has no `error`. Consumes the
+ * response body.
+ */
+export async function readApiErrorMessage(
+  response: Response,
+  fallback: string,
+): Promise<string> {
+  const data = await response.json().catch(() => null);
+  return errorMessageFromBody(data, fallback);
+}
+
 export async function apiFetchJson<T>(
   path: string,
   init?: RequestInit,
@@ -100,10 +120,10 @@ export async function apiFetchJson<T>(
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const message =
-      typeof data?.error === "string"
-        ? data.error
-        : `Request failed with status ${response.status}`;
+    const message = errorMessageFromBody(
+      data,
+      `Request failed with status ${response.status}`,
+    );
     const error = new Error(message) as ApiError;
     error.status = response.status;
     if (Array.isArray(data?.details)) {

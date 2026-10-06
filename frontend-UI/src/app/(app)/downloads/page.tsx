@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { ArrowLeft, Download, Heart, ListMusic, Trash2, X, CheckSquare, Search, Zap } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, readApiErrorMessage } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   Button,
@@ -112,6 +112,9 @@ export default function DownloadsPage() {
   const likesQuery = useLikesQuery({ enabled: isLikedSource });
   const playlistDetailQuery = usePlaylistDetailQuery(selectedSource?.id ?? 0, {
     enabled: selectedSource != null && !isLikedSource,
+    // Blocked tracks must be in the list or they can't be seen, removed, or
+    // kept: the server refuses a write that drops one nobody named.
+    allAccess: true,
   });
 
   const loading = playlistsQuery.isLoading;
@@ -244,7 +247,7 @@ export default function DownloadsPage() {
       const response = await apiFetch(`/api/playlists/${selectedSource.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tracks: remainingIds }),
+        body: JSON.stringify({ tracks: remainingIds, remove: [...selectedTrackIds] }),
       });
 
       if (response.ok) {
@@ -257,7 +260,9 @@ export default function DownloadsPage() {
         setSelectionMode(false);
         await invalidatePlaylistCaches(queryClient, selectedSource.id);
       } else {
-        setInlineError("Failed to update playlist. Please try again.");
+        setInlineError(
+          await readApiErrorMessage(response, "Failed to update playlist. Please try again."),
+        );
       }
     } catch (error) {
       console.error("Failed to remove tracks:", error);

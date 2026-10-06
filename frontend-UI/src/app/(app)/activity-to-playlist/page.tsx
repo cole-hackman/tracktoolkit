@@ -19,7 +19,7 @@ import {
   TrackRow,
   useAnnounce,
 } from "@/components/ui";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, readApiErrorMessage } from "@/lib/api";
 import {
   invalidatePlaylistCaches,
   useActivitiesQuery,
@@ -92,6 +92,8 @@ export default function ActivityToPlaylistPage() {
   const playlistsQuery = usePlaylistsQuery({ enabled: mode === "existing" });
   const selectedPlaylistQuery = usePlaylistDetailQuery(selectedPlaylistId ?? 0, {
     enabled: mode === "existing" && selectedPlaylistId != null,
+    // Include blocked tracks so the list sent back is the whole playlist.
+    allAccess: true,
   });
   const activities = useMemo(
     () => asArray<Activity>(activitiesQuery.data?.collection),
@@ -209,7 +211,10 @@ export default function ActivityToPlaylistPage() {
             announce("Playlist saved", { assertive: true });
             setSelected(new Set());
           } else {
-            setNotice({ type: "error", text: "Failed to update playlist." });
+            setNotice({
+              type: "error",
+              text: await readApiErrorMessage(response, "Failed to update playlist."),
+            });
           }
         } else {
           setNotice({ type: "error", text: "Couldn’t load the selected playlist." });

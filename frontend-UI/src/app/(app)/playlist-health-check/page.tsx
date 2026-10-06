@@ -16,7 +16,7 @@ import {
   Skeleton,
   useAnnounce,
 } from "@/components/ui";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, readApiErrorMessage } from "@/lib/api";
 import {
   invalidatePlaylistCaches,
   usePlaylistDetailQuery,
@@ -57,6 +57,9 @@ export default function PlaylistHealthCheckPage() {
   const playlistsQuery = usePlaylistsQuery();
   const playlistDetailQuery = usePlaylistDetailQuery(selectedPlaylist?.id ?? 0, {
     enabled: selectedPlaylist != null,
+    // Blocked tracks are omitted from SoundCloud's default read, so without
+    // this they never appear here and cannot be removed.
+    allAccess: true,
   });
   const playlists = asArray<Playlist>(playlistsQuery.data?.collection);
   const loading = playlistsQuery.isLoading;
@@ -78,6 +81,16 @@ export default function PlaylistHealthCheckPage() {
       setTracks(asArray<Track>(playlistDetailQuery.data.tracks));
     }
   }, [playlistDetailQuery.data, playlistDetailQuery.isError]);
+
+  // SoundCloud counts entries it will not hand back at any access level
+  // (deleted or private). The server refuses to rewrite a playlist it cannot
+  // read in full, so a shortfall here means the removal would be refused.
+  const detailTrackCount = playlistDetailQuery.data?.track_count;
+  const detailReadCount = asArray<Track>(playlistDetailQuery.data?.tracks).length;
+  const unreadableCount =
+    typeof detailTrackCount === "number" && detailTrackCount > detailReadCount
+      ? detailTrackCount - detailReadCount
+      : 0;
 
   const selectPlaylist = (playlist: Playlist) => {
     setSelectedPlaylist(playlist);
@@ -148,7 +161,12 @@ export default function PlaylistHealthCheckPage() {
       const response = await apiFetch(`/api/playlists/${selectedPlaylist.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tracks: healthyTracks.map((t) => t.id) }),
+        body: JSON.stringify({
+          tracks: healthyTracks.map((t) => t.id),
+          // Declare every removal: the server refuses to drop a track the
+          // page did not name.
+          remove: tracks.filter((t) => !isHealthy(t)).map((t) => t.id),
+        }),
       });
       if (response.ok) {
         await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
@@ -159,7 +177,10 @@ export default function PlaylistHealthCheckPage() {
       } else {
         // The error notice renders as `InlineAlert variant="error"`, which is
         // `role="alert"` — announcing as well would say it twice.
-        setNotice({ type: "error", text: "Failed to update playlist." });
+        setNotice({
+          type: "error",
+          text: await readApiErrorMessage(response, "Failed to update playlist."),
+        });
       }
     } catch (error) {
       console.error("Error updating playlist:", error);
@@ -282,7 +303,7 @@ export default function PlaylistHealthCheckPage() {
               {issueCount > 0 && (
                 <Button
                   onClick={removeDeadTracks}
-                  disabled={saving}
+                  disabled={saving || unreadableCount > 0}
                   variant="destructive"
                 >
                   {saving ? (
@@ -294,6 +315,14 @@ export default function PlaylistHealthCheckPage() {
                 </Button>
               )}
             </div>
+
+            {unreadableCount > 0 && !loadingTracks && (
+              <InlineAlert variant="warning" className="mb-6">
+                SoundCloud returned {detailReadCount} of {detailTrackCount} tracks; the other{" "}
+                {unreadableCount} can&rsquo;t be read here, so remove them on SoundCloud.
+                Removing tracks from this page is turned off for this playlist until then.
+              </InlineAlert>
+            )}
 
             {/* Summary bar */}
             {!loadingTracks && tracks.length > 0 && (
