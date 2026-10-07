@@ -147,6 +147,22 @@ describe('PUT /api/playlists/:id', () => {
     expect(addTracksToPlaylist).not.toHaveBeenCalled();
   });
 
+  test('a duplicate removed by id through remove is allowed', async () => {
+    installPlaylists({ 1: { tracks: [t(10), t(11), t(10)] } });
+    const res = await request(app).put('/api/playlists/1').send({ tracks: [11], remove: [10] });
+
+    expect(res.status).toBe(200);
+    expect(addTracksToPlaylist.mock.calls[0][3]).toEqual([11]);
+  });
+
+  test('appending an extra copy of a track already present is allowed', async () => {
+    installPlaylists({ 1: { tracks: [t(10), t(11)] } });
+    const res = await request(app).put('/api/playlists/1').send({ tracks: [10, 11, 10] });
+
+    expect(res.status).toBe(200);
+    expect(addTracksToPlaylist.mock.calls[0][3]).toEqual([10, 11, 10]);
+  });
+
   test('reordering a playlist that holds a duplicate is allowed', async () => {
     installPlaylists({ 1: { tracks: [t(10), t(11), t(10)] } });
     const res = await request(app).put('/api/playlists/1').send({ tracks: [11, 10, 10] });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Stethoscope, Music, AlertTriangle, CheckCircle, Trash2 } from "lucide-react";
 import {
@@ -54,6 +54,9 @@ export default function PlaylistHealthCheckPage() {
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
+  // Set by a successful save to the scan announcement it makes redundant.
+  const postSaveScanMessage = useRef<string | null>(null);
+
   const playlistsQuery = usePlaylistsQuery();
   const playlistDetailQuery = usePlaylistDetailQuery(selectedPlaylist?.id ?? 0, {
     enabled: selectedPlaylist != null,
@@ -98,6 +101,7 @@ export default function PlaylistHealthCheckPage() {
   const unreadableCount = readMismatch ? Math.abs(detailTrackCount - detailReadCount) : 0;
 
   const selectPlaylist = (playlist: Playlist) => {
+    postSaveScanMessage.current = null;
     setSelectedPlaylist(playlist);
     setFilter("all");
   };
@@ -141,7 +145,14 @@ export default function PlaylistHealthCheckPage() {
   // gets spoken — otherwise the whole outcome is a silent repaint.
   useEffect(() => {
     if (loadingTracks || tracks.length === 0) return;
-    announce(`${healthyCount} of ${tracks.length} tracks healthy — ${verdict}.`);
+    const message = `${healthyCount} of ${tracks.length} tracks healthy — ${verdict}.`;
+    // Right after a save the combined "Removed N… M of M healthy" message has
+    // already been spoken; a second one would overwrite it.
+    if (message === postSaveScanMessage.current) {
+      postSaveScanMessage.current = null;
+      return;
+    }
+    announce(message);
   }, [loadingTracks, tracks.length, healthyCount, verdict, announce]);
 
   const filteredTracks = useMemo(() => {
@@ -185,8 +196,14 @@ export default function PlaylistHealthCheckPage() {
         await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
         setTracks(healthyTracks);
         const done = `Removed ${removedCount} unavailable track${removedCount === 1 ? "" : "s"}.`;
-        // The success alert is role=status, so it is already spoken.
+        const remaining = healthyTracks.length;
+        // One combined announcement. A status region that mounts with its
+        // text already in it is not reliably spoken, and the scan effect's
+        // own "M of M healthy" would overwrite a separate one — so that
+        // message is suppressed for this save.
+        postSaveScanMessage.current = `${remaining} of ${remaining} tracks healthy — Healthy.`;
         setNotice({ type: "success", text: done });
+        announce(`${done} ${postSaveScanMessage.current}`);
       } else {
         // A 409 means the server's view differs from this page's: refetch so
         // "reload and try again" has fresh data to work with.
@@ -320,8 +337,16 @@ export default function PlaylistHealthCheckPage() {
               </div>
               {issueCount > 0 && (
                 <Button
-                  onClick={removeDeadTracks}
-                  disabled={saving || unreadableCount > 0}
+                  onClick={() => {
+                    // aria-disabled, not `disabled`: the button stays in the
+                    // tab order so its explanation can be reached and read.
+                    if (unreadableCount > 0) return;
+                    removeDeadTracks();
+                  }}
+                  disabled={saving}
+                  aria-disabled={unreadableCount > 0 ? true : undefined}
+                  aria-describedby={unreadableCount > 0 ? "health-shortfall" : undefined}
+                  className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                   variant="destructive"
                 >
                   {saving ? (
@@ -335,7 +360,7 @@ export default function PlaylistHealthCheckPage() {
             </div>
 
             {unreadableCount > 0 && !loadingTracks && (
-              <InlineAlert variant="warning" className="mb-6">
+              <InlineAlert id="health-shortfall" variant="warning" className="mb-6">
                 {detailReadCount < (detailTrackCount ?? 0) ? (
                   <>
                     SoundCloud returned {detailReadCount} of {detailTrackCount} tracks; the other{" "}

@@ -92,7 +92,11 @@ export function isApiError(error: unknown): error is ApiError {
   return error instanceof Error && typeof (error as ApiError).status === "number";
 }
 
-/** The server's `{ error }` string when the body has one, else `fallback`. */
+/**
+ * The text to show for an error body: `details[0].message` when a validation
+ * payload carries one (it is the actionable reason, where `error` is just
+ * "Validation failed"), else the server's `{ error }` string, else `fallback`.
+ */
 function errorMessageFromBody(data: unknown, fallback: string): string {
   const body = data as { error?: unknown; details?: unknown } | null | undefined;
   // A validation 400 carries a generic "Validation failed" plus the reason a
@@ -106,10 +110,10 @@ function errorMessageFromBody(data: unknown, fallback: string): string {
 }
 
 /**
- * The text to show for a non-OK response: the server's own `error` string
- * (the 409 refusals on playlist writes carry a reason a user can act on),
- * or `fallback` when the body is not JSON or has no `error`. Consumes the
- * response body.
+ * The text to show for a non-OK response: a validation `details[0].message`
+ * if there is one, otherwise the server's own `error` string (the 409 refusals
+ * on playlist writes carry a reason a user can act on), or `fallback` when the
+ * body is not JSON or has neither. Consumes the response body.
  */
 export async function readApiErrorMessage(
   response: Response,

@@ -82,6 +82,9 @@ test.describe("playlist health check: blocked tracks", () => {
     await page.getByRole("button", { name: "Remove", exact: true }).click();
 
     await expect(page.getByText("Removed 2 unavailable tracks.").first()).toBeVisible();
+    await expect(page.locator("#app-live-region")).toHaveText(
+      "Removed 2 unavailable tracks. 4 of 4 tracks healthy — Healthy.",
+    );
 
     expect(seen.putBodies).toHaveLength(1);
     const [put] = seen.putBodies;
@@ -170,7 +173,18 @@ test.describe("playlist health check: blocked tracks", () => {
     const alert = page.getByRole("status").filter({ hasText: "SoundCloud returned 6 of 8 tracks" });
     await expect(alert).toBeVisible();
     await expect(alert).toContainText("remove them on SoundCloud");
-    await expect(page.getByRole("button", { name: /Remove 2 Dead Tracks/ })).toBeDisabled();
+    const removeButton = page.getByRole("button", { name: /Remove 2 Dead Tracks/ });
+    // Unavailable but still reachable: focusable, and described by the alert.
+    await expect(removeButton).toHaveAttribute("aria-disabled", "true");
+    await expect(removeButton).not.toHaveAttribute("disabled");
+    await expect(removeButton).toHaveAttribute("aria-describedby", "health-shortfall");
+    await expect(page.locator("#health-shortfall")).toContainText("SoundCloud returned 6 of 8 tracks");
+    await removeButton.focus();
+    await expect(removeButton).toBeFocused();
+    // Playwright treats aria-disabled as not actionable; force past that to
+    // prove the click guard really does nothing.
+    await removeButton.click({ force: true });
+    await expect(page.getByRole("button", { name: "Remove", exact: true })).toHaveCount(0);
     expect(seen.putBodies).toHaveLength(0);
 
     await page.mouse.move(0, 0);

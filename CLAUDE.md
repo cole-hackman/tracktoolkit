@@ -581,9 +581,9 @@ list, and `extractOrderedTrackIds` drops entries whose id is unusable — so a
 read that came back short of the playlist's own `track_count` would silently
 delete the difference. A mismatch throws `PlaylistReadIncompleteError`:
 bulk-remove reports that playlist as an error row and continues; bulk-add,
-`PUT /api/playlists/:id`, merge-into-existing, from-likes-into-existing and the
-followed-likes append (`createOrAppendTrackIds`) and transfer-track return 409. Playlists with no
-`track_count` are not guarded.
+`PUT /api/playlists/:id`, merge-into-existing, from-likes-into-existing, the
+followed-likes append (`createOrAppendTrackIds`) and transfer-track return 409.
+Playlists with no `track_count` are not guarded.
 
 **Rewrite reads are all-access, because SoundCloud's default hides blocked
 tracks.** `GET /playlists/{id}` defaults `access` to `playable,preview`, so a
@@ -616,7 +616,7 @@ a duplicate is not expressible and is simply refused). The five pages that PUT
 playlist-modifier) read with `allAccess` and show the server's `error` text via
 `readApiErrorMessage`. health-check, downloads and playlist-modifier send
 `remove`; activity-to-playlist and recently-played are append-only and send
-none. On a 409 the removing pages invalidate the playlist caches so "reload and
+none. On a 409 every one of these pages invalidates the playlist caches so "reload and
 try again" fetches fresh data.
 
 **Both `/api/library/audit` and `/api/playlists/search-tracks` page by `offset`

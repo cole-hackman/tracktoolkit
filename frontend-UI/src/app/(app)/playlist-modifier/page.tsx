@@ -261,7 +261,9 @@ export default function PlaylistModifierPage() {
   );
 
   useEffect(() => {
-    if (!banner) return;
+    // Errors stay until dismissed: they say what to do next, and a 9 s timer
+    // can remove one before it has been read.
+    if (!banner || banner.tone === "error") return;
     const t = window.setTimeout(() => setBanner(null), 9000);
     return () => clearTimeout(t);
   }, [banner]);
@@ -510,7 +512,10 @@ export default function PlaylistModifierPage() {
         }
         setBanner({
           tone: "error",
-          text: await readApiErrorMessage(response, "Failed to save playlist."),
+          text:
+            response.status === 409
+              ? "This playlist changed on SoundCloud and has been reloaded. Your edits were not saved — make them again."
+              : await readApiErrorMessage(response, "Failed to save playlist."),
         });
       }
     } catch (error) {

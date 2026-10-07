@@ -167,6 +167,11 @@ export default function RecentlyPlayedPage() {
             announce("Playlist saved", { assertive: true });
             setSelected(new Set());
           } else {
+            // A 409 means the server's view differs from this page's: refetch
+            // so "reload and try again" has fresh data to work with.
+          if (response.status === 409) {
+            await invalidatePlaylistCaches(queryClient, selectedPlaylistId);
+          }
             setNotice({
               type: "error",
               text: await readApiErrorMessage(response, "Failed to update playlist."),
