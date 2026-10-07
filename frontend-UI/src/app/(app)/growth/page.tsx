@@ -602,6 +602,28 @@ export default function GrowthPage() {
   // with nothing checked (e.g. no candidates at all) the genre is not to blame.
   const focusBlamesGenre = Boolean(discoveryStats?.genreFocus) && (discoveryStats?.genreChecked ?? 0) > 0;
 
+  // One notice for the time budget, whichever combination of crawl and lookups
+  // it cut short. Nothing here may claim the results are "fully scored".
+  const budgetNotice = (() => {
+    const st = discoveryStats;
+    if (!st) return null;
+    const crawlCut = st.crawlPartial ?? st.partial ?? false;
+    const focused = Boolean(st.genreFocus);
+    const n = (focused ? st.genreSkipped : st.lookupsSkipped) ?? 0;
+    const lookupCut =
+      n > 0
+        ? focused
+          ? `${n} ${n === 1 ? "candidate was" : "candidates were"} not checked for genre and ${n === 1 ? "was" : "were"} left out`
+          : `${n} ${n === 1 ? "suggestion wasn't" : "suggestions weren't"} scored for genre or recent tracks — those details are missing, and they were ranked without genre fit`
+        : null;
+    if (crawlCut && lookupCut) {
+      return `The scan hit its time budget: results come from a partial crawl, and ${lookupCut}.`;
+    }
+    if (crawlCut) return "The scan hit its time budget, so results come from a partial crawl.";
+    if (lookupCut) return `The scan hit its time budget: ${lookupCut}.`;
+    return null;
+  })();
+
   const noneOf = (n: number | null | undefined) => (n === 1 ? "The 1 account" : `None of the ${n ?? 0} accounts`);
   const emptyDescription = (() => {
     const st = discoveryStats;
@@ -971,19 +993,9 @@ export default function GrowthPage() {
                         Large seeds were sampled: most recent {(discoveryStats.sampleCapPerSeed ?? 1000).toLocaleString()} followers per seed — the slice most likely to still be active.
                       </p>
                     )}
-                    {(discoveryStats?.crawlPartial ?? discoveryStats?.partial) && (
-                      <p className="text-xs text-warning-text mt-1">
-                        The scan hit its time budget, so results come from a partial crawl. Everything shown is fully scored and ready to use.
-                      </p>
-                    )}
-                    {!discoveryStats?.genreFocus && (discoveryStats?.lookupsSkipped ?? 0) > 0 && (
-                      <p className="text-xs text-warning-text mt-1">
-                        {discoveryStats?.lookupsSkipped} {discoveryStats?.lookupsSkipped === 1 ? "suggestion wasn't" : "suggestions weren't"} fully scored before the time budget ran out — their genre and recent-track details may be missing.
-                      </p>
-                    )}
-                    {(discoveryStats?.genreSkipped ?? 0) > 0 && (
-                      <p className="text-xs text-warning-text mt-1">
-                        The scan hit its time budget before every candidate could be checked for genre, so {discoveryStats?.genreSkipped} {discoveryStats?.genreSkipped === 1 ? "was" : "were"} left out. Everything shown is fully scored and ready to use.
+                    {budgetNotice && (
+                      <p data-testid="budget-notice" className="text-xs text-warning-text mt-1">
+                        {budgetNotice}
                       </p>
                     )}
                     {discoveryStats?.genreFocus && (

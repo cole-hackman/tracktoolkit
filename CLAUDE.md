@@ -185,8 +185,9 @@ are **excluded and counted**, never guessed. `stats` separates `genreChecked`
 (lookups attempted), `genreUnknown` (attempted, no usable genre: failed, no
 tracks, no genre metadata) and `genreSkipped` (the deadline passed before the
 lookup ran). `stats.lookupsSkipped` is the same skipped count with or without a
-focus, and `stats.crawlPartial` reports a cut-short seed crawl separately
-(`partial` is kept for compatibility).
+focus (with no focus, skipped candidates are still returned, with a neutral
+genre score), and `stats.crawlPartial` reports a cut-short seed crawl
+separately (`partial` is kept for compatibility).
 
 Cost: up to +100 track calls per scan inside the same 45 s budget; it is still
 one request against the shared 20/hour `heavyOperationRateLimiter` budget

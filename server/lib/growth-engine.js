@@ -379,10 +379,6 @@ export class GrowthEngine {
       };
     });
 
-    // With a focus keep only candidates whose fetched tracks match. A candidate
-    // whose genre could not be established is excluded and counted, never
-    // guessed. Skipped = the deadline passed before its lookup ran; unknown =
-    // the lookup ran but gave no genre (failed, no tracks, no metadata).
     // Candidates whose track lookup never ran because the deadline had passed.
     // Reported with or without a focus so an unfocused scan can warn too.
     const lookupsSkipped = results.filter((r) => r._genreSkipped).length;
@@ -391,6 +387,10 @@ export class GrowthEngine {
     let genreMatched = null;
     let genreUnknown = null;
     let genreSkipped = null;
+    // With a focus keep only candidates whose fetched tracks match. A candidate
+    // whose genre could not be established is excluded and counted, never
+    // guessed. Skipped = the deadline passed before its lookup ran; unknown =
+    // the lookup ran but gave no genre (failed, no tracks, no metadata).
     if (genre) {
       genreSkipped = lookupsSkipped;
       genreChecked = results.length - genreSkipped;

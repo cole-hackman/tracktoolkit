@@ -470,7 +470,8 @@ describe('GrowthEngine', () => {
         if (id === 1) return [{ id: 1, genre: 'House', tag_list: '' }];
         candidateCalls += 1;
         if (candidateCalls === 2) clock.setNow(clock.T + 10_000);
-        return [];
+        // the two lookups that ran return a track with a genre; the rest never run
+        return [{ id: id * 10, title: `t${id}`, genre: 'Techno', tag_list: '' }];
       });
 
       let result;
@@ -483,7 +484,10 @@ describe('GrowthEngine', () => {
 
       expect(result.stats.genreFocus).toBeNull();
       expect(result.stats.genreSkipped).toBeNull();
-      expect(result.stats.lookupsSkipped).toBeGreaterThan(0);
+      expect(result.stats.lookupsSkipped).toBe(3);
+      expect(result.suggestions).toHaveLength(5);
+      const unscored = result.suggestions.filter((s) => s.suggestedTrack === null && s.genres.length === 0);
+      expect(unscored).toHaveLength(3);
       expect(result.stats.crawlPartial).toBe(false);
       expect(result.stats.partial).toBe(true);
     });

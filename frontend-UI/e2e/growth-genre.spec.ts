@@ -192,38 +192,89 @@ test("nothing checked before the deadline mentions the time budget, not the genr
   await expect(page.getByRole("button", { name: "Scan again with any genre" })).toHaveCount(0);
 });
 
+function unscoredSuggestions(n: number) {
+  return Array.from({ length: n }, (_, i) => ({
+    user: {
+      id: 8000 + i,
+      username: `unscored-${i + 1}`,
+      avatar_url: "",
+      permalink_url: `https://soundcloud.com/unscored-${i + 1}`,
+      followers_count: 90,
+      followings_count: 80,
+      track_count: 4,
+    },
+    score: 40,
+    scoreLabel: "limited",
+    signals: { followBackRatio: 0.9, sharedInspirationCount: 1, isRelatedArtist: false, isCreator: true, genreAffinity: null },
+    genres: [],
+    suggestedTrack: null,
+  }));
+}
+
+function unfocusedStats(over: Record<string, unknown>) {
+  return {
+    inspirationUsers: 1,
+    candidatesScanned: 300,
+    afterDedup: 200,
+    suggestionsReturned: 3,
+    seedGenres: [],
+    partial: true,
+    crawlPartial: false,
+    genreFocus: null,
+    genreChecked: null,
+    genreMatched: null,
+    genreUnknown: null,
+    genreSkipped: null,
+    lookupsSkipped: 3,
+    ...over,
+  };
+}
+
 test("an unfocused scan whose lookups ran out of time still warns: /growth/", async ({ page }) => {
   await mockApi(page);
   await page.route("**/api/growth/discover", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
+      body: JSON.stringify({ suggestions: unscoredSuggestions(3), stats: unfocusedStats({}) }),
+    }),
+  );
+  await pickSeed(page);
+  await page.getByRole("button", { name: /Scan Networks/ }).click();
+
+  await expect(page.getByText("unscored-1")).toBeVisible();
+  await expect(page.getByTestId("budget-notice")).toHaveCount(1);
+  await expect(
+    page.getByText(/3 suggestions weren't scored for genre or recent tracks.*ranked without genre fit/),
+  ).toBeVisible();
+  await expect(page.getByText(/partial crawl/)).toHaveCount(0);
+  await expect(page.getByText(/fully scored/)).toHaveCount(0);
+  await expectNoBlockingViolations(page);
+  await expectNoHorizontalOverflow(page);
+});
+
+test("an unfocused partial crawl with skipped lookups shows one combined notice: /growth/", async ({
+  page,
+}) => {
+  await mockApi(page);
+  await page.route("**/api/growth/discover", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
       body: JSON.stringify({
-        suggestions: [],
-        stats: {
-          inspirationUsers: 1,
-          candidatesScanned: 300,
-          afterDedup: 200,
-          suggestionsReturned: 0,
-          seedGenres: [],
-          partial: true,
-          crawlPartial: false,
-          genreFocus: null,
-          genreChecked: null,
-          genreMatched: null,
-          genreUnknown: null,
-          genreSkipped: null,
-          lookupsSkipped: 3,
-        },
+        suggestions: unscoredSuggestions(3),
+        stats: unfocusedStats({ crawlPartial: true }),
       }),
     }),
   );
   await pickSeed(page);
   await page.getByRole("button", { name: /Scan Networks/ }).click();
 
-  await expect(
-    page.getByText(/3 suggestions weren't fully scored before the time budget ran out/),
-  ).toBeVisible();
-  await expect(page.getByText(/partial crawl/)).toHaveCount(0);
+  await expect(page.getByText("unscored-1")).toBeVisible();
+  await expect(page.getByTestId("budget-notice")).toHaveCount(1);
+  await expect(page.getByTestId("budget-notice")).toHaveText(
+    /partial crawl, and 3 suggestions weren't scored/,
+  );
+  await expect(page.getByText(/fully scored/)).toHaveCount(0);
   await expectNoHorizontalOverflow(page);
 });
