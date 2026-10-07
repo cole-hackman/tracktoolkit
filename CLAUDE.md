@@ -528,7 +528,7 @@ that the modal (mounted by the `(app)` layout) was acknowledged in this tab.
 **Banner layout contract.** The banner sits in normal flow, sticky at `top: 0`
 with `z-40`, and publishes its measured height as `--announcement-h` on the
 document element. The two `position: fixed` headers that would otherwise sit
-under it — the landing nav in `app/page.tsx` and the mobile header in
+under it — the landing nav in `app/(home)/page.tsx` and the mobile header in
 `AppShell.tsx` — read that variable as their `top`. It is declared `0px` in
 `globals.css`, so both are correct before the banner mounts and after it is
 dismissed. `z-40` is deliberate: above page content, below the mobile drawer
