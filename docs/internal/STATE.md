@@ -1,106 +1,45 @@
 # STATE
 
 ## Now
-**`feat/trust-and-mobile` is complete and waiting on Cole's review and merge.**
-Briefs 1 through 16, with 16 split into 16a, 16b and 16c: the trust surfaces
-(privacy, terms, FAQ, accessibility statement, feedback, account), the
-accessibility and mobile sweep of every page, the account-lifecycle and
-retention work, and a test suite that went from nothing to a Playwright + axe
-end-to-end suite. `main` is merged in, so the branch also carries the Azure
-deploy CI and the rebuilt admin console.
-
-At the close, all green: `npm test` 58 suites / 622 tests; `npx tsc --noEmit`
-and `next lint` clean with the four jsx-a11y rules back at `error`;
-`npm run contrast` 115 pairs (1 documented near miss); `npm run test:e2e` 528
-passed / 112 skipped, with no `fixme` left anywhere in the suite.
-
-**Two things must happen before the merge, not after it** — `main` deploys to
-App Service on every push, so merging *is* deploying. See Next, items 1 and 2.
-
-What to check on the live site once it is deployed:
-- `curl -sI https://tracktoolkit.com/nope` → **404**, not 200. The static
-  export's 404 used to be served with a 200.
-- `curl -sI https://tracktoolkit.com/sc-toolkit` → **301** to `/faq/#rebrand`
-  (same for `/soundcloud-toolkit` and `/rebrand`).
-- `/faq` in Google's Rich Results Test → FAQPage detected, no errors.
-- Open the landing page with the network panel on **third-party** filter:
-  zero requests. No analytics, no font host, no widget CDN.
-- On **Cole's own account only**: `/account` → Download my data (a dated JSON
-  attachment, no token ciphertext in it) and Disconnect (which hands the grant
-  back to SoundCloud and deletes the token row — you will have to log in
-  again). Do not exercise either against anyone else's account.
-- `curl -sI https://tracktoolkit.com/ | grep -i content-security-policy` →
-  `frame-src 'none'`, no third-party script/style/font source. The `/admin`
-  document is the one exception and adds `frame-src https://w.soundcloud.com`
-  and nothing else.
-
-Before this branch: Track Toolkit runs on Azure at https://tracktoolkit.com
-against the Azure `tracktoolkit` database (cut over 2026-09-20).
-soundcloudtoolkit.com (apex, www, api) 301/308 to it. DigitalOcean is frozen
-(broken DATABASE_URL); Vercel and Neon are untouched and are the rollback.
-Read `docs/internal/MIGRATION.md` ("CUTOVER DONE") for that story.
+Three PRs are open and waiting on Cole. **Nothing is merging or deploying.**
+#60 (playlist rewrites read blocked tracks and require declared removals:
+Steve's "Failed to update playlist" on the health check), #61 (appends never
+shrink an existing playlist; **stacked on #60**) and #59 (genre focus on Grow
+your network: Nick's request). Each passed `npm test`, lint, build, contrast
+and e2e on its final commit, after Opus review rounds. #58 (growth reverse
+import fix) is merged and verified live.
 
 ## Just done
-`feat/trust-and-mobile`, one line per phase, in the order they landed:
-
-- **Harness** — `jsx-a11y` strict preset in `eslint.config.mjs` and a
-  Playwright + `@axe-core/playwright` suite at 1280/430/390/360 against the
-  built export. Four rules started at `warn` with their counts; they end at
-  `error`.
-- **Support + SEO** — `lib/support.ts` as the one definition of the support
-  address, per-route metadata and canonicals, `noindex` on app routes, a real
-  **404 status** from Express (the static export answered 200), and 301
-  aliases `/sc-toolkit`, `/soundcloud-toolkit`, `/rebrand` → `/faq/#rebrand`.
-- **Legal and explanatory pages** — `/terms` (with `GOVERNING_LAW_STATE` left
-  as a marked placeholder), `/faq` with FAQPage structured data, the
-  accessibility statement rewritten to what is true, and the privacy policy
-  rewritten to what the code actually does.
-- **No analytics, no third-party scripts** — every tracker and external font
-  host removed, the CSP tightened to match, and
-  `tests/security-headers.test.js` failing if one comes back.
-- **Design tokens to AA** — dark text on the brand orange, `--primary-text`,
-  `--destructive-text`, `--muted-foreground-subtle`, a readable control
-  border, `prefers-reduced-motion` respected, and `npm run contrast` as the
-  gate that keeps them there.
-- **Primitives** — `Button`/`Input`/`Field`/`Select`/`IconButton`, then
-  `Dialog` + `useDialog`, `LiveRegion` + `useAnnounce`, `ProgressBar`,
-  `SectionHeading`, `SelectableRow`/`SelectableList`, `PageHeader` (titles and
-  focus).
-- **App shell** — the mobile drawer became a real dialog (focus trap, Escape,
-  focus return), navs are named, the collapsed rail expands from the keyboard,
-  and the Info group gained FAQ, feedback, account and terms.
-- **Feedback** — `Feedback` model + additive SQL, a validated
-  `POST /api/feedback` with a honeypot, per-user limiters and a 24-hour
-  duplicate check, `GET /api/feedback/mine`, the `/feedback` page, entry
-  points, and the admin inbox.
-- **Account lifecycle** — `POST /api/auth/disconnect` with a real SoundCloud
-  sign-out, revocation detection at the single refresh choke point,
-  `GET /api/auth/export`, and the daily retention job with its lifetime-user
-  snapshot. `/account` collects the three exits in one page.
-- **The page sweep (batches A–D)** — every tool page: labelled fields, named
-  icon controls, real checkboxes, progress that is announced, status that is a
-  word and not only a hue, and no horizontal overflow at 360.
-- **Shared-primitive and token round (16a)** — the destructive hover, the
-  brand tint and subtle text brought to AA with the gate extended to composite
-  tints; `min-w-0` on the `SelectableRow` root; `Field labelHidden`; the
-  download chips onto tokens.
-- **Safety and coverage round (16b)** — the disconnect window cut to **6
-  days** and `RETENTION_INTERVAL_MS` clamped to 24h in code; payloads checked
-  rather than cast; every route given a settle marker; a guard for a row that
-  scrolls *inside* its list.
-- **Close-out (16c)** — the bulk-review panel made keyboard-reachable,
-  `frame-src` added to the CSP sweep, the admin console's tone colours brought
-  to AA with the console added to the contrast gate, and this documentation.
-  Then a review round: `RETENTION_DRY_RUN` built (the "deploy inert and read
-  the counts" procedure this file described had no implementation behind it),
-  the contrast gate changed from holding a *copy* of `TONE_SOFT` to parsing
-  the real map out of `primitives.tsx`, and three public or load-bearing
-  claims rewritten to what the branch can evidence.
-- **Merged from `main` along the way**: the Azure deploy workflow (PR #52) and
-  the rebuilt admin console, with the Feedback inbox re-implemented as a view
-  inside it.
+- `67c5443` — #58 merged: `POST /api/growth/reverse` 500'd on every call
+  (`SC_WRITE_PACING_MS` not imported). Verified live: the deployed `growth.js`
+  carries the import, the container restarted at 23:53Z, and `/health` is ok.
+- `9a743de` — #60 opened. Root cause, from production logs: the playlist read
+  never sent `access`, so SoundCloud dropped blocked tracks while
+  `track_count` counted them, and the short-read guard refused **101 of 148**
+  playlist PUTs (35 playlists, 28 clients).
+- `c2a3b53` — #61 opened: `writeGrowingPrefix`, refuse targets over 500.
+- `7e95c52` — #59 opened: genre focus, shared genre list, honest budget notice.
+- Plan: `~/.claude/plans/pasted-content-id-9479-two-pieces-streamed-abelson.md`.
 
 ## Next
+### This session (2026-10-07)
+1. **Cole: review and merge #60, then retarget #61 to `main` and merge it.**
+   #59 is independent. Every merge deploys — run /verify-deploy after each.
+2. After #60 is live, on **Cole's own account only**: open a playlist with a
+   blocked track in the health check; the Blocked row shows; remove it and
+   SoundCloud loses exactly that track. This is the first live confirmation
+   of the `access` default. A few days later, rerun the `AppServiceHTTPLogs`
+   query (`PUT /api/playlists/:id` by status) — the 409 share should collapse;
+   count `[playlist-rewrite] refused short read` lines to decide design B.
+3. Follow-ups with evidence, none started: `POST /api/playlists/merge` 5xx on
+   55/295 calls; `/dashboard/summary`, `/playlists/:id`, followers/followings
+   paged 5xx at 3–6%; the PUT title branch never sets the title; `paginate`
+   does not flag a 429-deadline break as truncated; audit and keyword search
+   still read with the default `access`; `/users/{id}/related` is not in
+   SoundCloud's spec.
+
+### Carried over from the previous handoff (status not verified this session)
+
 1. **Apply the two SQL files to Azure Postgres BEFORE merging.** `main`
    deploys on push, so the merge ships the code that reads these:
    `docs/sql/2026-09-feedback.sql` (the `feedback` table) and
@@ -315,6 +254,19 @@ Read `docs/internal/MIGRATION.md` ("CUTOVER DONE") for that story.
   Toolkit" finds the rebrand explanation. That is the one place product-owned
   naming may carry the old name; nowhere else.
 
+
+### From the 2026-10-07 feedback session
+- **Playlist rewrite reads ask for `access=playable,preview,blocked`, and
+  `PUT /api/playlists/:id` only drops ids the client names in `remove`**
+  (count-aware). The short-read guard is never loosened. Deleted/private
+  entries that no read returns stay refused (design B deferred until the warn
+  log shows how common they are) — decided by Cole, 2026-10-07.
+- **Appends never write a prefix shorter than the existing playlist; a target
+  already over 500 is refused with 409** — 2026-10-07.
+- **Genre focus filters during the scan, never before it** (users carry no
+  genre; candidates' genre comes from their tracks). Up to 150 lookups with a
+  focus; no focus = identical calls to before — decided by Cole, 2026-10-07.
+
 ## Landmines
 - **The retention job deletes users by `disconnectedAt` and `lastLoginAt`.**
   `server/lib/retention.js` step 2 deletes every user still stamped
@@ -472,3 +424,16 @@ Read `docs/internal/MIGRATION.md` ("CUTOVER DONE") for that story.
   who just want the modal gone click the top option, which is exactly what the
   result is meant to test. Read the top-two margin as soft. Randomising option
   order per user would fix it without giving up mandatory.
+- **The server has no lint.** A deleted `mergeBatchSize` passed `npm test`
+  and `npm run lint` and would have broken every overflowing merge. Before
+  pushing a server change that removes an identifier, run `node --check` and
+  a throwaway `no-undef` ESLint over the touched files.
+- **The `access` default is from SoundCloud's spec, not yet seen live.** If
+  `track_count` turns out to exclude blocked tracks, the all-access read comes
+  back LONGER than `track_count` and the guard refuses every such playlist.
+- **#61 is stacked on #60.** Merge #60 first, retarget #61 to `main`, then
+  merge. Merging #61 alone into `main` is not possible as-is.
+- **`Select`'s third naming arm is satisfied only by Field's
+  `data-field-labelled` render prop.** A bare `<Select id>` is a type error on
+  purpose; do not "fix" it by loosening the union.
+
