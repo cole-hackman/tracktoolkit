@@ -92,6 +92,9 @@ describe('POST /api/downloads/links', () => {
     expect(res.body.results.map((r) => r.status)).toEqual(['ok', 'rate_limited', 'rate_limited', 'rate_limited']);
     expect(getDownloadLink).toHaveBeenCalledTimes(2);
     expect(logOperation).toHaveBeenCalledWith(expect.objectContaining({ status: 'partial', errorCode: 'RATE_LIMITED' }));
+    // Only the track that got a link is recorded — it is what "already
+    // downloaded" is read from.
+    expect(logOperation.mock.calls[0][0].trackIds).toEqual([1]);
   });
 
   test('a track whose downloads are off is "unavailable" with a reason; a CDN link off the allowlist is never handed out', async () => {

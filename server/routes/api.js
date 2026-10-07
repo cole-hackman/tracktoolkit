@@ -1435,7 +1435,10 @@ router.post('/downloads/links', authenticateUser, requireCanDownload, validateDo
       action: 'download-links',
       status: succeeded === results.length ? 'success' : succeeded === 0 ? 'error' : 'partial',
       durationMs: elapsed(),
-      trackIds: results.map((r) => r.trackId).filter(Boolean),
+      // Only tracks that actually got a link: this row is what "already
+      // downloaded" is read from, so a refused or rate-limited track must not
+      // appear here (failures are counted in metadata instead).
+      trackIds: results.filter((r) => r.status === 'ok').map((r) => r.trackId).filter(Boolean),
       errorCode: rateLimited ? 'RATE_LIMITED' : succeeded === 0 ? 'ALL_ITEMS_FAILED' : undefined,
       metadata: {
         total: results.length,
