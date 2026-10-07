@@ -1436,6 +1436,7 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
           chunk.slice(0, 100)
         );
 
+        if (chunk.length > 100) await sleep(SC_WRITE_PACING_MS);
         await writeGrowingPrefix({
           ids: chunk,
           floor: Math.min(100, chunk.length),

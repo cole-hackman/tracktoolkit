@@ -53,6 +53,12 @@ jest.unstable_mockModule('../../server/middleware/auth.js', () => ({
   },
 }));
 
+const actualSocialCache = await import('../../server/lib/social-cache.js');
+const invalidatePlaylistState = jest.fn(actualSocialCache.invalidatePlaylistState);
+jest.unstable_mockModule('../../server/lib/social-cache.js', () => ({
+  ...actualSocialCache,
+  invalidatePlaylistState,
+}));
 const { default: apiRoutes } = await import('../../server/routes/api.js');
 const { requestCache } = await import('../../server/lib/request-cache.js');
 
@@ -101,6 +107,7 @@ beforeEach(() => {
   getFollowings.mockReset().mockResolvedValue([{ id: 77, username: 'friend' }]);
   getUserLikedTracks.mockReset();
   createPlaylist.mockReset().mockResolvedValue({ id: 99, permalink_url: 'x' });
+  invalidatePlaylistState.mockClear();
 });
 
 /** Make the nth PUT to the target fail the way a 429-after-retries does. */
@@ -156,6 +163,7 @@ describe.each(writers)('$name', ({ send }) => {
     expect(typeof res.body.error).toBe('string');
     expect(targetWrites()).toHaveLength(nth);
     expectExistingIsPrefixOfEveryWrite();
+    expect(invalidatePlaylistState).toHaveBeenCalledWith('user-a');
   });
 
   test('duplicate existing ids and new ids that overlap the target', async () => {
@@ -191,5 +199,39 @@ describe.each(writers)('$name', ({ send }) => {
     expect(typeof res.body.error).toBe('string');
     expect(addTracksToPlaylist).not.toHaveBeenCalled();
     expect(createPlaylist).not.toHaveBeenCalled();
+    expect(invalidatePlaylistState).not.toHaveBeenCalled();
+  });
+
+  // 450 existing + 260 new: target 500, overflow 210, so the overflow playlist
+  // itself needs growth writes (PUTs 200 then 210), and they must go to it.
+  test('a large overflow grows the overflow playlist, never the target', async () => {
+    scenario(range(450), range(260, 10000));
+    const res = await send();
+
+    expect(res.status).toBe(200);
+    expectExistingIsPrefixOfEveryWrite();
+    const writes = targetWrites();
+    for (const w of writes) expect(w.length).toBeLessThanOrEqual(500);
+    expect(writes[writes.length - 1]).toHaveLength(500);
+    expect(createPlaylist).toHaveBeenCalledTimes(1);
+    const overflowPuts = addTracksToPlaylist.mock.calls.filter((c) => c[2] === 99).map((c) => c[3]);
+    expect(overflowPuts.map((w) => w.length)).toEqual([200, 210]);
+    expect(overflowPuts[1]).toEqual(range(210, 10050));
+  });
+
+  test('a failure partway through the overflow leaves the target at 500 and reports an error', async () => {
+    scenario(range(450), range(260, 10000));
+    addTracksToPlaylist.mockImplementation(async (at, rt, id) => {
+      if (id === 99) throw Object.assign(new Error('rate limited'), { status: 429 });
+      return { id, title: 'ok' };
+    });
+    const res = await send();
+
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(res.body.playlist).toBeUndefined();
+    expectExistingIsPrefixOfEveryWrite();
+    const writes = targetWrites();
+    expect(writes[writes.length - 1]).toHaveLength(500);
+    expect(invalidatePlaylistState).toHaveBeenCalledWith('user-a');
   });
 });
