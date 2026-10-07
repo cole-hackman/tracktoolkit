@@ -1,190 +1,39 @@
 # STATE
 
 ## Now
-**`feat/trust-and-mobile` is complete and waiting on Cole's review and merge.**
-Briefs 1 through 16, with 16 split into 16a, 16b and 16c: the trust surfaces
-(privacy, terms, FAQ, accessibility statement, feedback, account), the
-accessibility and mobile sweep of every page, the account-lifecycle and
-retention work, and a test suite that went from nothing to a Playwright + axe
-end-to-end suite. `main` is merged in, so the branch also carries the Azure
-deploy CI and the rebuilt admin console.
-
-At the close, all green: `npm test` 58 suites / 622 tests; `npx tsc --noEmit`
-and `next lint` clean with the four jsx-a11y rules back at `error`;
-`npm run contrast` 115 pairs (1 documented near miss); `npm run test:e2e` 528
-passed / 112 skipped, with no `fixme` left anywhere in the suite.
-
-**Two things must happen before the merge, not after it** — `main` deploys to
-App Service on every push, so merging *is* deploying. See Next, items 1 and 2.
-
-What to check on the live site once it is deployed:
-- `curl -sI https://tracktoolkit.com/nope` → **404**, not 200. The static
-  export's 404 used to be served with a 200.
-- `curl -sI https://tracktoolkit.com/sc-toolkit` → **301** to `/faq/#rebrand`
-  (same for `/soundcloud-toolkit` and `/rebrand`).
-- `/faq` in Google's Rich Results Test → FAQPage detected, no errors.
-- Open the landing page with the network panel on **third-party** filter:
-  zero requests. No analytics, no font host, no widget CDN.
-- On **Cole's own account only**: `/account` → Download my data (a dated JSON
-  attachment, no token ciphertext in it) and Disconnect (which hands the grant
-  back to SoundCloud and deletes the token row — you will have to log in
-  again). Do not exercise either against anyone else's account.
-- `curl -sI https://tracktoolkit.com/ | grep -i content-security-policy` →
-  `frame-src 'none'`, no third-party script/style/font source. The `/admin`
-  document is the one exception and adds `frame-src https://w.soundcloud.com`
-  and nothing else.
-
-Before this branch: Track Toolkit runs on Azure at https://tracktoolkit.com
-against the Azure `tracktoolkit` database (cut over 2026-09-20).
-soundcloudtoolkit.com (apex, www, api) 301/308 to it. DigitalOcean is frozen
-(broken DATABASE_URL); Vercel and Neon are untouched and are the rollback.
-Read `docs/internal/MIGRATION.md` ("CUTOVER DONE") for that story.
+Overnight run 2026-10-07 → 08 (plan: `~/.claude/plans/pasted-content-id-407c-i-want-async-pumpkin.md`).
+Five PRs (#63–#67) are open for Cole's review, plus this STATE.md PR. **None is merged: merging to `main` deploys.**
+The downloads stack must merge in order: **#63 → #64 → #65 → #66**. Each PR's
+base is the one before it; re-target to `main` as each lands. #67 is independent.
+Two pieces of work are **local only** and were never pushed (see Waiting on Cole).
 
 ## Just done
-`feat/trust-and-mobile`, one line per phase, in the order they landed:
-
-- **Harness** — `jsx-a11y` strict preset in `eslint.config.mjs` and a
-  Playwright + `@axe-core/playwright` suite at 1280/430/390/360 against the
-  built export. Four rules started at `warn` with their counts; they end at
-  `error`.
-- **Support + SEO** — `lib/support.ts` as the one definition of the support
-  address, per-route metadata and canonicals, `noindex` on app routes, a real
-  **404 status** from Express (the static export answered 200), and 301
-  aliases `/sc-toolkit`, `/soundcloud-toolkit`, `/rebrand` → `/faq/#rebrand`.
-- **Legal and explanatory pages** — `/terms` (with `GOVERNING_LAW_STATE` left
-  as a marked placeholder), `/faq` with FAQPage structured data, the
-  accessibility statement rewritten to what is true, and the privacy policy
-  rewritten to what the code actually does.
-- **No analytics, no third-party scripts** — every tracker and external font
-  host removed, the CSP tightened to match, and
-  `tests/security-headers.test.js` failing if one comes back.
-- **Design tokens to AA** — dark text on the brand orange, `--primary-text`,
-  `--destructive-text`, `--muted-foreground-subtle`, a readable control
-  border, `prefers-reduced-motion` respected, and `npm run contrast` as the
-  gate that keeps them there.
-- **Primitives** — `Button`/`Input`/`Field`/`Select`/`IconButton`, then
-  `Dialog` + `useDialog`, `LiveRegion` + `useAnnounce`, `ProgressBar`,
-  `SectionHeading`, `SelectableRow`/`SelectableList`, `PageHeader` (titles and
-  focus).
-- **App shell** — the mobile drawer became a real dialog (focus trap, Escape,
-  focus return), navs are named, the collapsed rail expands from the keyboard,
-  and the Info group gained FAQ, feedback, account and terms.
-- **Feedback** — `Feedback` model + additive SQL, a validated
-  `POST /api/feedback` with a honeypot, per-user limiters and a 24-hour
-  duplicate check, `GET /api/feedback/mine`, the `/feedback` page, entry
-  points, and the admin inbox.
-- **Account lifecycle** — `POST /api/auth/disconnect` with a real SoundCloud
-  sign-out, revocation detection at the single refresh choke point,
-  `GET /api/auth/export`, and the daily retention job with its lifetime-user
-  snapshot. `/account` collects the three exits in one page.
-- **The page sweep (batches A–D)** — every tool page: labelled fields, named
-  icon controls, real checkboxes, progress that is announced, status that is a
-  word and not only a hue, and no horizontal overflow at 360.
-- **Shared-primitive and token round (16a)** — the destructive hover, the
-  brand tint and subtle text brought to AA with the gate extended to composite
-  tints; `min-w-0` on the `SelectableRow` root; `Field labelHidden`; the
-  download chips onto tokens.
-- **Safety and coverage round (16b)** — the disconnect window cut to **6
-  days** and `RETENTION_INTERVAL_MS` clamped to 24h in code; payloads checked
-  rather than cast; every route given a settle marker; a guard for a row that
-  scrolls *inside* its list.
-- **Close-out (16c)** — the bulk-review panel made keyboard-reachable,
-  `frame-src` added to the CSP sweep, the admin console's tone colours brought
-  to AA with the console added to the contrast gate, and this documentation.
-  Then a review round: `RETENTION_DRY_RUN` built (the "deploy inert and read
-  the counts" procedure this file described had no implementation behind it),
-  the contrast gate changed from holding a *copy* of `TONE_SOFT` to parsing
-  the real map out of `primitives.tsx`, and three public or load-bearing
-  claims rewritten to what the branch can evidence.
-- **Merged from `main` along the way**: the Azure deploy workflow (PR #52) and
-  the rebuilt admin console, with the Feedback inbox re-implemented as a view
-  inside it.
+- **#63** `fix/download-urn` (d1acaf3) — SoundCloud-native downloads were 100% broken in prod. `download_url` is now `/tracks/soundcloud:tracks:N/download`; the allowlist accepted numeric only.
+- **#64** `feat/download-status` — honest per-track status (`lib/download-status.ts`): direct / gate / store / pre-order / none. A store link is never offered as a "Download".
+- **#65** `feat/download-queue` — "Download all", paced and resumable. Adds `POST /api/downloads/links`, plus the server-side `requireCanDownload` (the allowlist used to be enforced by the page only).
+- **#66** `feat/rekordbox-gap` — `/rekordbox-gaps`: a Rekordbox XML is parsed in the browser and matched to likes or a playlist; a shopping-list CSV comes out.
+- **#67** `fix/sc-path-injection` — client cursors can only continue their own request; `/users/:userUrn/related` param validated.
+- Local only: `feat/hypeddit-runner` (8592d96, `tools/hypeddit-runner`) and `~/Developer/tracktoolkit-extension-work` (extension repair, 7 commits).
 
 ## Next
-1. **Apply the two SQL files to Azure Postgres BEFORE merging.** `main`
-   deploys on push, so the merge ships the code that reads these:
-   `docs/sql/2026-09-feedback.sql` (the `feedback` table) and
-   `docs/sql/2026-09-account-lifecycle.sql` (`users."lastLoginAt"`,
-   `users."disconnectedAt"`, the `metrics` table). Both are re-runnable. Both
-   files now name the database and the command. **Not Neon** — Neon is the
-   legacy database and nothing reads it.
-2. **Set `RETENTION_DRY_RUN=true` BEFORE the merge is pushed.** This is an
-   ordering instruction, not a suggestion, and the window is ten minutes.
+1. Review and merge #63, then verify on the live site: `/downloads` → a "(free download)" track saves.
+2. Merge #64 → #65 → #66 in order, re-targeting each to `main`. Run `/verify-deploy` after each merge.
+3. Merge #67, then check Following Library pagination on the live site.
 
-   Merging to `main` deploys, the App Service restarts, and the retention
-   job's first sweep runs **10 minutes after that boot**. A setting added
-   after the deploy finishes does not take effect until the *next* restart —
-   so if the flag arrives late, the first sweep is real and there is no
-   preview of it.
-
-   That first sweep is also the largest this job will ever perform.
-   `users."lastLoginAt"` is a brand-new column, so on the first run every
-   existing row has it as NULL and the dormancy rule falls back to
-   `updatedAt`. Every account with no activity in 24 months goes in one pass,
-   cascading across every per-user table, irreversibly. It is the one sweep
-   that most needs looking at before it happens, and the only one that cannot
-   be looked at afterwards.
-
-   So: set the flag, confirm the boot line below, then merge — or at the very
-   latest set it the moment the merge is pushed and confirm
-   `[retention] Daily purge scheduled in DRY RUN mode` in the log stream
-   well inside the ten minutes. If that line does not say DRY RUN, the setting
-   did not reach this boot: restart the App Service before the ten minutes are
-   up.
-
-   Not `RETENTION_ENABLED=false` — that schedules nothing, so it logs nothing,
-   and the silence reads exactly like "there was nothing to delete". (An
-   earlier draft of this list said to do that. It would have produced no
-   counts, and the first real sweep would then have deleted as it logged.)
-
-   **Set it in the Azure portal, on the App Service** (Settings →
-   Environment variables → App settings), *not* in Bicep.
-   `infra/main.bicep` declares `appSettings` as a complete list with no
-   parameter for this flag, and ARM replaces the whole list on deploy — so
-   **any `infra/deploy.sh` run silently ends the dry run** and the next sweep
-   is real. Code deploys are safe: the GitHub workflow is a zip deploy
-   (`azure/webapps-deploy@v3`) and does not touch settings. If an infra change
-   is needed while the dry run is up, re-add the setting straight afterwards
-   and check the boot line below before trusting it.
-
-   With the flag set, the job runs on its normal schedule — first run 10
-   minutes after boot — performs every count, and writes nothing at all. The
-   boot line names the mode, so it is checkable at a glance:
-   `[retention] Daily purge scheduled in DRY RUN mode`. In the App Service log
-   stream, look for:
-
-   ```
-   [retention] DRY RUN (RETENTION_DRY_RUN=true) — counting only, nothing is written
-   [retention] disconnected-users will remove N users
-   [retention] inactive-users will remove N users
-   [retention] operation-logs would remove N
-   ...
-   [retention] DRY RUN complete — no rows were deleted or updated
-   ```
-
-   The `will remove N users` lines are word-for-word what a real sweep prints,
-   so the numbers need no translation. Satisfy yourself they are what you
-   expect — the user sweeps cascade across every per-user table and are
-   irreversible — then delete the variable and let the next run do it for
-   real. `tests/retention-dry-run.test.js` is what asserts the flag issues no
-   write: it mocks the client with a Proxy that records any
-   `delete*`/`update*`/`upsert`/`create*` call, plus `$executeRaw` and
-   `$transaction`, on **any** delegate — including ones the test has never
-   heard of — and fails if the set is non-empty.
-3. **Fill `GOVERNING_LAW_STATE` in `frontend-UI/src/app/terms/page.tsx`.** It
-   ships as the literal string `[STATE]` and is visible on the page. Only Cole
-   can decide it.
-4. Search Console → soundcloudtoolkit.com property → Settings → Change of
-   address → tracktoolkit.com → Validate & update (Cole; still outstanding
-   from the cutover).
-5. **Decommission Neon by the end of October.** The privacy policy tells users
-   their data is deleted on the stated schedule, and a full copy of the old
-   database sitting in a second vendor is a promise not kept. DigitalOcean and
-   Vercel go first; Neon last.
-6. Branding leftovers outside the web app (Cole): SoundCloud OAuth app name
-   "Track Toolkit" + `frontend-UI/public/brand/icon-512.png` as its icon;
-   Chrome extension icons from `docs/brand/extension/` + listing renamed —
-   only then may the two legacy icon files go.
+### Waiting on Cole
+- **Extension and runner not pushed: the repo is public.** Pushing the extension import was refused in-session as an out-of-place publication (it carries the Hypeddit gate automation). The runner went unpushed for the same reason. Options: make `cole-hackman/tracktoolkit` private, or move both into a private repo, then push.
+  - The extension repair is in `~/Developer/tracktoolkit-extension-work` (branch `fix/extension-domain`; its README says how to load it).
+  - The runner is on local branch `feat/hypeddit-runner`.
+- **Add the sideloaded extension's ID to `CHROME_EXTENSION_IDS`** (App Service). Without it the API refuses the extension.
+- **Real Hypeddit run:**
+  ```
+  cd tools/hypeddit-runner && npm install && npm start -- --queue ~/Downloads/hypeddit-queue.json
+  ```
+  Get the queue from Downloads → Auto-Download → Export queue (JSON). Do the first real batch with `npm run run-queue -- --queue <file> --limit 5 --headed`. The SoundCloud and Instagram selectors for signed-in pages were only checked logged out. **Zero live gates were run tonight**: the runner profile is not logged in, and per instructions I didn't work around that.
+- **Instagram/SoundCloud follows are now real.** The old extension clicked through without following. The runner follows for real and logs it. Say if you want the old skip-only behaviour back.
+- **Rekordbox XML export.** `/rekordbox-gaps` was built against a synthetic fixture; the first real export is the real test.
+- **Follow-gate (Q4): kept.** It was deliberate (15a074e, "follow-gated library browser"), and the 2026-08-25 review relies on it, with tests. It protects scope, not secrecy: it stops the OAuth app being used to crawl any account's library. To lift it, remove `assertFollowedUser` and update `tests/routes/followed-library-authz.test.js`.
+- Carried over, not re-verified tonight: fill `GOVERNING_LAW_STATE` (`app/terms/page.tsx`), the Search Console change of address, and decommissioning Neon by the end of October.
 
 ## Decisions
 - **Logo: the `claude-branding` shifted-bar mark** (2026-09-20). Three
@@ -314,6 +163,12 @@ Read `docs/internal/MIGRATION.md` ("CUTOVER DONE") for that story.
   (and in structured-data `alternateName`), so someone searching "SoundCloud
   Toolkit" finds the rebrand explanation. That is the one place product-owned
   naming may carry the old name; nowhere else.
+
+### From the 2026-10-07 downloads work
+- **Only two paths move a file**: SoundCloud's own `/download` (artist-enabled) and an artist's free gate. Stores, pre-orders and other links are "where to get it", never a download (2026-10-07).
+- **"Select to Remove" stays on /downloads**: blocked tracks keep their row for removal (PR #60) (2026-10-07).
+- **The Hypeddit runner is local-only and unattended**, and Cole keeps the Spotify connect, email and Instagram follow. It acts only on gates it queued, approves only Hypeddit's own SoundCloud consent, logs every action per run, and marks captchas, login walls and unknown gates as "needs manual" with no retry. Nothing of it goes in `server/` or the deployed app (2026-10-07).
+- **Follow-gate on other users' libraries kept** (`assertFollowedUser`). Lifting it is Cole's call (2026-10-08).
 
 ## Landmines
 - **The retention job deletes users by `disconnectedAt` and `lastLoginAt`.**
@@ -472,3 +327,10 @@ Read `docs/internal/MIGRATION.md` ("CUTOVER DONE") for that story.
   who just want the modal gone click the top option, which is exactly what the
   result is meant to test. Read the top-two margin as soft. Randomising option
   order per user would fix it without giving up mandatory.
+- **`download_url` comes in URN form** (`/tracks/soundcloud:tracks:N/download`). E2e fixtures must use the real shape; `e2e/downloads-native.spec.ts` runs the server's own `isAllowedDownloadUrl`, so a wrong fixture fails.
+- **Downloads queue: one helper tab.** Files go through a single tab opened in the Start/Resume click, 3 s apart. Opening a tab per file after an `await` is a blocked popup.
+- **A client `next` cursor must go through `cursorEndpoint`** (`lib/sc-cursor.js`). Never send a client-supplied path to SoundCloud raw.
+- **The Rekordbox XML never leaves the browser**, and the parser drops `Location` (file paths). Keep it that way.
+- **The extension's gate stepper no longer matches live Hypeddit**: it clicks `#skipper_sc`, and today's gates use per-action buttons. The runner is the maintained path.
+- **`.next/types` survives a branch switch.** After checking out a branch without a page, run `npm run build` before `npm run lint`, or tsc fails on a stale route type.
+
