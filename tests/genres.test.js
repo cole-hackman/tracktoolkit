@@ -18,6 +18,8 @@ describe('matchesGenreFocus', () => {
     ['tech-house', 'techno'],
     ['trip-hop', 'hip-hop'],
     ['popcorn', 'pop'],
+    ['jungle terror', 'drum-and-bass'],
+    ['welcome to the jungle', 'drum-and-bass'],
   ])('%s does not match %s', (token, slug) => {
     expect(m(token, slug)).toBe(false);
   });
@@ -31,7 +33,8 @@ describe('matchesGenreFocus', () => {
     ['drumandbass', 'drum-and-bass'],
     ['drumnbass', 'drum-and-bass'],
     ['dnb', 'drum-and-bass'],
-    ['jungle', 'drum-and-bass'],
+    ['junglist', 'drum-and-bass'],
+    ['jungle-dnb', 'drum-and-bass'],
     ['metalcore', 'metal'],
     ['synthpop', 'pop'],
     ['kpop', 'pop'],

@@ -11,7 +11,7 @@ export const GENRE_FOCUS_OPTIONS = [
   { slug: 'techno', label: 'Techno', aliases: [] },
   { slug: 'ambient', label: 'Ambient', aliases: [] },
   { slug: 'hip-hop', label: 'Hip-hop', aliases: ['hiphop', 'hip hop', 'rap'] },
-  { slug: 'drum-and-bass', label: 'Drum & bass', aliases: ['dnb', 'd&b', 'drum & bass', 'drum n bass', 'drumandbass', 'drumnbass', 'jungle'] },
+  { slug: 'drum-and-bass', label: 'Drum & bass', aliases: ['dnb', 'd&b', 'drum & bass', 'drum n bass', 'drumandbass', 'drumnbass', 'junglist', 'jungle-dnb'] },
   { slug: 'dubstep', label: 'Dubstep', aliases: ['brostep'] },
   { slug: 'trance', label: 'Trance', aliases: ['psytrance'] },
   { slug: 'jazz', label: 'Jazz', aliases: [] },

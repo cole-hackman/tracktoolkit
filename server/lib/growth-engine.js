@@ -189,6 +189,11 @@ export class GrowthEngine {
       return { inspId, skipped: false, seedTracksResult, followersResult, peersResult, relatedResult };
     });
 
+    // Was the deadline already spent when the crawl phase ended? Then a seed's
+    // pagination may have stopped early. Measured here, before the track
+    // lookups, so lookups that merely finish late do not count as a cut crawl.
+    const crawlEndedPastDeadline = Date.now() >= deadlineAt;
+
     // Merge crawl results sequentially in seed order so appearance counts and
     // isRelated flags come out identical to the old sequential crawl.
     for (const crawl of seedCrawls) {
@@ -424,6 +429,9 @@ export class GrowthEngine {
         sampleCapPerSeed: SEED_SAMPLE_MAX,
         sampledFollowers: perSeed.some((s) => s.sampled),
         partial: Date.now() >= deadlineAt || perSeed.some((s) => s.skipped),
+        // The crawl itself was cut short (a seed skipped, or the deadline hit
+        // before it finished); distinct from candidate lookups being skipped.
+        crawlPartial: crawlEndedPastDeadline || perSeed.some((s) => s.skipped),
         perSeed,
         timeBudgetMs,
       },

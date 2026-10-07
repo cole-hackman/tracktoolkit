@@ -119,10 +119,75 @@ test("zero matches explains itself and offers a rescan with any genre: /growth/"
   await page.getByRole("button", { name: /Scan Networks/ }).click();
 
   await expect(page.getByText("No Jazz matches")).toBeVisible();
+  // genreUnknown is 12 here, so the copy must not claim "none had tracks tagged".
+  await expect(page.getByText(/12 could not be placed/)).toBeVisible();
+  await expect(page.getByText(/None of the 150 accounts checked had recent tracks/)).toHaveCount(0);
   await expectNoBlockingViolations(page);
   await expectNoHorizontalOverflow(page);
 
   await page.getByRole("button", { name: "Scan again with any genre" }).click();
   await expect(page.getByText("anygenre-one")).toBeVisible();
   await expect(page.getByText(/Focus:/)).toHaveCount(0);
+});
+
+function zeroMatchStats(over: Record<string, number>) {
+  return {
+    inspirationUsers: 1,
+    candidatesScanned: 300,
+    afterDedup: 200,
+    suggestionsReturned: 0,
+    seedGenres: ["house"],
+    genreFocus: "folk",
+    genreChecked: 150,
+    genreMatched: 0,
+    genreUnknown: 0,
+    genreSkipped: 0,
+    ...over,
+  };
+}
+
+test("zero matches with everything placed says none had tracks tagged the genre: /growth/", async ({
+  page,
+}) => {
+  await mockApi(page);
+  await page.route("**/api/growth/discover", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ suggestions: [], stats: zeroMatchStats({}) }),
+    }),
+  );
+  await pickSeed(page);
+  await page.getByLabel("Genre focus").selectOption("folk");
+  await page.getByRole("button", { name: /Scan Networks/ }).click();
+
+  await expect(page.getByText("No Folk matches")).toBeVisible();
+  await expect(
+    page.getByText(/None of the 150 accounts checked had recent tracks tagged Folk/),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Scan again with any genre" })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+});
+
+test("nothing checked before the deadline mentions the time budget, not the genre: /growth/", async ({
+  page,
+}) => {
+  await mockApi(page);
+  await page.route("**/api/growth/discover", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        suggestions: [],
+        stats: zeroMatchStats({ genreChecked: 0, genreSkipped: 150 }),
+      }),
+    }),
+  );
+  await pickSeed(page);
+  await page.getByLabel("Genre focus").selectOption("folk");
+  await page.getByRole("button", { name: /Scan Networks/ }).click();
+
+  await expect(page.getByText(/ran out of its time budget before any account/)).toBeVisible();
+  await expect(page.getByText("No Folk matches")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Scan again with any genre" })).toHaveCount(0);
 });

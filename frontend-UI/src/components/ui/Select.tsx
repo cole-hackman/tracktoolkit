@@ -4,12 +4,16 @@ import { cn } from "@/lib/utils";
 import * as React from "react";
 
 /**
- * Either a visible `label` or an `aria-label` — never neither. The union makes
+ * A visible `label`, an `aria-label`, or an `id` for an external `<label htmlFor>`
+ * (inside `Field`) — never none of them. The union makes
  * omitting both a type error, so a select can't ship without an accessible name.
  */
 type SelectNaming =
   | { label: string; "aria-label"?: undefined }
-  | { label?: undefined; "aria-label": string };
+  | { label?: undefined; "aria-label": string }
+  // Labelled from outside: render inside `Field`, which owns the
+  // `<label htmlFor>` and passes the matching `id` through `{...field}`.
+  | { label?: undefined; "aria-label"?: undefined; id: string };
 
 export type SelectProps = React.SelectHTMLAttributes<HTMLSelectElement> & SelectNaming;
 

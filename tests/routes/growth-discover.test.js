@@ -27,7 +27,7 @@ jest.unstable_mockModule('../../server/lib/social-cache.js', () => ({
   loadCachedFollowers: jest.fn().mockResolvedValue(null),
 }));
 
-const { GrowthEngine } =await import('../../server/lib/growth-engine.js');
+const { GrowthEngine } = await import('../../server/lib/growth-engine.js');
 const discoverSuggestions = jest
   .spyOn(GrowthEngine.prototype, 'discoverSuggestions')
   .mockResolvedValue({ suggestions: [], stats: {} });

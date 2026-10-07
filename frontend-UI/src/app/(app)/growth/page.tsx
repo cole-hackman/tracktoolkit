@@ -165,6 +165,8 @@ interface DiscoveryStats {
   sampleCapPerSeed?: number;
   sampledFollowers?: boolean;
   partial?: boolean;
+  /** The seed crawl itself was cut short (distinct from skipped genre lookups). */
+  crawlPartial?: boolean;
   perSeed?: {
     id: number;
     followersFetched: number;
@@ -598,6 +600,21 @@ export default function GrowthPage() {
   // with nothing checked (e.g. no candidates at all) the genre is not to blame.
   const focusBlamesGenre = Boolean(discoveryStats?.genreFocus) && (discoveryStats?.genreChecked ?? 0) > 0;
 
+  const emptyDescription = (() => {
+    const st = discoveryStats;
+    if (focusBlamesGenre && st?.genreFocus) {
+      const label = genreLabel(st.genreFocus);
+      const unplaced = (st.genreUnknown ?? 0) + (st.genreSkipped ?? 0);
+      return unplaced === 0
+        ? `None of the ${st.genreChecked} accounts checked had recent tracks tagged ${label}. Scan again with any genre, or pick different seeds.`
+        : `None of the ${st.genreChecked} accounts checked matched ${label}, but ${unplaced} could not be placed (no genre info, or not checked in time), so a match may exist among them. Scan again with any genre, or pick different seeds.`;
+    }
+    if (st?.genreFocus && (st.genreSkipped ?? 0) > 0) {
+      return "The scan ran out of its time budget before any account could be checked for genre. Try again, or use fewer seeds.";
+    }
+    return "Try selecting different inspiration users or strategy.";
+  })();
+
   const handleInspirationClick = (id: number) => {
     setSelectedInspirations(prev => {
       const next = new Set(prev);
@@ -818,7 +835,6 @@ export default function GrowthPage() {
                   {(field) => (
                     <Select
                       {...field}
-                      aria-label="Genre focus"
                       value={genreFocus}
                       onChange={(e) => setGenreFocus(e.target.value)}
                       className="bg-secondary/20"
@@ -952,14 +968,14 @@ export default function GrowthPage() {
                         Large seeds were sampled: most recent {(discoveryStats.sampleCapPerSeed ?? 1000).toLocaleString()} followers per seed — the slice most likely to still be active.
                       </p>
                     )}
-                    {discoveryStats?.partial && (discoveryStats.genreSkipped ?? 0) === 0 && (
+                    {(discoveryStats?.crawlPartial ?? discoveryStats?.partial) && (
                       <p className="text-xs text-warning-text mt-1">
                         The scan hit its time budget, so results come from a partial crawl. Everything shown is fully scored and ready to use.
                       </p>
                     )}
                     {(discoveryStats?.genreSkipped ?? 0) > 0 && (
                       <p className="text-xs text-warning-text mt-1">
-                        The scan hit its time budget before every candidate could be checked for genre, so {discoveryStats?.genreSkipped} were left out. Everything shown is fully scored and ready to use.
+                        The scan hit its time budget before every candidate could be checked for genre, so {discoveryStats?.genreSkipped} {discoveryStats?.genreSkipped === 1 ? "was" : "were"} left out. Everything shown is fully scored and ready to use.
                       </p>
                     )}
                     {discoveryStats?.genreFocus && (
@@ -1023,13 +1039,7 @@ export default function GrowthPage() {
                   <EmptyState
                     icon={<Info className="w-12 h-12" />}
                     title={focusBlamesGenre ? `No ${genreLabel(discoveryStats!.genreFocus!)} matches` : "No suggestions found"}
-                    description={
-                      focusBlamesGenre
-                        ? ((discoveryStats!.genreSkipped ?? 0) === 0 && (discoveryStats!.genreUnknown ?? 0) === 0
-                          ? `None of the ${discoveryStats!.genreChecked} accounts checked had recent tracks tagged ${genreLabel(discoveryStats!.genreFocus!)}. Scan again with any genre, or pick different seeds.`
-                          : `None of the ${discoveryStats!.genreChecked} accounts checked matched ${genreLabel(discoveryStats!.genreFocus!)}, but ${(discoveryStats!.genreUnknown ?? 0) + (discoveryStats!.genreSkipped ?? 0)} could not be placed (no genre info, or not checked in time), so a match may exist among them. Scan again with any genre, or pick different seeds.`)
-                        : "Try selecting different inspiration users or strategy."
-                    }
+                    description={emptyDescription}
                     action={
                       focusBlamesGenre ? (
                         <Button

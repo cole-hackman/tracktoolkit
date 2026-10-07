@@ -181,15 +181,17 @@ lookup from `limit` (default 50) to the top `GENRE_FOCUS_LOOKUP_MAX` (150)
 candidates, keeps those whose recent `genre`/`tag_list` match the slug or an
 alias as a whole word (`deep-house` matches `house`, `housewife` does not),
 and returns the top `limit`. Candidates whose genre could not be established
-(deadline, failed lookup, no tracks, no genre metadata) are **excluded and
-counted** in `stats.genreUnknown`, never guessed. Cost: up to +100 track calls
+(failed lookup, no tracks, no genre metadata, or the deadline passing before
+its lookup ran) are **excluded and counted** (`stats.genreUnknown` and
+`stats.genreSkipped` respectively), never guessed. Cost: up to +100 track calls
 per scan inside the same 45 s budget; it is still one request against the
 shared 20/hour `heavyOperationRateLimiter` budget (shared with merge, clone and
 every bulk write), and follow caps are unchanged. `stats` separates
 `genreChecked` (lookups attempted), `genreUnknown` (attempted, no usable genre)
 and `genreSkipped` (deadline hit before the lookup ran). The chosen `genre` is
 recorded in the `OperationLog` metadata. With no focus the call count is
-identical to before. `genre` validates `.isString()` first (array bypass).
+identical to before. `stats.crawlPartial` reports a cut-short seed crawl
+separately from skipped lookups (`partial` is kept for compatibility). `genre` validates `.isString()` first (array bypass).
 
 ### Feedback (`routes/feedback.js`)
 
