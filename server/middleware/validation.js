@@ -1,5 +1,6 @@
 import { body, param, query, validationResult } from 'express-validator';
 import { parseKeywords } from '../lib/playlist-search.js';
+import { GENRE_FOCUS_SLUGS } from '../lib/genres.js';
 
 function validateSoundCloudUrl(value) {
   if (!value) return true;
@@ -838,6 +839,14 @@ export const validateGrowthDiscover = [
     .optional()
     .isIn(['followers', 'followings', 'both'])
     .withMessage('strategy must be one of: followers, followings, both'),
+  // .isString() leads: express-validator applies validators element-wise to
+  // an array, so `genre: ['house']` would otherwise satisfy .isIn().
+  body('genre')
+    .optional()
+    .isString()
+    .withMessage('genre must be a string')
+    .isIn(GENRE_FOCUS_SLUGS)
+    .withMessage('genre must be one of the supported genre focus options'),
   handleValidationErrors
 ];
 

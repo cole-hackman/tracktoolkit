@@ -8,6 +8,8 @@ export interface FieldRenderProps {
   "aria-describedby": string | undefined;
   "aria-invalid": "true" | undefined;
   "aria-required": "true" | undefined;
+  /** Marker `Select` requires when it takes its name from this Field's label. */
+  "data-field-labelled": true;
 }
 
 export interface FieldProps {
@@ -83,6 +85,7 @@ export function Field({
         "aria-describedby": describedBy || undefined,
         "aria-invalid": error ? "true" : undefined,
         "aria-required": required ? "true" : undefined,
+        "data-field-labelled": true,
       })}
 
       {hint && (

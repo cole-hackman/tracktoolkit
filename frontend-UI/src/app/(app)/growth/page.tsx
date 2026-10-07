@@ -51,6 +51,7 @@ import {
   useGrowthStatsQuery,
 } from "@/lib/queries";
 import { asArray } from "@/lib/api-shape";
+import { GENRE_FOCUS_OPTIONS, genreLabel } from "@/lib/genres";
 
 const RISK_ACK_KEY = "sc-toolkit-growth-risk-ack";
 
@@ -105,7 +106,10 @@ interface Suggestion {
     sharedInspirationCount: number;
     isRelatedArtist: boolean;
     isCreator: boolean;
+    genreAffinity?: number | null;
   };
+  /** Top genres from the candidate's recent tracks (empty when unknown). */
+  genres?: string[];
   suggestedTrack: {
     id: number;
     title: string;
@@ -150,10 +154,21 @@ interface DiscoveryStats {
   afterDedup: number;
   suggestionsReturned: number;
   seedGenres?: string[];
+  /** Set when the scan ran with a genre focus. */
+  genreFocus?: string | null;
+  genreChecked?: number | null;
+  genreMatched?: number | null;
+  genreUnknown?: number | null;
+  /** Candidates whose lookup never ran because the time budget was spent. */
+  genreSkipped?: number | null;
   durationMs?: number;
   sampleCapPerSeed?: number;
   sampledFollowers?: boolean;
   partial?: boolean;
+  /** The seed crawl itself was cut short (distinct from skipped genre lookups). */
+  crawlPartial?: boolean;
+  /** Candidates whose track lookup never ran (deadline), focus or not. */
+  lookupsSkipped?: number;
   perSeed?: {
     id: number;
     followersFetched: number;
@@ -239,6 +254,8 @@ export default function GrowthPage() {
   // Tab 1: Discover state
   const [selectedInspirations, setSelectedInspirations] = useState<Set<number>>(new Set());
   const [strategy, setStrategy] = useState<'followers' | 'followings' | 'both'>('followers');
+  // "any" = no focus. Anything else is a slug from lib/genres.ts.
+  const [genreFocus, setGenreFocus] = useState<string>("any");
   const [discoveryStep, setDiscoveryStep] = useState<1 | 2 | 3 | 4>(1);
   const [searchInspirations, setSearchInspirations] = useState("");
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -319,7 +336,7 @@ export default function GrowthPage() {
 
   // Discovery Mutation
   const discoverMutation = useMutation({
-    mutationFn: async (payload: { inspirationUserIds: number[]; strategy: string }) => {
+    mutationFn: async (payload: { inspirationUserIds: number[]; strategy: string; genre?: string }) => {
       setDiscoveryStartedAt(Date.now());
       setDiscoveryStep(2);
       const res = await apiFetch("/api/growth/discover", {
@@ -343,8 +360,11 @@ export default function GrowthPage() {
       setSelectedSuggestions(autoSelected);
       setDiscoveryStep(3);
       const found = data.suggestions.length;
+      const focus: string | null | undefined = data.stats?.genreFocus;
       announce(
-        `Discovery finished — ${found} suggestion${found === 1 ? "" : "s"} found, ${autoSelected.size} selected.`,
+        focus
+          ? `Discovery finished — ${found} ${genreLabel(focus)} suggestion${found === 1 ? "" : "s"} found, ${autoSelected.size} selected.`
+          : `Discovery finished — ${found} suggestion${found === 1 ? "" : "s"} found, ${autoSelected.size} selected.`,
       );
     },
     onError: (err: Error) => {
@@ -572,7 +592,52 @@ export default function GrowthPage() {
     };
     const totalPages = selectedSeeds.reduce((sum, f) => sum + pagesForSeed(f), 0);
     const crawlSeconds = (totalPages * 1.2) / 2; // ~1.2s per page, 2 seeds crawled concurrently
-    return Math.min(60, Math.round(10 + crawlSeconds + 8)); // + auth lists / related artists + track lookups
+    // + auth lists / related artists + track lookups. A genre focus looks up
+    // up to 150 candidates' tracks instead of ~50: ~100 more calls, 5 at a time.
+    const focusSeconds = genreFocus !== "any" ? 16 : 0;
+    return Math.min(60, Math.round(10 + crawlSeconds + 8 + focusSeconds));
+  })();
+
+  // A focus only explains an empty result when it actually checked someone;
+  // with nothing checked (e.g. no candidates at all) the genre is not to blame.
+  const focusBlamesGenre = Boolean(discoveryStats?.genreFocus) && (discoveryStats?.genreChecked ?? 0) > 0;
+
+  // One notice for the time budget, whichever combination of crawl and lookups
+  // it cut short. Nothing here may claim the results are "fully scored".
+  const budgetNotice = (() => {
+    const st = discoveryStats;
+    if (!st) return null;
+    const crawlCut = st.crawlPartial ?? st.partial ?? false;
+    const focused = Boolean(st.genreFocus);
+    const n = (focused ? st.genreSkipped : st.lookupsSkipped) ?? 0;
+    const lookupCut =
+      n > 0
+        ? focused
+          ? `${n} ${n === 1 ? "candidate was" : "candidates were"} not checked for genre and ${n === 1 ? "was" : "were"} left out`
+          : `${n} ${n === 1 ? "suggestion wasn't" : "suggestions weren't"} checked for genre or recent tracks — those details are missing, and ${n === 1 ? "it was" : "they were"} ranked without genre fit`
+        : null;
+    if (crawlCut && lookupCut) {
+      return `The scan hit its time budget: results come from a partial crawl, and ${lookupCut}.`;
+    }
+    if (crawlCut) return "The scan hit its time budget, so results come from a partial crawl.";
+    if (lookupCut) return `The scan hit its time budget: ${lookupCut}.`;
+    return null;
+  })();
+
+  const noneOf = (n: number | null | undefined) => (n === 1 ? "The 1 account" : `None of the ${n ?? 0} accounts`);
+  const emptyDescription = (() => {
+    const st = discoveryStats;
+    if (focusBlamesGenre && st?.genreFocus) {
+      const label = genreLabel(st.genreFocus);
+      const unplaced = (st.genreUnknown ?? 0) + (st.genreSkipped ?? 0);
+      return unplaced === 0
+        ? `${noneOf(st.genreChecked)} checked had recent tracks tagged ${label}. Scan again with any genre, or pick different seeds.`
+        : `${noneOf(st.genreChecked)} checked matched ${label}, but ${unplaced} could not be placed (no genre info, or not checked in time), so a match may exist among them. Scan again with any genre, or pick different seeds.`;
+    }
+    if (st?.genreFocus && (st.genreSkipped ?? 0) > 0) {
+      return "The scan ran out of its time budget before any account could be checked for genre. Try again, or use fewer seeds.";
+    }
+    return "Try selecting different inspiration users or strategy.";
   })();
 
   const handleInspirationClick = (id: number) => {
@@ -785,6 +850,27 @@ export default function GrowthPage() {
                   <option value="followings">Scan Their Followings</option>
                   <option value="both">Scan Both</option>
                 </Select>
+
+                <Field
+                  id="growth-genre-focus"
+                  label="Genre focus"
+                  hint="Only suggests accounts whose recent tracks match; checks more accounts, so the scan takes a little longer."
+                  className="sm:col-span-2"
+                >
+                  {(field) => (
+                    <Select
+                      {...field}
+                      value={genreFocus}
+                      onChange={(e) => setGenreFocus(e.target.value)}
+                      className="bg-secondary/20"
+                    >
+                      <option value="any">Any genre</option>
+                      {GENRE_FOCUS_OPTIONS.map((o) => (
+                        <option key={o.slug} value={o.slug}>{o.label}</option>
+                      ))}
+                    </Select>
+                  )}
+                </Field>
               </div>
 
               <div className="text-sm text-muted-foreground mb-3 flex items-center justify-between gap-3">
@@ -838,9 +924,10 @@ export default function GrowthPage() {
               {/* Start Discovery Trigger */}
               <div className="mt-6 flex justify-end">
                 <Button
-                  onClick={() => discoverMutation.mutate({ 
-                    inspirationUserIds: Array.from(selectedInspirations), 
-                    strategy 
+                  onClick={() => discoverMutation.mutate({
+                    inspirationUserIds: Array.from(selectedInspirations),
+                    strategy,
+                    ...(genreFocus !== "any" ? { genre: genreFocus } : {}),
                   })}
                   disabled={selectedInspirations.size === 0 || discoverMutation.isPending}
                   className="gap-2 h-11 px-6 shadow-glow-sm"
@@ -906,9 +993,26 @@ export default function GrowthPage() {
                         Large seeds were sampled: most recent {(discoveryStats.sampleCapPerSeed ?? 1000).toLocaleString()} followers per seed — the slice most likely to still be active.
                       </p>
                     )}
-                    {discoveryStats?.partial && (
-                      <p className="text-xs text-warning-text mt-1">
-                        The scan hit its time budget, so results come from a partial crawl. Everything shown is fully scored and ready to use.
+                    {budgetNotice && (
+                      <p data-testid="budget-notice" className="text-xs text-warning-text mt-1">
+                        {budgetNotice}
+                      </p>
+                    )}
+                    {discoveryStats?.genreFocus && (
+                      <p className="mt-1 text-xs text-foreground">
+                        <span className="font-semibold">Focus: {genreLabel(discoveryStats.genreFocus)}</span>
+                        {" · "}
+                        {discoveryStats.genreMatched ?? 0} of {discoveryStats.genreChecked ?? 0} checked matched
+                        {(discoveryStats.genreMatched ?? 0) > suggestions.length && ` (showing top ${suggestions.length})`}
+                        {((discoveryStats.genreUnknown ?? 0) > 0 || (discoveryStats.genreSkipped ?? 0) > 0) && (
+                          <span className="text-muted-foreground">
+                            {" "}
+                            ({[
+                              (discoveryStats.genreUnknown ?? 0) > 0 ? `${discoveryStats.genreUnknown} had no genre info` : null,
+                              (discoveryStats.genreSkipped ?? 0) > 0 ? `${discoveryStats.genreSkipped} not checked in time` : null,
+                            ].filter(Boolean).join(", ")}; left out)
+                          </span>
+                        )}
                       </p>
                     )}
                     {discoveryStats?.seedGenres && discoveryStats.seedGenres.length > 0 && (
@@ -954,8 +1058,26 @@ export default function GrowthPage() {
                 {suggestions.length === 0 ? (
                   <EmptyState
                     icon={<Info className="w-12 h-12" />}
-                    title="No suggestions found"
-                    description="Try selecting different inspiration users or strategy."
+                    title={focusBlamesGenre ? `No ${genreLabel(discoveryStats!.genreFocus!)} matches` : "No suggestions found"}
+                    description={emptyDescription}
+                    action={
+                      focusBlamesGenre ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={discoverMutation.isPending}
+                          onClick={() => {
+                            setGenreFocus("any");
+                            discoverMutation.mutate({
+                              inspirationUserIds: Array.from(selectedInspirations),
+                              strategy,
+                            });
+                          }}
+                        >
+                          Scan again with any genre
+                        </Button>
+                      ) : undefined
+                    }
                   />
                 ) : (
                   <ProgressiveBlur
@@ -1017,6 +1139,19 @@ export default function GrowthPage() {
                               <span aria-hidden="true">•</span>
                               <span>Ratio: {sug.signals.followBackRatio}</span>
                             </span>
+
+                            {sug.genres && sug.genres.length > 0 && (
+                              <span className="mt-2 flex flex-wrap gap-1.5">
+                                {sug.genres.slice(0, 3).map((g) => (
+                                  <span
+                                    key={g}
+                                    className="max-w-full truncate rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary-text"
+                                  >
+                                    {g}
+                                  </span>
+                                ))}
+                              </span>
+                            )}
 
                             {/* Seed reason */}
                             <span className="mt-2 block w-fit text-xs bg-secondary/40 px-2.5 py-1 rounded-md text-muted-foreground">
