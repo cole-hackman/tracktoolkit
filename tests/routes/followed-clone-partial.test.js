@@ -318,6 +318,33 @@ describe('followed clone: nothing was written', () => {
     expect(createPlaylist).toHaveBeenCalledTimes(1);
   });
 
+  test('one part left untried is singular', async () => {
+    sources({ 5: 501 }); // chunks 500, 1
+    playlistsApi();
+    createPlaylist.mockRejectedValueOnce(scError(502));
+    const res = await clone([5]);
+
+    expect(res.body.errors[0].error).toMatch(/1 more part was not attempted\.$/);
+    expect(createPlaylist).toHaveBeenCalledTimes(1);
+  });
+
+  test('a throw that reaches the outer catch after a write never says nothing changed', async () => {
+    // The real logOperation cannot throw; this pins the outer catch, which
+    // must report the write it knows was attempted and refresh the list.
+    sources({ 5: 50 });
+    playlistsApi();
+    logOperation.mockImplementationOnce(() => {
+      throw Object.assign(new Error('boom'), { status: 503 });
+    });
+    const res = await clone([5]);
+
+    expect(createPlaylist).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(502);
+    expect(res.body.error).toMatch(/Some changes may have been made/);
+    expect(res.body.error).not.toMatch(/Nothing was changed/);
+    expect(invalidatePlaylistState).toHaveBeenCalledWith('user-a');
+  });
+
   test('NOT_FOLLOWED is still the 403, ahead of everything', async () => {
     getFollowings.mockResolvedValue([{ id: 222 }]);
     const res = await clone([5]);
