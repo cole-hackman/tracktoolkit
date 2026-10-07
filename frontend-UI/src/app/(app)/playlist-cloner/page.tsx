@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, useState, FormEvent } from "react";
 import { CopyPlus, ArrowRight, Music, Link as LinkIcon, Loader2, Link2 } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { useQueryClient } from "@tanstack/react-query";
+import { apiFetch, errorMessageFromBody } from "@/lib/api";
+import { invalidatePlaylistCaches } from "@/lib/queries";
 import {
   Button,
   Card,
@@ -26,6 +28,7 @@ interface ClonedPlaylist {
 
 export default function PlaylistClonerPage() {
   const announce = useAnnounce();
+  const queryClient = useQueryClient();
   const [url, setUrl] = useState("");
   const [customTitle, setCustomTitle] = useState("");
   const [isCloning, setIsCloning] = useState(false);
@@ -72,10 +75,18 @@ export default function PlaylistClonerPage() {
         body: JSON.stringify(body),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
       if (!res.ok) {
-        throw new Error(data.error || "Failed to clone playlist");
+        // Show the reason first: it must not wait on a list refetch.
+        setError(errorMessageFromBody(data, "Failed to clone playlist"));
+        if (res.status === 502 && data?.code === "SOUNDCLOUD_UNAVAILABLE") {
+          // A write may have landed before SoundCloud stopped answering; the
+          // user is told to check their playlists, so make that list fresh.
+          void invalidatePlaylistCaches(queryClient);
+        }
+        return;
       }
+      if (!data) throw new Error("Failed to clone playlist");
 
       const created: ClonedPlaylist[] = data.playlists ? data.playlists : [data.playlist];
       setResultPlaylists(created);

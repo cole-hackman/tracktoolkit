@@ -194,7 +194,10 @@ export default function ActivityToPlaylistPage() {
           announce("Playlist saved", { assertive: true });
           setSelected(new Set());
         } else {
-          setNotice({ type: "error", text: "Failed to create playlist." });
+          setNotice({
+            type: "error",
+            text: await readApiErrorMessage(response, "Failed to create playlist."),
+          });
         }
       } else if (selectedPlaylistId) {
         if (selectedPlaylistQuery.data) {

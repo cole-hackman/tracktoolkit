@@ -27,18 +27,18 @@
 
 <p align="center">
   <a href="https://github.com/cole-hackman/tracktoolkit/actions/workflows/azure-deploy.yml"><img src="https://github.com/cole-hackman/tracktoolkit/actions/workflows/azure-deploy.yml/badge.svg" alt="Deploy to Azure"></a>
-  <a href="https://tracktoolkit.com/api/stats/public"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftracktoolkit.com%2Fapi%2Fstats%2Fpublic&query=%24.formatted.lifetimeUsers&label=users%20all-time&color=ff5500&cacheSeconds=3600" alt="Users, all-time"></a>
+  <a href="https://tracktoolkit.com/api/stats/public"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftracktoolkit.com%2Fapi%2Fstats%2Fpublic&query=%24.formatted.lifetimeUsers&label=users%20all-time&color=ff5500&cacheSeconds=1800" alt="Users, all-time"></a>
+  <a href="https://tracktoolkit.com/api/stats/public"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftracktoolkit.com%2Fapi%2Fstats%2Fpublic&query=%24.formatted.tracksProcessed&label=tracks%20processed&color=ff5500&cacheSeconds=1800" alt="Tracks processed, all-time"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Shield%201.0.0-blue" alt="License: PolyForm Shield 1.0.0"></a>
 </p>
 
 <p align="center">
   <sub>
-    🎵 2.5M+ tracks processed ·
     ✅ 97% of operations succeed ·
     🧰 20 tools on one dashboard ·
     🧑‍💻 Built and run solo
     <br>
-    <i>Figures from the production admin dashboard, September 2026. The users badge is live and updates daily.</i>
+    <i>The users and tracks badges are live and update daily. The success rate is from the production admin dashboard, September 2026.</i>
   </sub>
 </p>
 
@@ -141,7 +141,7 @@ flowchart LR
 <details>
 <summary><b>Where the usage numbers come from</b></summary>
 
-The users badge reads [`/api/stats/public`](https://tracktoolkit.com/api/stats/public),
+Both badges read [`/api/stats/public`](https://tracktoolkit.com/api/stats/public),
 which serves counters the production retention job recomputes every day.
 **Users** is everyone who has ever run an operation. **Tracks processed** is
 the running total of tracks across every operation. Both live in the
