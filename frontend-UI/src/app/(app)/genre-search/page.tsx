@@ -3,7 +3,7 @@
 import { useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Search, Plus, Music, ChevronDown } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, errorMessageFromBody } from "@/lib/api";
 import {
   Button,
   Card,
@@ -218,7 +218,14 @@ export default function GenreSearchPage() {
         setSelectedTracks(new Set());
         setPlaylistName("");
       } else {
-        setAddError(typeof data?.error === "string" ? data.error : "Failed to add tracks.");
+        // Show the reason first: it must not wait on a cold list refetch.
+        setAddError(errorMessageFromBody(data, "Failed to add tracks."));
+        if (res.status === 409 && data?.code === "PLAYLIST_NOT_FOUND") {
+          // The chosen target is gone from SoundCloud and nothing was written.
+          const missingId = Number(data.playlistId);
+          setTargetPlaylist((prev) => (prev && Number(prev.id) === missingId ? null : prev));
+          void invalidatePlaylistCaches(queryClient);
+        }
       }
     } catch {
       setAddError("An error occurred. Please try again.");

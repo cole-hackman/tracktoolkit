@@ -4,7 +4,7 @@ import { useState, useEffect, useId, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { Check, Plus, Music } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, errorMessageFromBody } from "@/lib/api";
 import {
   Button,
   Card,
@@ -192,8 +192,15 @@ export default function LikesToPlaylistPage() {
           { assertive: true },
         );
       } else {
-        const message = typeof data?.error === "string" ? data.error : "Failed to create playlist";
-        setNotice({ type: "error", text: message });
+        // Show the reason first: it must not wait on a cold list refetch.
+        setNotice({ type: "error", text: errorMessageFromBody(data, "Failed to create playlist") });
+        if (response.status === 409 && data?.code === "PLAYLIST_NOT_FOUND") {
+          // The chosen target is gone from SoundCloud and nothing was written:
+          // drop it from the target slot and refetch the list.
+          const missingId = Number(data.playlistId);
+          setTargetPlaylist((prev) => (prev && Number(prev.id) === missingId ? null : prev));
+          void invalidatePlaylistCaches(queryClient);
+        }
       }
     } catch (error) {
       console.error("Error creating playlist:", error);
