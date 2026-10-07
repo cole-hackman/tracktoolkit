@@ -186,6 +186,30 @@ All `/growth/*` routes are `authenticateUser`; the write-heavy ones also carry
 `heavyOperationRateLimiter`. Follow caps are enforced server-side (50/24h +
 30-minute session cooldown) regardless of what the client requests.
 
+**Genre focus** (`genre` on `POST /growth/discover`, one of
+`GENRE_FOCUS_SLUGS` in `server/lib/genres.js`; the client list is
+`frontend-UI/src/lib/genres.ts` and `tests/genre-list-parity.test.js` fails if
+they drift). SoundCloud users have no genre field, so a candidate's genre is
+only known after its `/users/:id/tracks` lookup. A focus therefore widens that
+lookup from `limit` (default 50) to the top `GENRE_FOCUS_LOOKUP_MAX` (150)
+candidates, keeps those whose recent `genre`/`tag_list` match the slug or an
+alias as a whole word (`deep-house` matches `house`, `housewife` does not),
+and returns the top `limit`. Candidates whose genre could not be established
+are **excluded and counted**, never guessed. `stats` separates `genreChecked`
+(lookups attempted), `genreUnknown` (attempted, no usable genre: failed, no
+tracks, no genre metadata) and `genreSkipped` (the deadline passed before the
+lookup ran). `stats.lookupsSkipped` is the same skipped count with or without a
+focus (with no focus, skipped candidates are still returned, with a neutral
+genre score), and `stats.crawlPartial` reports a cut-short seed crawl
+separately (`partial` is kept for compatibility).
+
+Cost: up to +100 track calls per scan inside the same 45 s budget; it is still
+one request against the shared 20/hour `heavyOperationRateLimiter` budget
+(shared with merge, clone and every bulk write), and follow caps are unchanged.
+With no focus the call count is identical to before. The chosen `genre` is
+recorded in the `OperationLog` metadata. `genre` validates `.isString()` first
+(array bypass).
+
 ### Feedback (`routes/feedback.js`)
 
 The live in-app "Send feedback" form. Login-required by decision, so every row
@@ -518,7 +542,7 @@ that the modal (mounted by the `(app)` layout) was acknowledged in this tab.
 **Banner layout contract.** The banner sits in normal flow, sticky at `top: 0`
 with `z-40`, and publishes its measured height as `--announcement-h` on the
 document element. The two `position: fixed` headers that would otherwise sit
-under it — the landing nav in `app/page.tsx` and the mobile header in
+under it — the landing nav in `app/(home)/page.tsx` and the mobile header in
 `AppShell.tsx` — read that variable as their `top`. It is declared `0px` in
 `globals.css`, so both are correct before the banner mounts and after it is
 dismissed. `z-40` is deliberate: above page content, below the mobile drawer
@@ -598,6 +622,17 @@ bulk-remove reports that playlist as an error row and continues; bulk-add,
 `PUT /api/playlists/:id`, merge-into-existing, from-likes-into-existing, the
 followed-likes append (`createOrAppendTrackIds`) and transfer-track return 409.
 Playlists with no `track_count` are not guarded.
+
+**Append writers never write less than the existing list.** Merge-into-existing,
+from-likes-into-existing and `createOrAppendTrackIds` grow the target through
+`writeGrowingPrefix` with `floor = existingIds.length`: every PUT is a prefix of
+`[...existing, ...new]`, so it contains the whole existing list, and a later
+write that fails (429 after retries, 5xx, timeout) leaves the target with all its
+old tracks plus some new ones. The route still answers an error, and nothing
+claims success. A target that already holds more than 500 tracks is refused with
+409 before any write (`assertAppendable`, `PlaylistTooLargeError`), because
+rewriting it at 500 would drop the rest. `tests/routes/playlist-append-truncation.test.js`
+pins both.
 
 **Rewrite reads are all-access, because SoundCloud's default hides blocked
 tracks.** `GET /playlists/{id}` defaults `access` to `playable,preview`, so a

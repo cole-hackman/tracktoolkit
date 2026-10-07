@@ -37,7 +37,7 @@ const router = express.Router();
  */
 router.post('/growth/discover', authenticateUser, heavyOperationRateLimiter, validateGrowthDiscover, async (req, res) => {
   try {
-    const { inspirationUserIds, limit, strategy } = req.body;
+    const { inspirationUserIds, limit, strategy, genre } = req.body;
 
     // Never resurface anyone previously targeted (including reversed follows)
     // and preload the auth user's own lists through the shared request cache
@@ -60,6 +60,7 @@ router.post('/growth/discover', authenticateUser, heavyOperationRateLimiter, val
       refreshToken: req.refreshToken,
       strategy,
       limit,
+      genre,
       excludedTargetIds: priorTargets.map((t) => Number(t.targetId)),
       // On a preload failure the engine falls back to fetching these itself
       authFollowingIds: followingsPayload ? followingsPayload.collection.map((u) => u.id) : null,
@@ -73,7 +74,7 @@ router.post('/growth/discover', authenticateUser, heavyOperationRateLimiter, val
       status: 'success',
       targetUserIds: (result?.suggestions ?? []).map(s => s.user?.id).filter(id => id != null),
       trackIds: (result?.suggestions ?? []).map(s => s.suggestedTrack?.id).filter(id => id != null),
-      metadata: { inspirationUserIds },
+      metadata: { inspirationUserIds, genre: genre || null },
     });
   } catch (error) {
     logger.error('Growth discover error:', safeError(error));

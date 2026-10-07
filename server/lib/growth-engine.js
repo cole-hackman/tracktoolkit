@@ -1,5 +1,6 @@
 import logger from './logger.js';
 import { sleep } from './pacing.js';
+import { findGenreFocusMatch } from './genres.js';
 
 const DISCOVERY_TRACK_CONCURRENCY = 5;
 // Per seed and per direction (followers/followings), sample only the most
@@ -11,6 +12,10 @@ const SEED_CRAWL_CONCURRENCY = 2;
 // Discovery runs inside a synchronous HTTP request; stay well under the
 // platform gateway timeout and return partial results instead of failing.
 export const DISCOVERY_TIME_BUDGET_MS = 45_000;
+// With a genre focus the per-candidate track lookup (the only place a
+// candidate's genre becomes known) is widened from `limit` to this many of the
+// top-scored candidates: up to +100 /users/:id/tracks calls per scan.
+export const GENRE_FOCUS_LOOKUP_MAX = 150;
 
 async function mapWithConcurrency(items, concurrency, worker) {
   const results = new Array(items.length);
@@ -121,6 +126,7 @@ export class GrowthEngine {
     authFollowingIds = null,
     authFollowerIds = null,
     timeBudgetMs = DISCOVERY_TIME_BUDGET_MS,
+    genre = null,
   }) {
     const startedAt = Date.now();
     const deadlineAt = startedAt + timeBudgetMs;
@@ -182,6 +188,11 @@ export class GrowthEngine {
 
       return { inspId, skipped: false, seedTracksResult, followersResult, peersResult, relatedResult };
     });
+
+    // Was the deadline already spent when the crawl phase ended? Then a seed's
+    // pagination may have stopped early. Measured here, before the track
+    // lookups, so lookups that merely finish late do not count as a cut crawl.
+    const crawlEndedPastDeadline = Date.now() >= deadlineAt;
 
     // Merge crawl results sequentially in seed order so appearance counts and
     // isRelated flags come out identical to the old sequential crawl.
@@ -304,21 +315,33 @@ export class GrowthEngine {
 
     // 5. Sort by score descending and limit
     scoredSuggestions.sort((a, b) => b.score - a.score);
-    const topSuggestions = scoredSuggestions.slice(0, limit);
+    // A genre focus has to look at more candidates than it returns: genre is
+    // only known after the track lookup below, so the slice is widened.
+    const lookupCount = genre
+      ? Math.min(GENRE_FOCUS_LOOKUP_MAX, scoredSuggestions.length)
+      : limit;
+    const topSuggestions = scoredSuggestions.slice(0, lookupCount);
 
     // 6. Fetch best track for top suggestions and apply genre-affinity re-score
     logger.info(`[GrowthEngine] Fetching best tracks for top ${topSuggestions.length} candidates`);
     const results = await mapWithConcurrency(topSuggestions, DISCOVERY_TRACK_CONCURRENCY, async (sug) => {
       let suggestedTrack = null;
       let genreAffinity = null;
+      let candidateGenres = [];
+      let genreTokens = new Set();
+      let skipped = false;
       // Past the time budget, skip the lookup: null affinity keeps the score
       // neutral, exactly like the failed-fetch path below.
       try {
-        const tracks = Date.now() >= deadlineAt
+        if (Date.now() >= deadlineAt) skipped = true;
+        const tracks = skipped
           ? null
           : await this.soundcloudClient.getUserTracks(sug.user.id, accessToken, refreshToken, 5);
         if (tracks && tracks.length > 0) {
           genreAffinity = computeGenreAffinity(tracks, seedGenres);
+          candidateGenres = topGenres(tracks, 3);
+          genreTokens = new Set();
+          for (const t of tracks) for (const g of extractGenres(t)) genreTokens.add(g);
           const sortedTracks = [...tracks].sort((a, b) => (b.likes_count || 0) - (a.likes_count || 0));
           const best = sortedTracks[0];
           suggestedTrack = {
@@ -350,25 +373,69 @@ export class GrowthEngine {
         scoreLabel: rescored.scoreLabel,
         signals: rescored.signals,
         suggestedTrack,
+        genres: candidateGenres,
+        _genreTokens: genreTokens,
+        _genreSkipped: skipped,
       };
     });
 
+    // Candidates whose track lookup never ran because the deadline had passed.
+    // Reported with or without a focus so an unfocused scan can warn too.
+    const lookupsSkipped = results.filter((r) => r._genreSkipped).length;
+    let finalResults = results;
+    let genreChecked = null;
+    let genreMatched = null;
+    let genreUnknown = null;
+    let genreSkipped = null;
+    // With a focus keep only candidates whose fetched tracks match. A candidate
+    // whose genre could not be established is excluded and counted, never
+    // guessed. Skipped = the deadline passed before its lookup ran; unknown =
+    // the lookup ran but gave no genre (failed, no tracks, no metadata).
+    if (genre) {
+      genreSkipped = lookupsSkipped;
+      genreChecked = results.length - genreSkipped;
+      genreUnknown = results.filter((r) => !r._genreSkipped && r._genreTokens.size === 0).length;
+      finalResults = [];
+      for (const r of results) {
+        const hit = findGenreFocusMatch(r._genreTokens, genre);
+        if (hit === null) continue;
+        // The token that matched leads, so the chip explains the match.
+        r.genres = [hit, ...r.genres.filter((g) => g !== hit)].slice(0, 3);
+        finalResults.push(r);
+      }
+      genreMatched = finalResults.length;
+    }
+    for (const r of results) {
+      delete r._genreTokens;
+      delete r._genreSkipped;
+    }
+
     // Genre affinity can reorder the top set
-    results.sort((a, b) => b.score - a.score);
+    finalResults.sort((a, b) => b.score - a.score);
+    finalResults = finalResults.slice(0, limit);
 
     return {
-      suggestions: results,
+      suggestions: finalResults,
       stats: {
         inspirationUsers: inspirationUserIds.length,
         candidatesScanned: candidates.length,
         afterDedup: filteredCandidates.length,
-        suggestionsReturned: results.length,
+        suggestionsReturned: finalResults.length,
+        genreFocus: genre || null,
+        genreChecked,
+        genreMatched,
+        genreUnknown,
+        genreSkipped,
+        lookupsSkipped,
         seedGenres: Array.from(seedGenres.keys()).slice(0, 10),
         trackLookupConcurrency: DISCOVERY_TRACK_CONCURRENCY,
         durationMs: Date.now() - startedAt,
         sampleCapPerSeed: SEED_SAMPLE_MAX,
         sampledFollowers: perSeed.some((s) => s.sampled),
         partial: Date.now() >= deadlineAt || perSeed.some((s) => s.skipped),
+        // The crawl itself was cut short (a seed skipped, or the deadline hit
+        // before it finished); distinct from candidate lookups being skipped.
+        crawlPartial: crawlEndedPastDeadline || perSeed.some((s) => s.skipped),
         perSeed,
         timeBudgetMs,
       },
@@ -638,6 +705,18 @@ function extractGenres(track) {
     }
   }
   return genres;
+}
+
+/** Up to `n` genre tokens across the tracks, most frequent first. */
+function topGenres(tracks, n) {
+  const counts = new Map();
+  for (const t of tracks || []) {
+    for (const g of extractGenres(t)) counts.set(g, (counts.get(g) || 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, n)
+    .map(([g]) => g);
 }
 
 function computeGenreAffinity(candidateTracks, seedGenres) {

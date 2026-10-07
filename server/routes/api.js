@@ -39,7 +39,10 @@ import {
   duplicateTrackBetweenPlaylists,
   moveTrackBetweenPlaylists,
   readPlaylistForRewrite,
+  writeGrowingPrefix,
+  assertAppendable,
   PlaylistReadIncompleteError,
+  PlaylistTooLargeError,
   MAX_PLAYLIST_TRACKS,
 } from '../lib/playlist-transfer.js';
 import {
@@ -1510,6 +1513,7 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
       const { playlist: targetPlaylist, ids: existingIds } = await readPlaylistForRewrite(
         soundcloudClient, req.accessToken, req.refreshToken, targetPlaylistId,
       );
+      assertAppendable(existingIds);
       const existingTrackCount = existingIds.length;
 
       // Merge: preserve existing order, append new unique source tracks
@@ -1520,30 +1524,20 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
       const targetChunk = chunks[0] || [];
       const overflowChunks = chunks.slice(1);
 
-      // Update target playlist in 100-track batches
-      const mergeBatchSize = 100;
-      let updateIndex = mergeBatchSize;
-      while (updateIndex < targetChunk.length) {
-        await sleep(SC_WRITE_PACING_MS);
-        const batch = targetChunk.slice(0, updateIndex + mergeBatchSize);
-        await soundcloudClient.addTracksToPlaylist(
+      // Grow the target from its existing length, never from zero: each PUT
+      // replaces the whole list, so a failed later write must not leave the
+      // target shorter than it was.
+      await writeGrowingPrefix({
+        ids: targetChunk,
+        floor: existingIds.length,
+        batchSize: 100,
+        write: (prefix) => soundcloudClient.addTracksToPlaylist(
           req.accessToken,
           req.refreshToken,
           targetPlaylistId,
-          batch
-        );
-        updateIndex += mergeBatchSize;
-      }
-
-      // If target chunk has <= 100 tracks (or remaining after batches), update directly if needed
-      if (targetChunk.length <= 100) {
-        await soundcloudClient.addTracksToPlaylist(
-          req.accessToken,
-          req.refreshToken,
-          targetPlaylistId,
-          targetChunk
-        );
-      }
+          prefix
+        ),
+      });
 
       // Create new playlists for overflow chunks (>500 tracks)
       const baseTitle = (title && title.trim()) || targetPlaylist.title || 'Merged Playlist';
@@ -1558,21 +1552,21 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
           req.refreshToken,
           partTitle,
           playlistDescriptionWithToolkit(`Merged overflow part ${partNumber}`),
-          chunk.slice(0, mergeBatchSize)
+          chunk.slice(0, 100)
         );
 
-        let addIndex = mergeBatchSize;
-        while (addIndex < chunk.length) {
-          await sleep(SC_WRITE_PACING_MS);
-          const batch = chunk.slice(0, addIndex + mergeBatchSize);
-          await soundcloudClient.addTracksToPlaylist(
+        if (chunk.length > 100) await sleep(SC_WRITE_PACING_MS);
+        await writeGrowingPrefix({
+          ids: chunk,
+          floor: Math.min(100, chunk.length),
+          batchSize: 100,
+          write: (prefix) => soundcloudClient.addTracksToPlaylist(
             req.accessToken,
             req.refreshToken,
             newPl.id,
-            batch
-          );
-          addIndex += mergeBatchSize;
-        }
+            prefix
+          ),
+        });
 
         overflowPlaylists.push({
           id: newPl.id,
@@ -1845,10 +1839,12 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
       invalidatePlaylistState(req.user.id);
     }
   } catch (error) {
-    if (error instanceof PlaylistReadIncompleteError) {
-      // The target could not be read in full, so nothing was written.
+    if (error instanceof PlaylistReadIncompleteError || error instanceof PlaylistTooLargeError) {
+      // Refused before any write, so nothing was changed.
       return res.status(409).json({ error: error.message });
     }
+    // A write may have landed before the failure; do not serve a stale target.
+    invalidatePlaylistState(req.user.id);
     logger.error('Merge playlists error:', safeError(error));
     logOperation({
       userId: req.user.id,
@@ -1920,20 +1916,20 @@ async function createOrAppendTrackIds({ accessToken, refreshToken, trackIds, tit
     const { playlist: targetPlaylist, ids: existingIds } = await readPlaylistForRewrite(
       soundcloudClient, accessToken, refreshToken, targetPlaylistId,
     );
+    assertAppendable(existingIds);
     const { mergedIds, addedCount } = mergeIntoExisting(existingIds, uniqueTrackIds);
     const chunks = splitIntoChunks(mergedIds, MAX_TRACKS_PER_PLAYLIST);
     const targetChunk = chunks[0] || [];
     const overflowChunks = chunks.slice(1);
 
-    let index = BATCH_SIZE_PLAYLIST_TRACKS;
-    while (index < targetChunk.length) {
-      await sleep(SC_WRITE_PACING_MS);
-      await soundcloudClient.addTracksToPlaylist(accessToken, refreshToken, targetPlaylistId, targetChunk.slice(0, index));
-      index += BATCH_SIZE_PLAYLIST_TRACKS;
-    }
-
-    await sleep(SC_WRITE_PACING_MS);
-    await soundcloudClient.addTracksToPlaylist(accessToken, refreshToken, targetPlaylistId, targetChunk);
+    // Grow from the existing length, never from zero (see writeGrowingPrefix):
+    // a failed later write leaves the target no shorter than it was.
+    await writeGrowingPrefix({
+      ids: targetChunk,
+      floor: existingIds.length,
+      batchSize: BATCH_SIZE_PLAYLIST_TRACKS,
+      write: (prefix) => soundcloudClient.addTracksToPlaylist(accessToken, refreshToken, targetPlaylistId, prefix),
+    });
 
     const overflowPlaylists = [];
     const baseTitle = targetPlaylist.title || title || 'Playlist';
@@ -2162,9 +2158,10 @@ router.post(
         },
       });
     } catch (error) {
-      if (error instanceof PlaylistReadIncompleteError) {
+      if (error instanceof PlaylistReadIncompleteError || error instanceof PlaylistTooLargeError) {
         return res.status(409).json({ error: error.message });
       }
+      invalidatePlaylistState(req.user.id);
       logger.error('Create playlist from followed likes error:', safeError(error));
       const status = error?.status || 500;
       res.status(status === 403 ? 403 : 500).json({
@@ -2289,6 +2286,7 @@ router.post('/playlists/from-likes', authenticateUser, heavyOperationRateLimiter
       const { playlist: targetPlaylist, ids: existingIds } = await readPlaylistForRewrite(
         soundcloudClient, req.accessToken, req.refreshToken, targetPlaylistId,
       );
+      assertAppendable(existingIds);
       const existingTrackCount = existingIds.length;
 
       // Merge: preserve existing order, append new unique tracks
@@ -2299,27 +2297,19 @@ router.post('/playlists/from-likes', authenticateUser, heavyOperationRateLimiter
       const targetChunk = chunks[0] || [];
       const overflowChunks = chunks.slice(1);
 
-      // Update target playlist in 100-track batches
-      const batchSize = 100;
-      let i = batchSize;
-      while (i < targetChunk.length) {
-        await sleep(SC_WRITE_PACING_MS);
-        await soundcloudClient.addTracksToPlaylist(
+      // Grow the target from its existing length, never from zero, so a failed
+      // later write cannot leave it shorter than it was (see writeGrowingPrefix).
+      await writeGrowingPrefix({
+        ids: targetChunk,
+        floor: existingIds.length,
+        batchSize: 100,
+        write: (prefix) => soundcloudClient.addTracksToPlaylist(
           req.accessToken,
           req.refreshToken,
           targetPlaylistId,
-          targetChunk.slice(0, i)
-        );
-        i += batchSize;
-      }
-      // Final PUT with full target chunk
-      await sleep(SC_WRITE_PACING_MS);
-      await soundcloudClient.addTracksToPlaylist(
-        req.accessToken,
-        req.refreshToken,
-        targetPlaylistId,
-        targetChunk
-      );
+          prefix
+        ),
+      });
 
       // Create overflow playlists for tracks beyond 500
       const overflowPlaylists = [];
@@ -2435,9 +2425,10 @@ router.post('/playlists/from-likes', authenticateUser, heavyOperationRateLimiter
     invalidatePlaylistState(req.user.id);
     return;
   } catch (error) {
-    if (error instanceof PlaylistReadIncompleteError) {
+    if (error instanceof PlaylistReadIncompleteError || error instanceof PlaylistTooLargeError) {
       return res.status(409).json({ error: error.message });
     }
+    invalidatePlaylistState(req.user.id);
     logger.error('Create playlist from likes error:', safeError(error));
     res.status(500).json({ error: 'Failed to create playlist from likes' });
   }
