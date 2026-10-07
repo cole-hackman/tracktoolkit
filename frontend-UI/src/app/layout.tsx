@@ -56,7 +56,8 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     locale: "en_US",
-    url: "https://tracktoolkit.com/",
+    // No `url` here: inherited, it told every page without its own share card
+    // that it was the homepage. Public pages set theirs via pageMetadata().
     siteName: "Track Toolkit",
     title: "Track Toolkit – Organize, Merge & Clean SoundCloud Playlists",
     description:
