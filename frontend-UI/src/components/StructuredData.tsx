@@ -22,7 +22,6 @@ export function StructuredData({ faqs = [] }: StructuredDataProps) {
     logo: "https://tracktoolkit.com/brand/icon-512.png",
     description:
       "Track Toolkit helps SoundCloud power users organize, merge, and clean playlists.",
-    sameAs: [],
   };
 
   const softwareApplicationSchema = {
@@ -66,11 +65,8 @@ export function StructuredData({ faqs = [] }: StructuredDataProps) {
     url: "https://tracktoolkit.com",
     description:
       "Track Toolkit helps SoundCloud power users organize, merge, and clean playlists. Remove duplicates, manage tracks, and build better playlists faster.",
-    potentialAction: {
-      "@type": "SearchAction",
-      target: "https://tracktoolkit.com/?q={search_term_string}",
-      "query-input": "required name=search_term_string",
-    },
+    // No SearchAction: the site has no search, and Google crawled the
+    // literal `/?q={search_term_string}` template as a page.
   };
 
   return (
