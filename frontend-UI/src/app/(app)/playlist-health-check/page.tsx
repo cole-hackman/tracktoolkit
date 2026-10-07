@@ -80,7 +80,13 @@ export default function PlaylistHealthCheckPage() {
       // outage (502) says more than the generic line does.
       const err = playlistDetailQuery.error;
       const serverText =
-        isApiError(err) && (err.status === 404 || err.status === 502) ? err.message : null;
+        isApiError(err) &&
+        (err.status === 404 || err.status === 502) &&
+        // apiFetchJson's own fallback (a non-JSON body, e.g. a proxy 502) is not
+        // the server's wording.
+        err.message !== `Request failed with status ${err.status}`
+          ? err.message
+          : null;
       setNotice({ type: "error", text: serverText ?? "Couldn’t load tracks for this playlist." });
       return;
     }

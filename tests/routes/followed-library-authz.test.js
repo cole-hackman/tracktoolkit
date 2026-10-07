@@ -170,4 +170,27 @@ describe('followed-user library pages are gated on an actual following edge', ()
     expect(res.status).toBe(403);
     expect(res.body.error).toBe('Choose a user you follow to create from their public likes.');
   });
+
+  test('clone-followed: a genuinely unfollowed user is still the 403', async () => {
+    getFollowings.mockResolvedValue([{ id: 222 }]);
+    const res = await request(app)
+      .post('/api/followings/999/playlists/clone')
+      .send({ playlistIds: [5] });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('Choose a user you follow to clone their public playlists.');
+  });
+
+  test('clone-followed: an upstream 403 (here, while loading followings) is a 500 with the failure body', async () => {
+    getFollowings.mockRejectedValue(
+      Object.assign(new Error('API request failed: 403'), { status: 403 }),
+    );
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await request(app)
+      .post('/api/followings/999/playlists/clone')
+      .send({ playlistIds: [5] });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe('Failed to clone followed user playlists');
+  });
 });

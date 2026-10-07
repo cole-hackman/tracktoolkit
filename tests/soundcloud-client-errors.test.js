@@ -81,12 +81,20 @@ describe('paginate', () => {
   });
 
   test('a 502 page is NOT retried when the retry delay would overrun the crawl deadline', async () => {
-    fetch.mockResolvedValue(res(502));
-    const err = await soundcloudClient
-      .paginate('/me/playlists', 'a', 'r', 200, { deadlineAt: Date.now() + 1 })
-      .catch((e) => e);
-    expect(err.status).toBe(502);
-    expect(fetch).toHaveBeenCalledTimes(1);
+    // Pin the clock: with a live clock, `Date.now() + 1` raced paginate's own
+    // loop guard and the test flaked.
+    const T = 1_800_000_000_000;
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(T);
+    try {
+      fetch.mockResolvedValue(res(502));
+      const err = await soundcloudClient
+        .paginate('/me/playlists', 'a', 'r', 200, { deadlineAt: T + 1 })
+        .catch((e) => e);
+      expect(err.status).toBe(502);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   test('two 502s on a page throw with status after 2 fetches', async () => {

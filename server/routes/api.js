@@ -1362,7 +1362,7 @@ router.get('/proxy-download', authenticateUser, async (req, res) => {
       action: 'proxy-download',
       status: 'error',
       trackIds: downloadTrackId ? [downloadTrackId] : undefined,
-      metadata: { reason: 'upstream_error', upstreamStatus: upstream },
+      metadata: { reason: error?.code === 'SC_TIMEOUT' ? 'timeout' : 'upstream_error', upstreamStatus: upstream },
     });
     // SoundCloud answers 403/404 when the artist has turned downloads off
     // (or the track is gone) — that is not our fault and not worth a retry,

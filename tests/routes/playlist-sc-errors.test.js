@@ -185,6 +185,28 @@ describe('POST /api/playlists/merge — SoundCloud failures', () => {
     expect(res.body.error).toMatch(/some changes may have been made/i);
   });
 
+  test('a 502 on a split-mode (>500 tracks) create says some changes may have been made', async () => {
+    sources({ tracksA: range(300), tracksB: range(300, 301) });
+    createPlaylist.mockRejectedValue(scError(502));
+    const res = await merge();
+
+    expect(createPlaylist).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(502);
+    expect(res.body.error).toMatch(/some changes may have been made/i);
+  });
+
+  test('a 502 on an overflow create (into-existing) says some changes may have been made', async () => {
+    // 450 existing + 100 new = 550 > 500, so the target PUT succeeds and the
+    // overflow playlist is created next.
+    sources({ target: range(450, 1000), tracksA: range(100, 2000), tracksB: [1] });
+    createPlaylist.mockRejectedValue(scError(502));
+    const res = await merge({ targetPlaylistId: 1 });
+
+    expect(createPlaylist).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(502);
+    expect(res.body.error).toMatch(/some changes may have been made/i);
+  });
+
   test('a 502 partway through merge-into-existing says some changes may have been made', async () => {
     sources({ target: [100], tracksA: range(250, 200), tracksB: [1] });
     addTracksToPlaylist.mockResolvedValueOnce({ id: 1 }).mockRejectedValue(scError(502));
