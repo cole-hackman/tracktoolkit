@@ -304,11 +304,12 @@ describe('POST /api/followings/:userId/playlists/clone', () => {
     expect(res.body.error).toBe('Failed to clone followed user playlists');
   });
 
-  test('a per-item failure is still swallowed per item (400 when nothing cloned)', async () => {
+  test('a per-item read failure is still reported per item, and a 502 read with nothing written is a 502', async () => {
     getPlaylistWithTracks.mockRejectedValue(scError(502));
     const res = await clone();
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(502);
     expect(res.body.errors).toHaveLength(1);
+    expect(createPlaylist).not.toHaveBeenCalled();
   });
 });
 
