@@ -462,6 +462,32 @@ describe('GrowthEngine', () => {
       expect(result.stats.partial).toBe(true);
     });
 
+    test('without a focus, a deadline during lookups reports lookupsSkipped and a whole crawl', async () => {
+      thirtyFollowers();
+      const clock = useFakeClock();
+      let candidateCalls = 0;
+      mockSoundCloudClient.getUserTracks.mockImplementation(async (id) => {
+        if (id === 1) return [{ id: 1, genre: 'House', tag_list: '' }];
+        candidateCalls += 1;
+        if (candidateCalls === 2) clock.setNow(clock.T + 10_000);
+        return [];
+      });
+
+      let result;
+      try {
+        // limit 5: the first five lookups run, the clock passes the deadline on the 2nd
+        result = await growthEngine.discoverSuggestions({ ...focusOpts, timeBudgetMs: 5_000 });
+      } finally {
+        clock.restore();
+      }
+
+      expect(result.stats.genreFocus).toBeNull();
+      expect(result.stats.genreSkipped).toBeNull();
+      expect(result.stats.lookupsSkipped).toBeGreaterThan(0);
+      expect(result.stats.crawlPartial).toBe(false);
+      expect(result.stats.partial).toBe(true);
+    });
+
     test('a seed skipped for time reports crawlPartial', async () => {
       mockSoundCloudClient.getFollowings.mockResolvedValue([]);
       mockSoundCloudClient.getFollowers.mockResolvedValue([]);

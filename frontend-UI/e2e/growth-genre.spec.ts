@@ -191,3 +191,39 @@ test("nothing checked before the deadline mentions the time budget, not the genr
   await expect(page.getByText("No Folk matches")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Scan again with any genre" })).toHaveCount(0);
 });
+
+test("an unfocused scan whose lookups ran out of time still warns: /growth/", async ({ page }) => {
+  await mockApi(page);
+  await page.route("**/api/growth/discover", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        suggestions: [],
+        stats: {
+          inspirationUsers: 1,
+          candidatesScanned: 300,
+          afterDedup: 200,
+          suggestionsReturned: 0,
+          seedGenres: [],
+          partial: true,
+          crawlPartial: false,
+          genreFocus: null,
+          genreChecked: null,
+          genreMatched: null,
+          genreUnknown: null,
+          genreSkipped: null,
+          lookupsSkipped: 3,
+        },
+      }),
+    }),
+  );
+  await pickSeed(page);
+  await page.getByRole("button", { name: /Scan Networks/ }).click();
+
+  await expect(
+    page.getByText(/3 suggestions weren't fully scored before the time budget ran out/),
+  ).toBeVisible();
+  await expect(page.getByText(/partial crawl/)).toHaveCount(0);
+  await expectNoHorizontalOverflow(page);
+});

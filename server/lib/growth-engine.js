@@ -383,13 +383,16 @@ export class GrowthEngine {
     // whose genre could not be established is excluded and counted, never
     // guessed. Skipped = the deadline passed before its lookup ran; unknown =
     // the lookup ran but gave no genre (failed, no tracks, no metadata).
+    // Candidates whose track lookup never ran because the deadline had passed.
+    // Reported with or without a focus so an unfocused scan can warn too.
+    const lookupsSkipped = results.filter((r) => r._genreSkipped).length;
     let finalResults = results;
     let genreChecked = null;
     let genreMatched = null;
     let genreUnknown = null;
     let genreSkipped = null;
     if (genre) {
-      genreSkipped = results.filter((r) => r._genreSkipped).length;
+      genreSkipped = lookupsSkipped;
       genreChecked = results.length - genreSkipped;
       genreUnknown = results.filter((r) => !r._genreSkipped && r._genreTokens.size === 0).length;
       finalResults = [];
@@ -423,6 +426,7 @@ export class GrowthEngine {
         genreMatched,
         genreUnknown,
         genreSkipped,
+        lookupsSkipped,
         seedGenres: Array.from(seedGenres.keys()).slice(0, 10),
         trackLookupConcurrency: DISCOVERY_TRACK_CONCURRENCY,
         durationMs: Date.now() - startedAt,

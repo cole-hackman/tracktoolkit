@@ -167,6 +167,8 @@ interface DiscoveryStats {
   partial?: boolean;
   /** The seed crawl itself was cut short (distinct from skipped genre lookups). */
   crawlPartial?: boolean;
+  /** Candidates whose track lookup never ran (deadline), focus or not. */
+  lookupsSkipped?: number;
   perSeed?: {
     id: number;
     followersFetched: number;
@@ -600,14 +602,15 @@ export default function GrowthPage() {
   // with nothing checked (e.g. no candidates at all) the genre is not to blame.
   const focusBlamesGenre = Boolean(discoveryStats?.genreFocus) && (discoveryStats?.genreChecked ?? 0) > 0;
 
+  const noneOf = (n: number | null | undefined) => (n === 1 ? "The 1 account" : `None of the ${n ?? 0} accounts`);
   const emptyDescription = (() => {
     const st = discoveryStats;
     if (focusBlamesGenre && st?.genreFocus) {
       const label = genreLabel(st.genreFocus);
       const unplaced = (st.genreUnknown ?? 0) + (st.genreSkipped ?? 0);
       return unplaced === 0
-        ? `None of the ${st.genreChecked} accounts checked had recent tracks tagged ${label}. Scan again with any genre, or pick different seeds.`
-        : `None of the ${st.genreChecked} accounts checked matched ${label}, but ${unplaced} could not be placed (no genre info, or not checked in time), so a match may exist among them. Scan again with any genre, or pick different seeds.`;
+        ? `${noneOf(st.genreChecked)} checked had recent tracks tagged ${label}. Scan again with any genre, or pick different seeds.`
+        : `${noneOf(st.genreChecked)} checked matched ${label}, but ${unplaced} could not be placed (no genre info, or not checked in time), so a match may exist among them. Scan again with any genre, or pick different seeds.`;
     }
     if (st?.genreFocus && (st.genreSkipped ?? 0) > 0) {
       return "The scan ran out of its time budget before any account could be checked for genre. Try again, or use fewer seeds.";
@@ -971,6 +974,11 @@ export default function GrowthPage() {
                     {(discoveryStats?.crawlPartial ?? discoveryStats?.partial) && (
                       <p className="text-xs text-warning-text mt-1">
                         The scan hit its time budget, so results come from a partial crawl. Everything shown is fully scored and ready to use.
+                      </p>
+                    )}
+                    {!discoveryStats?.genreFocus && (discoveryStats?.lookupsSkipped ?? 0) > 0 && (
+                      <p className="text-xs text-warning-text mt-1">
+                        {discoveryStats?.lookupsSkipped} {discoveryStats?.lookupsSkipped === 1 ? "suggestion wasn't" : "suggestions weren't"} fully scored before the time budget ran out — their genre and recent-track details may be missing.
                       </p>
                     )}
                     {(discoveryStats?.genreSkipped ?? 0) > 0 && (

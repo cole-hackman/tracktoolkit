@@ -181,17 +181,19 @@ lookup from `limit` (default 50) to the top `GENRE_FOCUS_LOOKUP_MAX` (150)
 candidates, keeps those whose recent `genre`/`tag_list` match the slug or an
 alias as a whole word (`deep-house` matches `house`, `housewife` does not),
 and returns the top `limit`. Candidates whose genre could not be established
-(failed lookup, no tracks, no genre metadata, or the deadline passing before
-its lookup ran) are **excluded and counted** (`stats.genreUnknown` and
-`stats.genreSkipped` respectively), never guessed. Cost: up to +100 track calls
-per scan inside the same 45 s budget; it is still one request against the
-shared 20/hour `heavyOperationRateLimiter` budget (shared with merge, clone and
-every bulk write), and follow caps are unchanged. `stats` separates
-`genreChecked` (lookups attempted), `genreUnknown` (attempted, no usable genre)
-and `genreSkipped` (deadline hit before the lookup ran). The chosen `genre` is
-recorded in the `OperationLog` metadata. With no focus the call count is
-identical to before. `stats.crawlPartial` reports a cut-short seed crawl
-separately from skipped lookups (`partial` is kept for compatibility). `genre` validates `.isString()` first (array bypass).
+are **excluded and counted**, never guessed. `stats` separates `genreChecked`
+(lookups attempted), `genreUnknown` (attempted, no usable genre: failed, no
+tracks, no genre metadata) and `genreSkipped` (the deadline passed before the
+lookup ran). `stats.lookupsSkipped` is the same skipped count with or without a
+focus, and `stats.crawlPartial` reports a cut-short seed crawl separately
+(`partial` is kept for compatibility).
+
+Cost: up to +100 track calls per scan inside the same 45 s budget; it is still
+one request against the shared 20/hour `heavyOperationRateLimiter` budget
+(shared with merge, clone and every bulk write), and follow caps are unchanged.
+With no focus the call count is identical to before. The chosen `genre` is
+recorded in the `OperationLog` metadata. `genre` validates `.isString()` first
+(array bypass).
 
 ### Feedback (`routes/feedback.js`)
 
