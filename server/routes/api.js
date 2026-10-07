@@ -644,7 +644,8 @@ router.post('/playlists/compare', authenticateUser, heavyOperationRateLimiter, a
     res.json(comparison);
   } catch (error) {
     logger.error('Playlist compare error:', safeError(error));
-    // The route only reads, so every failure here came from a tagged read.
+    // Both reads are tagged, and the route writes nothing, so a 404 here always
+    // names a playlist and a 502 is always read-only.
     const mapped = scErrorResponse(error, {
       readOnly: true,
       notFound: error?.scPlaylistId != null
@@ -848,6 +849,9 @@ router.post('/playlists/clone', authenticateUser, heavyOperationRateLimiter, val
       });
     }
   } catch (error) {
+    // A write that failed or timed out may still have landed; do not serve a
+    // stale list while telling the user to go check it.
+    if (writeAttempted) invalidatePlaylistState(req.user.id);
     logger.error('Clone playlist error:', safeError(error));
     // resolveAny/resolvePublic throw plain Errors ("Resolve error: 404") with
     // no status, so for those two steps it is read off the message. Every

@@ -68,6 +68,8 @@ test("compare: a 404 PLAYLIST_NOT_FOUND shows the server text, clears the select
   await expect.poll(() => listGets).toBeGreaterThan(before);
   await expect(b.locator("option", { hasText: "Sample Playlist 2" })).toHaveCount(0);
   await expect(b).toHaveValue("");
+  // Compare reads React state, not the DOM: it is disabled only if B was cleared.
+  await expect(page.getByRole("button", { name: "Compare" })).toBeDisabled();
   await expect(a).toHaveValue("1");
 
   const results = await new AxeBuilder({ page })

@@ -243,6 +243,28 @@ describe('POST /api/playlists/clone', () => {
     expect(res.body.error).toMatch(/some changes may have been made/i);
   });
 
+  test('a "Resolve follow error: 404" at the resolve step is a 404 with the old text', async () => {
+    resolveAny.mockRejectedValue(new Error('Resolve follow error: 404'));
+    const res = await clone();
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ code: 'PLAYLIST_NOT_FOUND', error: 'Source playlist not found or private.' });
+  });
+
+  test('a failure after a write was attempted invalidates the playlist cache', async () => {
+    source(250);
+    addTracksToPlaylist.mockRejectedValue(scError(502));
+    const res = await clone();
+    expect(res.status).toBe(502);
+    expect(invalidatePlaylistState).toHaveBeenCalledWith('user-a');
+  });
+
+  test('a failure before any write does not invalidate the playlist cache', async () => {
+    getPlaylistWithTracks.mockRejectedValue(scError(502));
+    const res = await clone();
+    expect(res.status).toBe(502);
+    expect(invalidatePlaylistState).not.toHaveBeenCalled();
+  });
+
   test('a generic error is a 500', async () => {
     getPlaylistWithTracks.mockRejectedValue(new Error('boom'));
     const res = await clone();

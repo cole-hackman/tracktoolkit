@@ -83,8 +83,9 @@ export default function PlaylistComparePage() {
           // One of the two selections is gone from SoundCloud. Clear it and
           // refetch the list so it stops being offered.
           const missingId = Number(data.playlistId);
-          if (Number(playlistAId) === missingId) setPlaylistAId("");
-          if (Number(playlistBId) === missingId) setPlaylistBId("");
+          // Updaters, so a pick made since the request is not wiped.
+          setPlaylistAId((prev) => (Number(prev) === missingId ? "" : prev));
+          setPlaylistBId((prev) => (Number(prev) === missingId ? "" : prev));
           void invalidatePlaylistCaches(queryClient);
         }
         return;

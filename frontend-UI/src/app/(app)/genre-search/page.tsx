@@ -222,7 +222,8 @@ export default function GenreSearchPage() {
         setAddError(errorMessageFromBody(data, "Failed to add tracks."));
         if (res.status === 409 && data?.code === "PLAYLIST_NOT_FOUND") {
           // The chosen target is gone from SoundCloud and nothing was written.
-          setTargetPlaylist(null);
+          const missingId = Number(data.playlistId);
+          setTargetPlaylist((prev) => (prev && Number(prev.id) === missingId ? null : prev));
           void invalidatePlaylistCaches(queryClient);
         }
       }
