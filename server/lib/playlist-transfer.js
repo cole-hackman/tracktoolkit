@@ -4,6 +4,7 @@
  */
 
 import logger from './logger.js';
+import { sleep, SC_WRITE_PACING_MS } from './pacing.js';
 
 export const MAX_PLAYLIST_TRACKS = 500;
 
@@ -67,6 +68,70 @@ export async function readPlaylistForRewrite(client, accessToken, refreshToken, 
   }
 
   return { playlist, ids };
+}
+
+/**
+ * An append target that already holds more than MAX_PLAYLIST_TRACKS. Appending
+ * would have to rewrite it at 500 and push the rest into an overflow playlist,
+ * and a failure partway would lose the tracks beyond 500, so it is refused
+ * before any write.
+ */
+export class PlaylistTooLargeError extends Error {
+  constructor(count) {
+    super(
+      `This playlist already holds ${count} tracks, more than the ${MAX_PLAYLIST_TRACKS} SoundCloud allows. ` +
+      'Nothing was changed, because rewriting it could delete the tracks beyond that limit.',
+    );
+    this.name = 'PlaylistTooLargeError';
+    this.count = count;
+  }
+}
+
+/** Refuse an append target already over the cap. Call before any write. */
+export function assertAppendable(existingIds) {
+  if (existingIds.length > MAX_PLAYLIST_TRACKS) throw new PlaylistTooLargeError(existingIds.length);
+}
+
+/**
+ * Grow a playlist to `ids` with full-list PUTs, every one of which keeps the
+ * first `floor` ids as its prefix.
+ *
+ * SoundCloud's PUT replaces the whole list, so each intermediate write is a
+ * moment where the playlist holds only that prefix. For an append, `ids` is
+ * `[...existing, ...new]` and `floor = existing.length`: every write contains
+ * the whole existing list, so a write that fails leaves the target with all its
+ * old tracks plus some new ones, never fewer than it began with.
+ *
+ * Prefix lengths run min(n, floor + batchSize), growing by batchSize, ending
+ * at exactly n. When n <= floor there is nothing new and no write is made.
+ * Writes are paced with SC_WRITE_PACING_MS between writes only. A rejection
+ * propagates and ends the sequence.
+ *
+ * @param {object} args
+ * @param {number[]} args.ids       The full final list.
+ * @param {number} [args.floor=0]   Non-negative integer, at most ids.length.
+ * @param {number} [args.batchSize=100]
+ * @param {(prefix: number[]) => Promise<unknown>} args.write
+ * @throws {TypeError|RangeError} on an invalid floor
+ */
+export async function writeGrowingPrefix({ ids, floor = 0, batchSize = 100, write }) {
+  if (!Number.isInteger(floor) || floor < 0) {
+    throw new TypeError(`writeGrowingPrefix: floor must be a non-negative integer, got ${floor}`);
+  }
+  const n = Array.isArray(ids) ? ids.length : 0;
+  if (floor > n) {
+    throw new RangeError(`writeGrowingPrefix: floor ${floor} exceeds ids.length ${n}`);
+  }
+  if (n <= floor) return;
+  const step = Number.isInteger(batchSize) && batchSize >= 1 ? batchSize : 100;
+
+  let length = Math.min(n, floor + step);
+  for (;;) {
+    await write(ids.slice(0, length));
+    if (length >= n) return;
+    await sleep(SC_WRITE_PACING_MS);
+    length = Math.min(n, length + step);
+  }
 }
 
 /**
