@@ -1,13 +1,20 @@
 # STATE
 
 ## Now
-Nothing is in flight. All of the 2026-10-07 feedback work is merged and
-deployed: #58, #60, #61 and #59. Each deploy was verified by reading the
+Nothing is in flight. All of the 2026-10-07 work is merged and deployed:
+#58, #60, #61, #59 and #70 (SoundCloud error mapping). Each deploy was verified by reading the
 deployed files on App Service, the served bundle and the restart log, with no
 5xx after restart. **Still unproven live:** the SoundCloud `access` default
 behind #60 — see Next 1.
 
 ## Just done
+- `6b08284` — #70 merged and live: SoundCloud errors now carry `status`
+  (messages unchanged); GET is retried once on 502/503/504; merge answers 409
+  `PLAYLIST_NOT_FOUND` / 502 `SOUNDCLOUD_UNAVAILABLE` instead of 500, and
+  `GET /api/playlists/:id` answers 404/502. Prompted by the merge 5xx
+  investigation: 56/295 merges 500'd (37 SoundCloud outage 502/504 on
+  09-25/26, 15 deleted-but-cached source playlists, 6 our 30 s timeout).
+  Plan: `~/.claude/plans/merge-5xx-error-mapping.md`.
 - `d896e61` — #59 merged and live: genre focus on Grow your network (Nick).
   It was rebased onto #60/#61 and re-checked: 792 tests, e2e 594 passed /
   0 failed.
@@ -33,8 +40,15 @@ behind #60 — see Next 1.
 2. Watch whether merge, from-likes and the followed-likes append now return
    409 on targets with deleted/private entries. That is new, deliberate
    behaviour from #60 (it used to silently delete tracks).
-3. Follow-ups with evidence, none started:
-   - `POST /api/playlists/merge` returns 5xx on 55/295 calls.
+3. **About a week after 2026-10-07:** rerun the merge 5xx query
+   (`AppServiceHTTPLogs`, `POST /api/playlists/merge` by status, plus
+   `Merge playlists error` in `AppServiceConsoleLogs`). SoundCloud 404s and
+   502/504s should now be 409/502, leaving 500 for the genuinely unexpected.
+4. Follow-ups with evidence, none started:
+   - Clone, compare and from-likes still map SoundCloud errors to 500; they
+     can now use `classifyScError` (`server/lib/sc-errors.js`).
+   - A SoundCloud failure right after a token refresh still has no `status`
+     (fixing it means touching the 401 path) — stays a 500.
    - `/dashboard/summary`, `/playlists/:id` and the followers/followings
      paged routes return 5xx on 3–6% of calls.
    - The PUT title branch never sets the title.
@@ -260,6 +274,14 @@ behind #60 — see Next 1.
 
 
 ### From the 2026-10-07 feedback session
+- **SoundCloud errors are classified by `status`, never by message, in new
+  code** — but every existing message stays byte-identical, because older
+  routes still match on text (`includes('404')`, `shouldRetryPublicly`).
+  Only GET is retried, once, on 502/503/504; POST/PUT/DELETE never are
+  (a duplicated create or rewrite is worse than an error) — 2026-10-07 (#70).
+- **Merge only says "Nothing was changed" when no write was attempted.** The
+  `writeAttempted` flag is set *before* each create/PUT, because a write that
+  times out may still have landed upstream — 2026-10-07 (#70).
 - **Playlist rewrite reads ask for `access=playable,preview,blocked`, and
   `PUT /api/playlists/:id` only drops ids the client names in `remove`**
   (count-aware). The short-read guard is never loosened. Deleted/private
@@ -443,4 +465,8 @@ behind #60 — see Next 1.
 - **`Select`'s third naming arm is satisfied only by Field's
   `data-field-labelled` render prop.** A bare `<Select id>` is a type error on
   purpose; do not "fix" it by loosening the union.
-
+- **Upstream SoundCloud errors now carry `status`, so `status === 403` no
+  longer means "not followed".** `assertFollowedUser` marks its refusal with
+  `code: 'NOT_FOLLOWED'`; check the code, never the status. Any new
+  `err.status`-based branch must assume the status may be SoundCloud's.
+  `DELETE /api/playlists/:id` deliberately passes it through (#70).
