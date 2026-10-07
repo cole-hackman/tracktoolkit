@@ -618,10 +618,11 @@ playlist-modifier) read with `allAccess` and show the server's `error` text via
 `remove`; activity-to-playlist and recently-played are append-only and send
 none. On a 409 the pages show the server's message first and then invalidate
 the playlist caches so "reload and try again" fetches fresh data. The one
-exception is playlist-modifier, which reads the body's `code`: only
-`PLAYLIST_OUT_OF_SYNC` reloads (and says unsaved edits were dropped);
-`PLAYLIST_READ_INCOMPLETE` and any other failure show the server's text and
-keep the user's edits.
+exception is playlist-modifier, which reads the body's `code` (via
+`errorMessageFromBody`): only `PLAYLIST_OUT_OF_SYNC` refetches and resets its
+list and shows fixed text saying the playlist was reloaded and unsaved edits
+were dropped; `PLAYLIST_READ_INCOMPLETE` and any other failure show the
+server's own text and keep the user's edits.
 
 **Both `/api/library/audit` and `/api/playlists/search-tracks` page by `offset`
 against the cached playlist list, not against SoundCloud.** `/me/playlists`

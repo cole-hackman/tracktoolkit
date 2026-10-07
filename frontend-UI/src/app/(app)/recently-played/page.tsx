@@ -162,10 +162,10 @@ export default function RecentlyPlayedPage() {
             body: JSON.stringify({ tracks: mergedIds }),
           });
           if (response.ok) {
-            await invalidatePlaylistCaches(queryClient, selectedPlaylistId);
             setNotice({ type: "success", text: "Playlist saved successfully." });
             announce("Playlist saved", { assertive: true });
             setSelected(new Set());
+            await invalidatePlaylistCaches(queryClient, selectedPlaylistId);
           } else {
             setNotice({
               type: "error",

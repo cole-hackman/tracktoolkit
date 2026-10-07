@@ -187,12 +187,16 @@ test.describe("playlist health check: blocked tracks", () => {
     await expect(page.getByRole("button", { name: "Remove", exact: true })).toHaveCount(0);
     expect(seen.putBodies).toHaveLength(0);
 
-    // Keyboard: Enter and Space on the focused control do nothing either.
+    // Keyboard: neither key does anything. Assert after EACH key and that
+    // focus stayed put — if Enter had opened the dialog, focus would have moved
+    // to Cancel and Space would have closed it again, hiding the failure.
     await removeButton.focus();
     await page.keyboard.press("Enter");
-    await page.keyboard.press("Space");
-    await page.waitForTimeout(300);
     await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(removeButton).toBeFocused();
+    await page.keyboard.press("Space");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(removeButton).toBeFocused();
     expect(seen.putBodies).toHaveLength(0);
 
     await page.mouse.move(0, 0);

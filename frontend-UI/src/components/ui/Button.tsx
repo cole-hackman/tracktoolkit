@@ -46,6 +46,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
           variant === "secondary" && [
             "border border-border/70 bg-secondary text-secondary-foreground shadow-sm",
             "hover:border-primary/40 hover:bg-secondary/80",
+            "aria-disabled:hover:border-border/70 aria-disabled:hover:bg-secondary",
           ],
           variant === "destructive" && [
             "bg-destructive text-destructive-foreground shadow-sm",
@@ -54,13 +55,16 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
           ],
           variant === "ghost" && [
             "hover:bg-accent hover:text-accent-foreground text-foreground",
+            "aria-disabled:hover:bg-transparent aria-disabled:hover:text-foreground",
           ],
           variant === "outline" && [
             "border border-input bg-background shadow-sm text-foreground",
             "hover:bg-accent hover:text-accent-foreground",
+            "aria-disabled:hover:bg-background aria-disabled:hover:text-foreground",
           ],
           variant === "glass" && [
             "glass-card text-foreground hover:bg-white/10 dark:hover:bg-white/5",
+            "aria-disabled:hover:bg-transparent",
           ],
           // Sizes — `default` and `icon` clear the 44px touch-target floor.
           size === "default" && "h-11 px-4 py-2",

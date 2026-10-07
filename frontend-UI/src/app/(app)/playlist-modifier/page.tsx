@@ -135,6 +135,9 @@ export default function PlaylistModifierPage() {
   const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [baselineIds, setBaselineIds] = useState<number[]>([]);
+  // The playlist currently on screen, readable from an async save handler.
+  const selectedIdRef = useRef<number | null>(null);
+  selectedIdRef.current = selectedPlaylist?.id ?? null;
   const [saving, setSaving] = useState(false);
   const [trackFilter, setTrackFilter] = useState<TrackFilter>("all");
   const [loadError, setLoadError] = useState(false);
@@ -493,6 +496,10 @@ export default function PlaylistModifierPage() {
     if (!selectedPlaylist) return;
     setShowSaveConfirm(false);
     setSaving(true);
+    const savedId = selectedPlaylist.id;
+    // The user may open another playlist while the save is in flight; a result
+    // about playlist A must not appear over playlist B.
+    const selectionChanged = () => selectedIdRef.current !== savedId;
     try {
       // Everything the page loaded that is no longer in the edited list was
       // removed on purpose; the server only lets a track go if it is named.
@@ -505,8 +512,10 @@ export default function PlaylistModifierPage() {
         body: JSON.stringify({ tracks: editedIds, remove: removedIds }),
       });
       if (response.ok) {
-        await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
-        setBanner({ tone: "success", text: "Playlist saved successfully." });
+        if (!selectionChanged()) {
+          setBanner({ tone: "success", text: "Playlist saved successfully." });
+        }
+        await invalidatePlaylistCaches(queryClient, savedId);
       } else {
         const body = await response.json().catch(() => null);
         // Only OUT_OF_SYNC means the server's view moved on: that one
@@ -514,14 +523,25 @@ export default function PlaylistModifierPage() {
         // READ_INCOMPLETE and every other failure leave the edits in place and
         // just show the server's reason.
         const outOfSync = response.status === 409 && body?.code === "PLAYLIST_OUT_OF_SYNC";
-        setBanner({
-          tone: "error",
-          text: outOfSync
-            ? "This playlist changed on SoundCloud and has been reloaded. Your edits were not saved — make them again."
-            : errorMessageFromBody(body, "Failed to save playlist."),
-        });
+        if (!selectionChanged()) {
+          setBanner({
+            tone: "error",
+            text: outOfSync
+              ? "This playlist changed on SoundCloud and has been reloaded. Your edits were not saved — make them again."
+              : errorMessageFromBody(body, "Failed to save playlist."),
+          });
+        }
         if (outOfSync) {
-          await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
+          // Reset the list explicitly from the fresh read: a payload that is
+          // structurally identical to the cached one would not re-run the
+          // load effect, and the banner would be lying about a reload.
+          const fresh = await selectedPlaylistQuery.refetch();
+          if (!selectionChanged() && fresh.data) {
+            const loaded = asArray<Track>(fresh.data.tracks);
+            setTracks(loaded);
+            setBaselineIds(loaded.map((t) => t.id));
+          }
+          await invalidatePlaylistCaches(queryClient, savedId);
         }
       }
     } catch (error) {
