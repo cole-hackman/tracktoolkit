@@ -6,6 +6,7 @@ import Link from "next/link";
 import { ArrowLeft, Download, ExternalLink, Heart, ListMusic, Trash2, X, CheckSquare, Search, Zap } from "lucide-react";
 import { apiFetch, readApiErrorMessage } from "@/lib/api";
 import { startSoundCloudDownload } from "@/lib/download";
+import { DownloadQueuePanel, DownloadQueueSheet, useDownloadQueue } from "@/components/downloads/DownloadQueue";
 import {
   type DownloadFilter,
   type DownloadKind,
@@ -106,6 +107,10 @@ const CHIP_TONE: Record<DownloadKind, string> = {
   none: "text-muted-foreground",
 };
 
+// Rows rendered per step. A large library is hundreds of rows (one real
+// account: 1,310 likes, 10k DOM nodes); render a page at a time instead.
+const ROW_STEP = 200;
+
 const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
 export default function DownloadsPage() {
@@ -121,6 +126,7 @@ export default function DownloadsPage() {
   const [sourceSearch, setSourceSearch] = useState("");
   // Opens on what the page is for. The other buckets are one choice away.
   const [filter, setFilter] = useState<DownloadFilter>("downloadable");
+  const [visibleCount, setVisibleCount] = useState(ROW_STEP);
 
   // Selection mode (remove from playlist)
   const [selectionMode, setSelectionMode] = useState(false);
@@ -142,6 +148,9 @@ export default function DownloadsPage() {
   const [extInstalled, setExtInstalled] = useState(false);
   const [hypedditProgress, setHypedditProgress] = useState<HypedditProgress | null>(null);
   const [queueSent, setQueueSent] = useState(false);
+
+  const queue = useDownloadQueue(announce);
+  const hasQueue = queue.hydrated && queue.state.items.length > 0;
 
   const playlistsQuery = usePlaylistsQuery();
   const meQuery = useMeQuery();
@@ -214,6 +223,7 @@ export default function DownloadsPage() {
   const handleSelectSource = (p: Playlist) => {
     setSelectedSource(p);
     setFilter("downloadable");
+    setVisibleCount(ROW_STEP);
     setSelectionMode(false);
     setHypedditMode(false);
     setSelectedTrackIds(new Set());
@@ -392,6 +402,25 @@ export default function DownloadsPage() {
     [tracks, statusById, filter],
   );
 
+  // SoundCloud's own downloads in this source — what "Download all" queues.
+  const directTracks = useMemo(
+    () => tracks.filter((t) => statusById.get(t.id)?.kind === "direct" && !!t.download_url),
+    [tracks, statusById],
+  );
+
+  const startQueue = () => {
+    if (!selectedSource) return;
+    queue.begin(
+      selectedSource.title,
+      directTracks.map((t) => ({
+        trackId: t.id,
+        title: t.title,
+        artist: t.user?.username ?? "",
+        downloadUrl: t.download_url!,
+      })),
+    );
+  };
+
   const hypedditTracks = useMemo(
     () => downloadableTracks.filter((t) => statusById.get(t.id)?.site === "Hypeddit"),
     [downloadableTracks, statusById],
@@ -554,6 +583,9 @@ export default function DownloadsPage() {
           description="Find downloadable tracks in your library."
         />
 
+        <div className={hasQueue ? "pb-24 lg:grid lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6 lg:pb-0" : undefined}>
+        <div className="min-w-0">
+
         {!selectedSource ? (
           /* Source Selection */
           <Card className="p-4 sm:p-6">
@@ -698,7 +730,14 @@ export default function DownloadsPage() {
                 </p>
                 {!hypedditMode && !selectionMode && (
                   <div className="sm:w-56">
-                    <Select label="Show" value={filter} onChange={(e) => setFilter(e.target.value as DownloadFilter)}>
+                    <Select
+                      label="Show"
+                      value={filter}
+                      onChange={(e) => {
+                        setFilter(e.target.value as DownloadFilter);
+                        setVisibleCount(ROW_STEP);
+                      }}
+                    >
                       {(Object.keys(FILTER_LABELS) as DownloadFilter[]).map((key) => (
                         <option key={key} value={key}>
                           {FILTER_LABELS[key]}
@@ -764,6 +803,14 @@ export default function DownloadsPage() {
             {/* Toolbar */}
             {tracks.length > 0 && (
               <div className="mb-6 flex flex-wrap items-center gap-2">
+                {/* Queue every SoundCloud-native download (allow-listed accounts) */}
+                {isOwner && directTracks.length > 0 && !selectionMode && !hypedditMode && (
+                  <Button onClick={startQueue} disabled={queue.state.running}>
+                    <Download className="w-4 h-4" aria-hidden="true" />
+                    Download all ({directTracks.length})
+                  </Button>
+                )}
+
                 {/* Remove-from-playlist mode (playlists only, not likes) */}
                 {selectedSource.id !== LIKED_TRACKS_ID && !hypedditMode && (
                   !selectionMode ? (
@@ -887,7 +934,7 @@ export default function DownloadsPage() {
                 />
               ) : (
                 <div className="space-y-2">
-                  {(hypedditMode ? hypedditTracks : listedTracks).map((track, index) => {
+                  {(hypedditMode ? hypedditTracks : listedTracks).slice(0, visibleCount).map((track, index) => {
                     if (selectionMode) {
                       return (
                         <div key={track.id}>
@@ -960,10 +1007,43 @@ export default function DownloadsPage() {
                       </div>
                     );
                   })}
+                  {(hypedditMode ? hypedditTracks : listedTracks).length > visibleCount && (
+                    <div className="pt-2 text-center">
+                      <Button variant="secondary" onClick={() => setVisibleCount((n) => n + ROW_STEP)}>
+                        Show {Math.min(ROW_STEP, (hypedditMode ? hypedditTracks : listedTracks).length - visibleCount)} more of{" "}
+                        {(hypedditMode ? hypedditTracks : listedTracks).length - visibleCount}
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )}
             </Card>
           </div>
+        )}
+
+        </div>
+        {hasQueue && (
+          <aside className="hidden lg:block">
+            <div className="sticky top-6 rounded-xl border border-border bg-card p-4">
+              <DownloadQueuePanel
+                state={queue.state}
+                summary={queue.summary}
+                onPause={queue.pause}
+                onResume={queue.resume}
+                onClear={queue.clear}
+              />
+            </div>
+          </aside>
+        )}
+        </div>
+        {hasQueue && (
+          <DownloadQueueSheet
+            state={queue.state}
+            summary={queue.summary}
+            onPause={queue.pause}
+            onResume={queue.resume}
+            onClear={queue.clear}
+          />
         )}
 
       <ConfirmDialog

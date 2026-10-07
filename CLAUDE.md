@@ -166,6 +166,20 @@ does not make obvious.
 CSRF layer has nothing to act on — `rejectUntrustedOrigin` is the whole guard.
 `tests/routes/account-deletion.test.js` asserts a cross-site POST gets 403.
 
+### Downloads
+
+`GET /api/proxy-download` (one click, any user) and `POST /api/downloads/links`
+(the queue: `authenticateUser, requireCanDownload, validateDownloadLinks,
+downloadLinksLimiter` — ≤10 URLs per call, 60 calls/hour **per user**, paced
+at `SC_WRITE_PACING_MS`, stops at the first 429 and returns the rest as
+`rate_limited`). Both accept only SoundCloud's own track download URL —
+numeric or `soundcloud:tracks:N` form (`isAllowedDownloadUrl`) — and hand back
+a CDN link from the redirect allowlist; the server never touches the file.
+`getDownloadLink` is the one SoundCloud call outside `scRequest()` (it needs
+`redirect: 'manual'`). What a track's download situation *is* (direct / free
+gate / store / pre-order / none) is decided only by
+`frontend-UI/src/lib/download-status.ts`.
+
 ### Growth & Discovery (`routes/growth.js`)
 
 All `/growth/*` routes are `authenticateUser`; the write-heavy ones also carry
@@ -656,6 +670,7 @@ clone, and every bulk write.
 | `SURVEY_CAMPAIGN_ID` | No | Campaign identifier for the (closed) vote, default `2026-rebrand-name-v1`. Only the admin read paths use it now; it no longer gates any prompt |
 | `GROWTH_AUTOCHECK` | No | Set to `false` to disable the daily growth follow-back scheduler |
 | `ADMIN_IDS` | No | Comma-separated SoundCloud numeric user IDs allowed into `/api/admin/*`. Unset or empty = **nobody** (fails closed) |
+| `DOWNLOAD_ALLOWLIST` | No | Comma-separated SoundCloud numeric user IDs (plus every admin) that get `canDownload`: the Downloads page's "Download all" queue and Hypeddit tools, and `POST /api/downloads/links`. One definition, `server/lib/download-access.js`, backs both `/api/auth/me` and `requireCanDownload`. Unset = admins only |
 | `SC_ROTATION_MEMO_TTL_MS` | No | How long the refresh-rotation memo in `soundcloud-client.js` keeps the last exchange's plaintext pair (default `60000`). It exists so a route's second SoundCloud call is not told its already-spent refresh token means "revoked". Lowering it costs an extra refused exchange per multi-call request at a token boundary; raising it keeps decrypted tokens in memory longer. It is **not** the safety net — `_resolveInvalidGrant` is — so a wrong value here degrades latency, not correctness |
 | `CHROME_EXTENSION_IDS` | No | Comma-separated extension IDs allowed as credentialed origins (CORS + `rejectUntrustedOrigin`) |
 | `SESSION_COOKIE_SAMESITE` | No | `lax`, `none` or `strict` for the session cookie. Unset keeps the historical default (`none` in production). Same-origin hosting sets `lax` |

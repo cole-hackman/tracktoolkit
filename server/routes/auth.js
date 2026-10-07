@@ -1,4 +1,5 @@
 import express from 'express';
+import { accessFor } from '../lib/download-access.js';
 import { createPkcePair } from '../lib/pkce.js';
 import { signSession, unsignSession, parseSessionData, createSessionCookieOptions } from '../lib/session.js';
 import { encrypt } from '../lib/crypto.js';
@@ -477,24 +478,9 @@ router.get('/me', async (req, res) => {
       return res.status(401).json({ error: 'Session expired' });
     }
 
-    const adminIds = (process.env.ADMIN_IDS || '')
-      .split(',')
-      .map(s => Number(s.trim()))
-      .filter(n => !isNaN(n) && n > 0);
-
-    const isAdmin = !!sessionData.soundcloudId &&
-      adminIds.includes(Number(sessionData.soundcloudId));
-
-    // Download (Hypeddit auto-download) allowlist — comma-separated SoundCloud
-    // IDs in DOWNLOAD_ALLOWLIST. Admins always qualify. Add a person by editing
-    // the env var and restarting the backend; no frontend redeploy needed.
-    const downloadAllowlist = (process.env.DOWNLOAD_ALLOWLIST || '')
-      .split(',')
-      .map(s => Number(s.trim()))
-      .filter(n => !isNaN(n) && n > 0);
-
-    const canDownload = isAdmin || (!!sessionData.soundcloudId &&
-      downloadAllowlist.includes(Number(sessionData.soundcloudId)));
+    // Admins plus DOWNLOAD_ALLOWLIST (comma-separated SoundCloud ids); the
+    // same helper backs requireCanDownload, so page and server agree.
+    const { isAdmin, canDownload } = accessFor(sessionData.soundcloudId);
 
     res.json({ ...sessionData, isAdmin, canDownload });
   } catch (error) {

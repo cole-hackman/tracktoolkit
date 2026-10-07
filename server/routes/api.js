@@ -1,7 +1,8 @@
 import express from 'express';
 import { soundcloudClient, fetchWithTimeout } from '../lib/soundcloud-client.js';
 import prisma from '../lib/prisma.js';
-import { heavyOperationRateLimiter, libraryReadRateLimiter } from '../middleware/rateLimiter.js';
+import { createUserLimiter, heavyOperationRateLimiter, libraryReadRateLimiter } from '../middleware/rateLimiter.js';
+import { requireCanDownload } from '../middleware/download-access.js';
 import { authenticateUser } from '../middleware/auth.js';
 import { logOperation, startOperationTimer, extractClientInfo, instrumentRead } from '../lib/analytics.js';
 import { harvestTracks, harvestPlaylists } from '../lib/catalog.js';
@@ -63,6 +64,7 @@ import {
   validateActivities,
   validateBulkUnlike,
   validateBulkLike,
+  validateDownloadLinks,
   validateBulkUnfollow,
   validateBulkUnrepost,
   validateClonePlaylist,
@@ -1354,6 +1356,101 @@ router.get('/proxy-download', authenticateUser, async (req, res) => {
       return res.status(429).json({ error: 'SoundCloud is rate-limiting downloads. Wait a minute and try again.' });
     }
     res.status(500).json({ error: 'Failed to proxy download' });
+  }
+});
+
+// Per user, not per IP: 60 batches of ≤10 is 600 tracks an hour, well inside
+// what one person's queue needs and far under SoundCloud's patience.
+const downloadLinksLimiter = createUserLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 60,
+  message: 'Too many download batches this hour. The queue will pick up where it left off later.',
+});
+
+// One queue batch per user at a time; a second tab must not double the pace.
+const downloadLinksInFlight = new Set();
+
+/**
+ * POST /api/downloads/links — exchange up to 10 SoundCloud download URLs for
+ * their CDN links, for the Downloads page's queue. SoundCloud's own download
+ * endpoint only (the same allowlist as /proxy-download); the server never
+ * touches the file. Sequential, paced at SC_WRITE_PACING_MS between calls,
+ * and stops at the first 429 — the rest come back `rate_limited` for the
+ * queue to retry later, never a retry loop here.
+ *
+ * Order is load-bearing: authenticateUser, then requireCanDownload (reads
+ * req.user), then the validator (an empty or form-encoded body dies here
+ * before it can spend the limiter), then the per-user limiter.
+ */
+router.post('/downloads/links', authenticateUser, requireCanDownload, validateDownloadLinks, downloadLinksLimiter, async (req, res) => {
+  const userId = req.user.id;
+  if (downloadLinksInFlight.has(userId)) {
+    return res.status(409).json({ error: 'A download batch is already running for your account.' });
+  }
+  downloadLinksInFlight.add(userId);
+
+  let clientDisconnected = false;
+  res.on('close', () => {
+    if (!res.writableEnded) clientDisconnected = true;
+  });
+
+  const elapsed = startOperationTimer();
+  const results = [];
+  let rateLimited = false;
+  try {
+    const { urls } = req.body;
+    for (let i = 0; i < urls.length; i++) {
+      const url = urls[i];
+      const trackId = downloadTrackIdFromUrl(url);
+      if (rateLimited || clientDisconnected) {
+        results.push({ url, trackId, status: rateLimited ? 'rate_limited' : 'skipped' });
+        continue;
+      }
+      if (i > 0) await sleep(SC_WRITE_PACING_MS);
+      try {
+        const result = await soundcloudClient.getDownloadLink(req.accessToken, req.refreshToken, url);
+        const loc = result?.redirect;
+        if (loc && isAllowedDownloadRedirectTarget(loc)) {
+          results.push({ url, trackId, status: 'ok', link: loc });
+        } else {
+          results.push({ url, trackId, status: 'error', reason: 'SoundCloud did not return a download link.' });
+        }
+      } catch (err) {
+        const upstream = Number(err?.status) || null;
+        if (upstream === 429) {
+          rateLimited = true;
+          results.push({ url, trackId, status: 'rate_limited' });
+        } else if (upstream === 403 || upstream === 404) {
+          results.push({ url, trackId, status: 'unavailable', reason: 'The artist may have turned downloads off.' });
+        } else {
+          results.push({ url, trackId, status: 'error', reason: 'SoundCloud could not provide the download.' });
+        }
+      }
+    }
+
+    if (!clientDisconnected) res.json({ results, rateLimited });
+    const succeeded = results.filter((r) => r.status === 'ok').length;
+    logOperation({
+      userId,
+      action: 'download-links',
+      status: succeeded === results.length ? 'success' : succeeded === 0 ? 'error' : 'partial',
+      durationMs: elapsed(),
+      trackIds: results.map((r) => r.trackId).filter(Boolean),
+      errorCode: rateLimited ? 'RATE_LIMITED' : succeeded === 0 ? 'ALL_ITEMS_FAILED' : undefined,
+      metadata: {
+        total: results.length,
+        succeeded,
+        unavailable: results.filter((r) => r.status === 'unavailable').length,
+        failed: results.filter((r) => r.status === 'error').length,
+        rateLimited: results.filter((r) => r.status === 'rate_limited').length,
+      },
+    });
+  } catch (error) {
+    logger.error('Download links error:', safeError(error));
+    logOperation({ userId, action: 'download-links', status: 'error', durationMs: elapsed(), errorCode: 'UNEXPECTED' });
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to fetch download links' });
+  } finally {
+    downloadLinksInFlight.delete(userId);
   }
 });
 

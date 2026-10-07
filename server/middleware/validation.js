@@ -1,5 +1,6 @@
 import { body, param, query, validationResult } from 'express-validator';
 import { parseKeywords } from '../lib/playlist-search.js';
+import { isAllowedDownloadUrl } from '../lib/download-utils.js';
 
 function validateSoundCloudUrl(value) {
   if (!value) return true;
@@ -498,6 +499,24 @@ export const validateBulkLike = [
   body('trackIds.*')
     .isInt({ min: 1 })
     .withMessage('Each trackId must be a positive integer'),
+  handleValidationErrors
+];
+
+/**
+ * POST /api/downloads/links — up to 10 SoundCloud track download URLs per
+ * call. Small on purpose: the CDN links that come back are signed and
+ * short-lived, so the queue asks just before it uses them. `.isString()`
+ * first, as everywhere: express-validator applies validators element-wise.
+ */
+export const validateDownloadLinks = [
+  body('urls')
+    .isArray({ min: 1, max: 10 })
+    .withMessage('urls must be an array with 1-10 items'),
+  body('urls.*')
+    .isString()
+    .bail()
+    .custom((value) => isAllowedDownloadUrl(value))
+    .withMessage('Each url must be a SoundCloud track download URL'),
   handleValidationErrors
 ];
 
