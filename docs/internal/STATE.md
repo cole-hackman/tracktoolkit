@@ -1,42 +1,46 @@
 # STATE
 
 ## Now
-Three PRs are open and waiting on Cole. **Nothing is merging or deploying.**
-#60 (playlist rewrites read blocked tracks and require declared removals:
-Steve's "Failed to update playlist" on the health check), #61 (appends never
-shrink an existing playlist; **stacked on #60**) and #59 (genre focus on Grow
-your network: Nick's request). Each passed `npm test`, lint, build, contrast
-and e2e on its final commit, after Opus review rounds. #58 (growth reverse
-import fix) is merged and verified live.
+Nothing is in flight. All of the 2026-10-07 feedback work is merged and
+deployed: #58, #60, #61 and #59. Each deploy was verified by reading the
+deployed files on App Service, the served bundle and the restart log, with no
+5xx after restart. **Still unproven live:** the SoundCloud `access` default
+behind #60 — see Next 1.
 
 ## Just done
-- `67c5443` — #58 merged: `POST /api/growth/reverse` 500'd on every call
-  (`SC_WRITE_PACING_MS` not imported). Verified live: the deployed `growth.js`
-  carries the import, the container restarted at 23:53Z, and `/health` is ok.
-- `9a743de` — #60 opened. Root cause, from production logs: the playlist read
-  never sent `access`, so SoundCloud dropped blocked tracks while
-  `track_count` counted them, and the short-read guard refused **101 of 148**
-  playlist PUTs (35 playlists, 28 clients).
-- `c2a3b53` — #61 opened: `writeGrowingPrefix`, refuse targets over 500.
-- `7e95c52` — #59 opened: genre focus, shared genre list, honest budget notice.
+- `d896e61` — #59 merged and live: genre focus on Grow your network (Nick).
+  It was rebased onto #60/#61 and re-checked: 792 tests, e2e 594 passed /
+  0 failed.
+- `5487d01` — #61 merged and live: appends never shrink an existing playlist;
+  targets over 500 are refused with 409.
+- `73f410e` — #60 merged and live: playlist rewrites read blocked tracks and
+  require declared removals (Steve). Before it, the short-read guard refused
+  **101 of 148** playlist PUTs, because SoundCloud's `access` defaults to
+  `playable,preview`.
+- `67c5443` — #58 merged and live: `POST /api/growth/reverse` 500'd on every
+  call (`SC_WRITE_PACING_MS` was not imported).
 - Plan: `~/.claude/plans/pasted-content-id-9479-two-pieces-streamed-abelson.md`.
 
 ## Next
 ### This session (2026-10-07)
-1. **Cole: review and merge #60, then retarget #61 to `main` and merge it.**
-   #59 is independent. Every merge deploys — run /verify-deploy after each.
-2. After #60 is live, on **Cole's own account only**: open a playlist with a
-   blocked track in the health check; the Blocked row shows; remove it and
-   SoundCloud loses exactly that track. This is the first live confirmation
-   of the `access` default. A few days later, rerun the `AppServiceHTTPLogs`
-   query (`PUT /api/playlists/:id` by status) — the 409 share should collapse;
-   count `[playlist-rewrite] refused short read` lines to decide design B.
-3. Follow-ups with evidence, none started: `POST /api/playlists/merge` 5xx on
-   55/295 calls; `/dashboard/summary`, `/playlists/:id`, followers/followings
-   paged 5xx at 3–6%; the PUT title branch never sets the title; `paginate`
-   does not flag a 429-deadline break as truncated; audit and keyword search
-   still read with the default `access`; `/users/{id}/related` is not in
-   SoundCloud's spec.
+1. **On Cole's own account only:** open a playlist that has a blocked track
+   in the health check. The Blocked row should show; remove it, and SoundCloud
+   should lose exactly that track. This is the first live confirmation of the
+   `access` default. A few days later, rerun the `AppServiceHTTPLogs` query
+   (`PUT /api/playlists/:id` by status): the 409 share should collapse. Count
+   `[playlist-rewrite] refused short read` lines to decide design B (cleaning
+   up deleted/private entries no read returns).
+2. Watch whether merge, from-likes and the followed-likes append now return
+   409 on targets with deleted/private entries. That is new, deliberate
+   behaviour from #60 (it used to silently delete tracks).
+3. Follow-ups with evidence, none started:
+   - `POST /api/playlists/merge` returns 5xx on 55/295 calls.
+   - `/dashboard/summary`, `/playlists/:id` and the followers/followings
+     paged routes return 5xx on 3–6% of calls.
+   - The PUT title branch never sets the title.
+   - `paginate` does not flag a 429-deadline break as truncated.
+   - Audit and keyword search still read with the default `access`.
+   - `/users/{id}/related` is not in SoundCloud's spec.
 
 ### Carried over from the previous handoff (status not verified this session)
 
@@ -431,8 +435,11 @@ import fix) is merged and verified live.
 - **The `access` default is from SoundCloud's spec, not yet seen live.** If
   `track_count` turns out to exclude blocked tracks, the all-access read comes
   back LONGER than `track_count` and the guard refuses every such playlist.
-- **#61 is stacked on #60.** Merge #60 first, retarget #61 to `main`, then
-  merge. Merging #61 alone into `main` is not possible as-is.
+- **Read the Playwright summary for `failed`, not just `passed`.** Failing
+  test names print *above* the `N passed` line. A `tail` that shows only the
+  last lines of the summary can miss them; that is how #59 was first reported
+  as "560 passed" with 4 failures. Check the exit code and grep for
+  `^\s+[0-9]+ failed`.
 - **`Select`'s third naming arm is satisfied only by Field's
   `data-field-labelled` render prop.** A bare `<Select id>` is a type error on
   purpose; do not "fix" it by loosening the union.
