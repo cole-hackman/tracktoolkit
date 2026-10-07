@@ -180,6 +180,15 @@ a CDN link from the redirect allowlist; the server never touches the file.
 gate / store / pre-order / none) is decided only by
 `frontend-UI/src/lib/download-status.ts`.
 
+`GET /api/downloads/history` (`authenticateUser, adminAuth` — admin only by
+decision) answers "have I already downloaded this?" **without a table of its
+own**: it unnests `metadata.trackIds` from the caller's successful
+`proxy-download` / `download-links` OperationLog rows. Two consequences: it
+records that a download was *started*, not that the file is on disk, and it
+lasts as long as OperationLog (365 days). It also depends on
+`download-links` logging **only the tracks that got a link** — log a failed
+track there and it shows up as downloaded.
+
 ### Growth & Discovery (`routes/growth.js`)
 
 All `/growth/*` routes are `authenticateUser`; the write-heavy ones also carry

@@ -3,6 +3,7 @@ import { soundcloudClient, fetchWithTimeout } from '../lib/soundcloud-client.js'
 import prisma from '../lib/prisma.js';
 import { createUserLimiter, heavyOperationRateLimiter, libraryReadRateLimiter } from '../middleware/rateLimiter.js';
 import { requireCanDownload } from '../middleware/download-access.js';
+import { adminAuth } from '../middleware/adminAuth.js';
 import { authenticateUser } from '../middleware/auth.js';
 import { logOperation, startOperationTimer, extractClientInfo, instrumentRead } from '../lib/analytics.js';
 import { harvestTracks, harvestPlaylists } from '../lib/catalog.js';
@@ -1476,6 +1477,53 @@ router.post('/downloads/links', authenticateUser, requireCanDownload, validateDo
     if (!res.headersSent) res.status(500).json({ error: 'Failed to fetch download links' });
   } finally {
     downloadLinksInFlight.delete(userId);
+  }
+});
+
+/**
+ * GET /api/downloads/history — which tracks this account has already
+ * downloaded through Track Toolkit, for the "Downloaded 3 Oct" note and the
+ * "hide already downloaded" filter.
+ *
+ * No table of its own: every SoundCloud download that got a link already
+ * left an OperationLog row (`proxy-download` for one click, `download-links`
+ * for a queue batch) with the track ids in `metadata.trackIds`, and only
+ * successful ones count (download-links logs only the tracks that got a
+ * link). So the history inherits OperationLog's retention — 12 months — and
+ * its place in export and deletion; nothing new is stored.
+ *
+ * Admin only, by decision (2026-10-07): it keeps the feature to the people
+ * who use the queue. What it records is "a download was started", not "the
+ * file is on disk".
+ */
+router.get('/downloads/history', authenticateUser, adminAuth, async (req, res) => {
+  try {
+    const rows = await prisma.$queryRaw`
+      SELECT (jsonb_array_elements_text(metadata->'trackIds'))::bigint AS track_id,
+             MIN("createdAt") AS first_at,
+             MAX("createdAt") AS last_at,
+             COUNT(*)::int AS times
+      FROM operation_logs
+      WHERE "userId" = ${req.user.id}
+        AND action IN ('proxy-download', 'download-links')
+        AND status IN ('success', 'partial')
+        AND jsonb_typeof(metadata->'trackIds') = 'array'
+      GROUP BY 1
+      ORDER BY 3 DESC
+      LIMIT 20000
+    `;
+    res.json({
+      tracks: rows.map((r) => ({
+        trackId: Number(r.track_id),
+        firstAt: new Date(r.first_at).toISOString(),
+        lastAt: new Date(r.last_at).toISOString(),
+        times: Number(r.times),
+      })),
+      retentionDays: 365,
+    });
+  } catch (error) {
+    logger.error('Download history error:', safeError(error));
+    res.status(500).json({ error: 'Failed to load download history' });
   }
 });
 

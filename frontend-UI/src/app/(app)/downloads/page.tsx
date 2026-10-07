@@ -6,6 +6,7 @@ import Link from "next/link";
 import { ArrowLeft, Download, ExternalLink, Heart, ListMusic, Trash2, X, CheckSquare, Search, Zap } from "lucide-react";
 import { apiFetch, readApiErrorMessage } from "@/lib/api";
 import { startSoundCloudDownload } from "@/lib/download";
+import { downloadedLabel, downloadedMap } from "@/lib/download-history";
 import { DownloadQueuePanel, DownloadQueueSheet, useDownloadQueue } from "@/components/downloads/DownloadQueue";
 import {
   type DownloadFilter,
@@ -38,6 +39,8 @@ import {
 } from "@/components/ui";
 import {
   invalidatePlaylistCaches,
+  queryKeys,
+  useDownloadHistoryQuery,
   useLikesQuery,
   useMeQuery,
   usePlaylistDetailQuery,
@@ -120,6 +123,15 @@ export default function DownloadsPage() {
   // Gated server-side: /api/auth/me returns canDownload based on the
   // DOWNLOAD_ALLOWLIST env (SoundCloud IDs) + admins.
   const isOwner = !!user?.canDownload;
+  // "Already downloaded" is admin only (decided 2026-10-07): read from the
+  // OperationLog rows downloads already leave, so nothing new is stored.
+  const isAdmin = !!user?.isAdmin;
+  const historyQuery = useDownloadHistoryQuery({ enabled: isAdmin });
+  const downloadedAt = useMemo(() => downloadedMap(historyQuery.data?.tracks), [historyQuery.data]);
+  const [hideDownloaded, setHideDownloaded] = useState(false);
+  const refreshHistory = () => {
+    if (isAdmin) queryClient.invalidateQueries({ queryKey: queryKeys.downloadHistory() });
+  };
 
   const [selectedSource, setSelectedSource] = useState<Playlist | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -398,15 +410,36 @@ export default function DownloadsPage() {
   }, [statusById]);
 
   const listedTracks = useMemo(
-    () => tracks.filter((t) => matchesFilter(statusById.get(t.id)!, filter, t)),
-    [tracks, statusById, filter],
+    () =>
+      tracks.filter(
+        (t) => matchesFilter(statusById.get(t.id)!, filter, t) && !(hideDownloaded && downloadedAt.has(t.id)),
+      ),
+    [tracks, statusById, filter, hideDownloaded, downloadedAt],
   );
+  const downloadedHere = useMemo(() => tracks.filter((t) => downloadedAt.has(t.id)).length, [tracks, downloadedAt]);
 
   // SoundCloud's own downloads in this source — what "Download all" queues.
+  // Ones already downloaded are left out; a single row's button still
+  // downloads one again.
   const directTracks = useMemo(
-    () => tracks.filter((t) => statusById.get(t.id)?.kind === "direct" && !!t.download_url),
-    [tracks, statusById],
+    () =>
+      tracks.filter(
+        (t) => statusById.get(t.id)?.kind === "direct" && !!t.download_url && !downloadedAt.has(t.id),
+      ),
+    [tracks, statusById, downloadedAt],
   );
+  const directDownloaded = useMemo(
+    () => tracks.filter((t) => statusById.get(t.id)?.kind === "direct" && downloadedAt.has(t.id)).length,
+    [tracks, statusById, downloadedAt],
+  );
+
+  // A queue that stops (finished, paused, or held by a rate limit) has
+  // written new history rows; show them.
+  const queueRunning = queue.state.running;
+  useEffect(() => {
+    if (!queueRunning && queue.summary.started > 0) refreshHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queueRunning]);
 
   const startQueue = () => {
     if (!selectedSource) return;
@@ -473,6 +506,7 @@ export default function DownloadsPage() {
     const result = await startSoundCloudDownload(track.download_url);
     setDownloadingTrackId(null);
     if (!result.ok) setDownloadError({ id: track.id, message: result.error });
+    else refreshHistory();
   };
 
   const renderDownloadError = (track: Track) =>
@@ -528,8 +562,14 @@ export default function DownloadsPage() {
   const renderStatusLine = (track: Track) => {
     const status = statusOf(track);
     const search = status.kind === "none" ? storeSearchLinks(track) : [];
+    const downloaded = downloadedAt.get(track.id);
     return (
       <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+        {downloaded && (
+          <span className="rounded-md border border-border bg-card px-1.5 py-0.5 font-medium text-success-text">
+            {downloadedLabel(downloaded)}
+          </span>
+        )}
         <span className={`rounded-md border border-border bg-card px-1.5 py-0.5 font-medium ${CHIP_TONE[status.kind]}`}>
           {status.label}
         </span>
@@ -727,6 +767,7 @@ export default function DownloadsPage() {
                 <p className="text-sm text-muted-foreground">
                   {plural(counts.direct, "direct download")} · {plural(counts.gate, "free gate")} ·{" "}
                   {counts.buy.toLocaleString()} to buy or pre-order · {counts.unavailable.toLocaleString()} not available
+                  {isAdmin && historyQuery.data ? ` · ${downloadedHere.toLocaleString()} already downloaded` : ""}
                 </p>
                 {!hypedditMode && !selectionMode && (
                   <div className="sm:w-56">
@@ -807,8 +848,27 @@ export default function DownloadsPage() {
                 {isOwner && directTracks.length > 0 && !selectionMode && !hypedditMode && (
                   <Button onClick={startQueue} disabled={queue.state.running}>
                     <Download className="w-4 h-4" aria-hidden="true" />
-                    Download all ({directTracks.length})
+                    {directDownloaded > 0 ? `Download all new (${directTracks.length})` : `Download all (${directTracks.length})`}
                   </Button>
+                )}
+                {isOwner && directTracks.length === 0 && directDownloaded > 0 && !selectionMode && !hypedditMode && (
+                  <p className="text-sm text-muted-foreground">
+                    All {directDownloaded.toLocaleString()} direct downloads here are already downloaded.
+                  </p>
+                )}
+                {isAdmin && downloadedHere > 0 && !selectionMode && !hypedditMode && (
+                  <label className="touch-44 flex cursor-pointer items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={hideDownloaded}
+                      onChange={(e) => {
+                        setHideDownloaded(e.target.checked);
+                        setVisibleCount(ROW_STEP);
+                      }}
+                      className="h-6 w-6 shrink-0 cursor-pointer accent-primary"
+                    />
+                    <span className="text-sm text-foreground">Hide tracks I&rsquo;ve already downloaded</span>
+                  </label>
                 )}
 
                 {/* Remove-from-playlist mode (playlists only, not likes) */}

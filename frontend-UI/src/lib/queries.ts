@@ -68,6 +68,7 @@ export const queryKeys = {
   growthStats: () => ["growth", "stats"] as const,
   growthLimits: () => ["growth", "limits"] as const,
   growthAnalytics: () => ["growth", "analytics"] as const,
+  downloadHistory: () => ["download-history"] as const,
 };
 
 const timings = {
@@ -88,6 +89,9 @@ const timings = {
   growthStats: { staleTime: 30 * 1000, gcTime: 5 * 60 * 1000 },
   growthLimits: { staleTime: 15 * 1000, gcTime: 5 * 60 * 1000 },
   growthAnalytics: { staleTime: 60 * 1000, gcTime: 10 * 60 * 1000 },
+  // Changes only when this user downloads something, and the pages
+  // invalidate it themselves when they do.
+  downloadHistory: { staleTime: 5 * 60 * 1000, gcTime: 15 * 60 * 1000 },
 };
 
 export function meQueryOptions() {
@@ -241,6 +245,28 @@ export function growthAnalyticsQueryOptions() {
     queryFn: () => apiFetchJson<GrowthAnalyticsResponse>("/api/growth/analytics"),
     ...timings.growthAnalytics,
   };
+}
+
+export interface DownloadHistoryEntry {
+  trackId: number;
+  firstAt: string;
+  lastAt: string;
+  times: number;
+}
+
+export function downloadHistoryQueryOptions() {
+  return {
+    queryKey: queryKeys.downloadHistory(),
+    queryFn: () => apiFetchJson<{ tracks: DownloadHistoryEntry[]; retentionDays: number }>("/api/downloads/history"),
+    ...timings.downloadHistory,
+  };
+}
+
+/** Admin only on the server; pass `enabled: isAdmin` so nobody else asks. */
+export function useDownloadHistoryQuery(
+  options?: QueryOverrides<{ tracks: DownloadHistoryEntry[]; retentionDays: number }>,
+) {
+  return useQuery({ ...downloadHistoryQueryOptions(), ...options });
 }
 
 export function useMeQuery(options?: QueryOverrides<Record<string, unknown>>) {
