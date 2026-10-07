@@ -20,6 +20,7 @@ import {
 import type { ResolverResource } from "@/lib/resolver";
 import { formatCompactNumber, formatDate, formatDuration, parseTagList, useSingleResolver } from "@/lib/resolver";
 import { apiFetchJson } from "@/lib/api";
+import { startSoundCloudDownload } from "@/lib/download";
 
 interface RelatedArtist {
   id: number;
@@ -121,6 +122,8 @@ function LinkResolverContent() {
   const [url, setUrl] = useState("");
   const [copied, setCopied] = useState<"url" | "id" | null>(null);
   const [copyError, setCopyError] = useState("");
+  const [downloadError, setDownloadError] = useState("");
+  const [downloading, setDownloading] = useState(false);
   const { loading, error, result, setResult, setError, resolve } = useSingleResolver();
 
   useEffect(() => {
@@ -138,6 +141,7 @@ function LinkResolverContent() {
 
   const resolveLink = async () => {
     setResult(null);
+    setDownloadError("");
     setError("");
     setCopied(null);
     setCopyError("");
@@ -348,15 +352,26 @@ function LinkResolverContent() {
                     {copied === "id" ? "Copied" : "Copy ID"}
                   </Button>
                   {resource.type === "track" && resource.download_url && (
-                    <a
-                      href={resource.download_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-sm font-semibold text-muted-foreground hover:text-primary-text"
+                    // Through /api/proxy-download, not a bare link: the raw
+                    // api.soundcloud.com URL needs the OAuth header, so opening
+                    // it directly only ever showed SoundCloud's 401.
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={downloading}
+                      onClick={async () => {
+                        const downloadUrl = resource.download_url;
+                        if (!downloadUrl) return;
+                        setDownloadError("");
+                        setDownloading(true);
+                        const outcome = await startSoundCloudDownload(downloadUrl);
+                        setDownloading(false);
+                        if (!outcome.ok) setDownloadError(outcome.error);
+                      }}
                     >
                       <Download className="w-4 h-4" aria-hidden="true" />
-                      Download
-                    </a>
+                      {downloading ? "Starting…" : "Download"}
+                    </Button>
                   )}
                   {resource.type === "track" && resource.purchase_url && (
                     <a
@@ -370,6 +385,11 @@ function LinkResolverContent() {
                     </a>
                   )}
                 </div>
+                {downloadError && (
+                  <InlineAlert variant="error" className="mt-3" onDismiss={() => setDownloadError("")}>
+                    {downloadError}
+                  </InlineAlert>
+                )}
                 {copyError && (
                   <InlineAlert variant="error" className="mt-3" onDismiss={() => setCopyError("")}>
                     {copyError}

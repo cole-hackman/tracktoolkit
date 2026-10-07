@@ -99,7 +99,7 @@ const FAKE_PLAYLIST_DETAIL = {
       downloadable: i === 0 || i === 3,
       download_url:
         i === 0 || i === 3
-          ? `https://api.soundcloud.com/tracks/${300 + i}/download`
+          ? `https://api.soundcloud.com/tracks/soundcloud:tracks:${300 + i}/download`
           : undefined,
       purchase_url: undefined as string | undefined,
       permalink_url: `https://soundcloud.com/testartist/sample-playlist-track-${i + 1}`,
@@ -114,7 +114,7 @@ const FAKE_PLAYLIST_DETAIL = {
       artwork_url: null as string | null,
       duration: 200000,
       downloadable: true,
-      download_url: "https://api.soundcloud.com/tracks/100/download",
+      download_url: "https://api.soundcloud.com/tracks/soundcloud:tracks:100/download",
       purchase_url: undefined as string | undefined,
       permalink_url: "https://soundcloud.com/testartist/sample-track-1",
       access: "playable",

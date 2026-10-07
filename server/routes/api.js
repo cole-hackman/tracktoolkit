@@ -29,7 +29,7 @@ import {
   invalidatePlaylistState,
 } from '../lib/social-cache.js';
 import { safeError } from '../lib/safe-error.js';
-import { isAllowedDownloadRedirectTarget, isAllowedDownloadUrl } from '../lib/download-utils.js';
+import { downloadTrackIdFromUrl, isAllowedDownloadRedirectTarget, isAllowedDownloadUrl } from '../lib/download-utils.js';
 import { buildDashboardSummary } from '../lib/dashboard-summary.js';
 import { summarizeLibraryAudit } from '../lib/library-audit.js';
 import { pagePlaylistsWithTracks } from '../lib/playlist-pages.js';
@@ -1297,6 +1297,7 @@ router.get('/resolve', authenticateUser, heavyOperationRateLimiter, validateReso
  * Proxy a download request to SoundCloud to verify auth and get the final link
  */
 router.get('/proxy-download', authenticateUser, async (req, res) => {
+  let downloadTrackId = null;
   try {
     const { url } = req.query;
     if (!url) {
@@ -1306,8 +1307,7 @@ router.get('/proxy-download', authenticateUser, async (req, res) => {
       return res.status(400).json({ error: 'Invalid download URL' });
     }
 
-    // The URL already passed isAllowedDownloadUrl, so the track ID is extractable
-    const downloadTrackId = Number(url.match(/\/tracks\/(\d+)\/download/)?.[1]) || null;
+    downloadTrackId = downloadTrackIdFromUrl(url);
     const result = await soundcloudClient.getDownloadLink(req.accessToken, req.refreshToken, url);
 
     if (result && result.redirect) {
@@ -1337,6 +1337,25 @@ router.get('/proxy-download', authenticateUser, async (req, res) => {
     res.status(404).json({ error: 'Could not resolve download link' });
   } catch (error) {
     logger.error('Proxy download error:', safeError(error));
+    const upstream = Number(error?.status) || null;
+    logOperation({
+      userId: req.user.id,
+      action: 'proxy-download',
+      status: 'error',
+      trackIds: downloadTrackId ? [downloadTrackId] : undefined,
+      metadata: { reason: 'upstream_error', upstreamStatus: upstream },
+    });
+    // SoundCloud answers 403/404 when the artist has turned downloads off
+    // (or the track is gone) — that is not our fault and not worth a retry,
+    // so say so instead of a generic 500.
+    if (upstream === 403 || upstream === 404) {
+      return res.status(404).json({
+        error: 'SoundCloud has no download for this track. The artist may have turned downloads off.',
+      });
+    }
+    if (upstream === 429) {
+      return res.status(429).json({ error: 'SoundCloud is rate-limiting downloads. Wait a minute and try again.' });
+    }
     res.status(500).json({ error: 'Failed to proxy download' });
   }
 });
