@@ -273,7 +273,7 @@ test("an unfocused partial crawl with skipped lookups shows one combined notice:
   await expect(page.getByText("unscored-1")).toBeVisible();
   await expect(page.getByTestId("budget-notice")).toHaveCount(1);
   await expect(page.getByTestId("budget-notice")).toHaveText(
-    /partial crawl, and 3 suggestions weren't scored/,
+    /partial crawl, and 3 suggestions weren't checked for genre or recent tracks/,
   );
   await expect(page.getByText(/fully scored/)).toHaveCount(0);
   await expectNoHorizontalOverflow(page);
