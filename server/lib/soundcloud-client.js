@@ -47,9 +47,46 @@ export async function fetchWithTimeout(url, options = {}, timeoutMs = SC_FETCH_T
   countScCall();
   try {
     return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    // Our own deadline fired. Re-throw with the same name and message (callers
+    // match on both) plus a shape routes can recognise without string-matching.
+    // A fresh Error, because DOMException's `code` is a read-only getter.
+    if (controller.signal.aborted && error?.name === 'AbortError') {
+      throw Object.assign(new Error(error.message), {
+        name: 'AbortError',
+        code: 'SC_TIMEOUT',
+        status: 504,
+      });
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Gateway-class statuses worth ONE retry, on reads only. */
+const SC_RETRYABLE_GATEWAY_STATUSES = new Set([502, 503, 504]);
+const SC_GATEWAY_RETRY_MIN_MS = Number(process.env.SC_GATEWAY_RETRY_MIN_MS) || 300;
+const SC_GATEWAY_RETRY_MAX_MS = Number(process.env.SC_GATEWAY_RETRY_MAX_MS) || 800;
+
+/**
+ * fetchWithTimeout, plus one jittered retry when a GET comes back 502/503/504.
+ * Never used for a write: a duplicated create or rewrite is worse than an
+ * error, so any method other than GET passes straight through.
+ * `deadlineAt` (epoch ms) suppresses the retry when waiting would overrun it.
+ */
+async function fetchWithGatewayRetry(url, options = {}, { deadlineAt = null } = {}) {
+  const response = await fetchWithTimeout(url, options);
+  const method = String(options.method || 'GET').toUpperCase();
+  if (method !== 'GET' || !SC_RETRYABLE_GATEWAY_STATUSES.has(response.status)) return response;
+  const span = Math.max(0, SC_GATEWAY_RETRY_MAX_MS - SC_GATEWAY_RETRY_MIN_MS);
+  const delay = SC_GATEWAY_RETRY_MIN_MS + Math.random() * span;
+  // A crawl past its deadline is worse than reporting the 5xx now.
+  if (deadlineAt !== null && Date.now() + delay >= deadlineAt) return response;
+  // Drain the discarded response so its socket is released.
+  try { await response.body?.cancel?.(); } catch { /* best effort */ }
+  await new Promise((resolve) => setTimeout(resolve, delay));
+  return fetchWithTimeout(url, options);
 }
 
 /** Sign-out is best-effort courtesy on a path the user is already leaving.
@@ -522,7 +559,7 @@ class SoundCloudClient {
     const { max429Retries = 3, retryAttempt = 0, ...fetchOptions } = options;
     const url = `${this.baseUrl}${endpoint}`;
     
-    const response = await fetchWithTimeout(url, {
+    const response = await fetchWithGatewayRetry(url, {
       ...fetchOptions,
       headers: {
         'Authorization': `OAuth ${accessToken}`,
@@ -579,7 +616,11 @@ class SoundCloudClient {
 
     if (!response.ok) {
       // Don't include response body in error message to prevent secret leakage
-      throw new Error(`API request failed: ${response.status}`);
+      throw Object.assign(new Error(`API request failed: ${response.status}`), {
+        status: response.status,
+        endpoint,
+        method: String(fetchOptions.method || 'GET').toUpperCase(),
+      });
     }
 
     return parseScJson(response, { context: endpoint });
@@ -678,12 +719,12 @@ class SoundCloudClient {
       && pagesFetched < maxPages
       && (deadlineAt === null || Date.now() < deadlineAt)
     ) {
-      const res = await fetchWithTimeout(nextUrl, {
+      const res = await fetchWithGatewayRetry(nextUrl, {
         headers: {
           'Authorization': `OAuth ${currentAccessToken}`,
           'Accept': 'application/json'
         }
-      });
+      }, { deadlineAt });
 
       if (res.status === 401) {
         // Bounded: this `continue` retries the same URL without consuming a
@@ -716,7 +757,11 @@ class SoundCloudClient {
 
       if (!res.ok) {
         // Don't include response body in error message
-        throw new Error(`API request failed: ${res.status}`);
+        throw Object.assign(new Error(`API request failed: ${res.status}`), {
+          status: res.status,
+          endpoint,
+          method: 'GET',
+        });
       }
 
       retries429 = 0;

@@ -7,6 +7,7 @@ import { logOperation, startOperationTimer, extractClientInfo, instrumentRead } 
 import { harvestTracks, harvestPlaylists } from '../lib/catalog.js';
 import { piggybackEnrichment } from '../lib/enrichment.js';
 import logger from '../lib/logger.js';
+import { classifyScError } from '../lib/sc-errors.js';
 import {
   sleep,
   SC_WRITE_PACING_MS,
@@ -174,6 +175,7 @@ async function assertFollowedUser(req, targetUserId) {
   if (!followed) {
     const error = new Error('Followed user not found');
     error.status = 403;
+    error.code = 'NOT_FOLLOWED';
     throw error;
   }
   return followed;
@@ -937,6 +939,22 @@ router.get('/playlists/:id', authenticateUser, validateGetPlaylist, async (req, 
     res.json(playlist);
   } catch (error) {
     logger.error('Get playlist with tracks error:', safeError(error));
+    const kind = classifyScError(error);
+    if (kind === 'not_found') {
+      // The cached list still names a playlist SoundCloud no longer has.
+      // Drop it so the list the client refetches stops offering it.
+      invalidatePlaylistState(req.user.id);
+      return res.status(404).json({
+        code: 'PLAYLIST_NOT_FOUND',
+        error: 'This playlist no longer exists on SoundCloud.',
+      });
+    }
+    if (kind === 'upstream_unavailable') {
+      return res.status(502).json({
+        code: 'SOUNDCLOUD_UNAVAILABLE',
+        error: 'SoundCloud is having trouble right now. Try again in a minute.',
+      });
+    }
     res.status(500).json({ error: 'Failed to get playlist' });
   }
 });
@@ -1337,13 +1355,14 @@ router.get('/proxy-download', authenticateUser, async (req, res) => {
     res.status(404).json({ error: 'Could not resolve download link' });
   } catch (error) {
     logger.error('Proxy download error:', safeError(error));
-    const upstream = Number(error?.status) || null;
+    // Our own timeout is tagged status 504; it is not an upstream 504.
+    const upstream = error?.code === 'SC_TIMEOUT' ? null : (Number(error?.status) || null);
     logOperation({
       userId: req.user.id,
       action: 'proxy-download',
       status: 'error',
       trackIds: downloadTrackId ? [downloadTrackId] : undefined,
-      metadata: { reason: 'upstream_error', upstreamStatus: upstream },
+      metadata: { reason: error?.code === 'SC_TIMEOUT' ? 'timeout' : 'upstream_error', upstreamStatus: upstream },
     });
     // SoundCloud answers 403/404 when the artist has turned downloads off
     // (or the track is gone) — that is not our fault and not worth a retry,
@@ -1366,6 +1385,16 @@ router.get('/proxy-download', authenticateUser, async (req, res) => {
  */
 router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, validateMergePlaylists, async (req, res) => {
   const elapsed = startOperationTimer();
+  // Set immediately BEFORE each create or PUT. A write that timed out or came
+  // back 502 may still have landed upstream, so "attempted" is the only honest
+  // basis for telling the user whether their playlists were touched.
+  let writeAttempted = false;
+  // A failed read names the playlist it was for; the catch turns a 404 into
+  // "this one is gone" instead of a generic 500.
+  const tagReadFailure = (playlistId) => (err) => {
+    if (err && typeof err === 'object') err.mergePlaylistId = playlistId;
+    throw err;
+  };
   try {
     const { sourcePlaylistIds, title, targetPlaylistId, deleteAfterMerge } = req.body;
     // Validation middleware already checked the input
@@ -1382,7 +1411,7 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
         req.accessToken,
         req.refreshToken,
         playlistId
-      ),
+      ).catch(tagReadFailure(playlistId)),
     );
 
     const perPlaylistCounts = [];
@@ -1412,7 +1441,7 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
       // blocked tracks are filtered out of what gets merged in.
       const { playlist: targetPlaylist, ids: existingIds } = await readPlaylistForRewrite(
         soundcloudClient, req.accessToken, req.refreshToken, targetPlaylistId,
-      );
+      ).catch(tagReadFailure(targetPlaylistId));
       assertAppendable(existingIds);
       const existingTrackCount = existingIds.length;
 
@@ -1431,12 +1460,16 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
         ids: targetChunk,
         floor: existingIds.length,
         batchSize: 100,
-        write: (prefix) => soundcloudClient.addTracksToPlaylist(
-          req.accessToken,
-          req.refreshToken,
-          targetPlaylistId,
-          prefix
-        ),
+        write: async (prefix) => {
+          writeAttempted = true;
+          const result = await soundcloudClient.addTracksToPlaylist(
+            req.accessToken,
+            req.refreshToken,
+            targetPlaylistId,
+            prefix
+          );
+          return result;
+        },
       });
 
       // Create new playlists for overflow chunks (>500 tracks)
@@ -1447,6 +1480,7 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
         const chunk = overflowChunks[i];
         const partNumber = i + 2; // Part 1 is targetPlaylist
         const partTitle = `${baseTitle} (Part ${partNumber})`;
+        writeAttempted = true;
         const newPl = await soundcloudClient.createPlaylist(
           req.accessToken,
           req.refreshToken,
@@ -1460,12 +1494,16 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
           ids: chunk,
           floor: Math.min(100, chunk.length),
           batchSize: 100,
-          write: (prefix) => soundcloudClient.addTracksToPlaylist(
-            req.accessToken,
-            req.refreshToken,
-            newPl.id,
-            prefix
-          ),
+          write: async (prefix) => {
+            writeAttempted = true;
+            const result = await soundcloudClient.addTracksToPlaylist(
+              req.accessToken,
+              req.refreshToken,
+              newPl.id,
+              prefix
+            );
+            return result;
+          },
         });
 
         overflowPlaylists.push({
@@ -1564,6 +1602,8 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
         const mergeBatchSize = 100;
         const initialBatch = chunk.slice(0, mergeBatchSize);
 
+        writeAttempted = true;
+
         const newPlaylist = await soundcloudClient.createPlaylist(
           req.accessToken,
           req.refreshToken,
@@ -1579,6 +1619,7 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
         while (addIndex < chunk.length) {
           await sleep(SC_WRITE_PACING_MS);
           const addBatch = chunk.slice(0, addIndex + mergeBatchSize);
+          writeAttempted = true;
           await soundcloudClient.addTracksToPlaylist(
             req.accessToken,
             req.refreshToken,
@@ -1657,6 +1698,7 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
       const playlistTitle = baseTitle;
       const mergeBatchSize = 100;
       const initialBatch = trackIdsArray.slice(0, mergeBatchSize);
+      writeAttempted = true;
       const newPlaylist = await soundcloudClient.createPlaylist(
         req.accessToken,
         req.refreshToken,
@@ -1673,6 +1715,7 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
       while (addIndex < trackIdsArray.length) {
         await sleep(SC_WRITE_PACING_MS);
         const addBatch = trackIdsArray.slice(0, addIndex + mergeBatchSize);
+        writeAttempted = true;
         await soundcloudClient.addTracksToPlaylist(
           req.accessToken,
           req.refreshToken,
@@ -1746,6 +1789,35 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
     // A write may have landed before the failure; do not serve a stale target.
     invalidatePlaylistState(req.user.id);
     logger.error('Merge playlists error:', safeError(error));
+
+    // Only a READ can name a vanished playlist: tagReadFailure is applied to
+    // the source and target reads and nothing else, so a 404 on a write stays
+    // a 500 rather than being blamed on a source.
+    const kind = classifyScError(error);
+    let mapped = null;
+    if (kind === 'not_found' && error.mergePlaylistId != null && !writeAttempted) {
+      mapped = {
+        status: 409,
+        code: 'PLAYLIST_NOT_FOUND',
+        body: {
+          code: 'PLAYLIST_NOT_FOUND',
+          playlistId: error.mergePlaylistId,
+          error: 'One of the selected playlists no longer exists on SoundCloud. Your playlist list has been refreshed — pick again. Nothing was changed.',
+        },
+      };
+    } else if (kind === 'upstream_unavailable') {
+      mapped = {
+        status: 502,
+        code: 'SOUNDCLOUD_UNAVAILABLE',
+        body: {
+          code: 'SOUNDCLOUD_UNAVAILABLE',
+          error: writeAttempted
+            ? 'SoundCloud stopped responding partway through. Some changes may have been made — check your playlists before trying again.'
+            : 'SoundCloud is having trouble right now. Nothing was changed — try again in a minute.',
+        },
+      };
+    }
+
     logOperation({
       userId: req.user.id,
       action: 'merge',
@@ -1754,9 +1826,10 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
       clientInfo: extractClientInfo(req),
       // try-scoped arrays aren't visible here; fall back to the validated body
       playlistIds: Array.isArray(req.body?.sourcePlaylistIds) ? req.body.sourcePlaylistIds : undefined,
-      errorCode: error.name || 'MERGE_FAILED',
+      errorCode: mapped ? mapped.code : (error.name || 'MERGE_FAILED'),
       errorMessage: safeError(error).message,
     });
+    if (mapped) return res.status(mapped.status).json(mapped.body);
     res.status(500).json({ error: 'Failed to merge playlists' });
   }
 });
@@ -1922,8 +1995,10 @@ function followedLibraryPageHandler({ fetchPage, normalizeItem, logLabel, forbid
       });
     } catch (error) {
       logger.error(logLabel, safeError(error));
-      const status = error?.status || 500;
-      res.status(status === 403 ? 403 : 500).json({
+      // An upstream SoundCloud 403 also carries status 403; only our own
+      // authorization check sets NOT_FOLLOWED.
+      const status = error?.code === 'NOT_FOLLOWED' ? 403 : 500;
+      res.status(status).json({
         error: status === 403 ? forbiddenMessage : failureMessage,
       });
     }
@@ -2063,8 +2138,10 @@ router.post(
       }
       invalidatePlaylistState(req.user.id);
       logger.error('Create playlist from followed likes error:', safeError(error));
-      const status = error?.status || 500;
-      res.status(status === 403 ? 403 : 500).json({
+      // An upstream SoundCloud 403 also carries status 403; only our own
+      // authorization check sets NOT_FOLLOWED.
+      const status = error?.code === 'NOT_FOLLOWED' ? 403 : 500;
+      res.status(status).json({
         error: status === 403 ? 'Choose a user you follow to create from their public likes.' : 'Failed to create playlist from followed user likes',
       });
     }
@@ -2162,8 +2239,10 @@ router.post(
       });
     } catch (error) {
       logger.error('Clone followed playlists error:', safeError(error));
-      const status = error?.status || 500;
-      res.status(status === 403 ? 403 : 500).json({
+      // An upstream SoundCloud 403 also carries status 403; only our own
+      // authorization check sets NOT_FOLLOWED.
+      const status = error?.code === 'NOT_FOLLOWED' ? 403 : 500;
+      res.status(status).json({
         error: status === 403 ? 'Choose a user you follow to clone their public playlists.' : 'Failed to clone followed user playlists',
       });
     }
