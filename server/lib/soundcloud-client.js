@@ -66,20 +66,25 @@ export async function fetchWithTimeout(url, options = {}, timeoutMs = SC_FETCH_T
 
 /** Gateway-class statuses worth ONE retry, on reads only. */
 const SC_RETRYABLE_GATEWAY_STATUSES = new Set([502, 503, 504]);
-const SC_GATEWAY_RETRY_MIN_MS = Number(process.env.SC_GATEWAY_RETRY_MIN_MS ?? 300);
-const SC_GATEWAY_RETRY_MAX_MS = Number(process.env.SC_GATEWAY_RETRY_MAX_MS ?? 800);
+const SC_GATEWAY_RETRY_MIN_MS = Number(process.env.SC_GATEWAY_RETRY_MIN_MS) || 300;
+const SC_GATEWAY_RETRY_MAX_MS = Number(process.env.SC_GATEWAY_RETRY_MAX_MS) || 800;
 
 /**
  * fetchWithTimeout, plus one jittered retry when a GET comes back 502/503/504.
  * Never used for a write: a duplicated create or rewrite is worse than an
  * error, so any method other than GET passes straight through.
+ * `deadlineAt` (epoch ms) suppresses the retry when waiting would overrun it.
  */
-async function fetchWithGatewayRetry(url, options = {}) {
+async function fetchWithGatewayRetry(url, options = {}, { deadlineAt = null } = {}) {
   const response = await fetchWithTimeout(url, options);
   const method = String(options.method || 'GET').toUpperCase();
   if (method !== 'GET' || !SC_RETRYABLE_GATEWAY_STATUSES.has(response.status)) return response;
   const span = Math.max(0, SC_GATEWAY_RETRY_MAX_MS - SC_GATEWAY_RETRY_MIN_MS);
   const delay = SC_GATEWAY_RETRY_MIN_MS + Math.random() * span;
+  // A crawl past its deadline is worse than reporting the 5xx now.
+  if (deadlineAt !== null && Date.now() + delay >= deadlineAt) return response;
+  // Drain the discarded response so its socket is released.
+  try { await response.body?.cancel?.(); } catch { /* best effort */ }
   await new Promise((resolve) => setTimeout(resolve, delay));
   return fetchWithTimeout(url, options);
 }
@@ -719,7 +724,7 @@ class SoundCloudClient {
           'Authorization': `OAuth ${currentAccessToken}`,
           'Accept': 'application/json'
         }
-      });
+      }, { deadlineAt });
 
       if (res.status === 401) {
         // Bounded: this `continue` retries the same URL without consuming a

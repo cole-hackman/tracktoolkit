@@ -172,23 +172,26 @@ export default function CombinePlaylistsPage() {
         setIsComplete(true);
       } else {
         const errorBody = await response.json().catch(() => null);
+        // Show the reason first: it must not wait on a cold list refetch.
+        setMergeError(
+          errorMessageFromBody(errorBody, "Failed to merge playlists. Please try again."),
+        );
         if (
           response.status === 409 &&
           errorBody?.code === "PLAYLIST_NOT_FOUND"
         ) {
           // A playlist we were still offering is gone from SoundCloud. Nothing
-          // was written, so drop it from the selection (and the target slot),
-          // refetch the list so it stops being offered, and say why.
+          // was written, so drop it from the selection (and the target slot)
+          // and refetch the list so it stops being offered.
           const missingId = Number(errorBody.playlistId);
           if (Number.isFinite(missingId)) {
             setSelectedPlaylists((prev) => prev.filter((p) => Number(p.id) !== missingId));
             setTargetPlaylist((prev) => (prev && Number(prev.id) === missingId ? null : prev));
+            // Indexes into the old list no longer line up for shift-select.
+            setLastSelectedIndex(null);
           }
-          await invalidatePlaylistCaches(queryClient);
+          void invalidatePlaylistCaches(queryClient);
         }
-        setMergeError(
-          errorMessageFromBody(errorBody, "Failed to merge playlists. Please try again."),
-        );
       }
     } catch (error) {
       console.error("Error merging playlists:", error);

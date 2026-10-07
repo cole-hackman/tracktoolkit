@@ -76,3 +76,34 @@ test("combine: a 409 PLAYLIST_NOT_FOUND shows the server text, refetches the lis
   );
   expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
 });
+
+test("combine: a 409 PLAYLIST_NOT_FOUND naming the merge target clears the target", async ({
+  page,
+}) => {
+  await mockApi(page);
+  await page.route(
+    (url) => url.pathname === "/api/playlists/merge",
+    (route) =>
+      route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({ code: "PLAYLIST_NOT_FOUND", playlistId: 3, error: REASON }),
+      }),
+  );
+
+  await page.goto("/combine/");
+  await page.getByRole("checkbox", { name: "Sample Playlist 1" }).check();
+  await page.getByRole("checkbox", { name: "Sample Playlist 2" }).check();
+  await page.getByRole("button", { name: "Existing playlist" }).click();
+  await page.getByRole("button", { name: "Choose a target playlist…" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: /Sample Playlist 3/ }).click();
+  await expect(page.getByRole("button", { name: /Change/ })).toBeVisible();
+
+  await page.getByRole("button", { name: "Merge Playlists" }).click();
+
+  await expect(page.getByRole("alert").filter({ hasText: REASON })).toBeVisible();
+  // The target is cleared; the two sources are untouched.
+  await expect(page.getByRole("button", { name: "Choose a target playlist…" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove Sample Playlist 1" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove Sample Playlist 2" })).toBeVisible();
+});

@@ -16,7 +16,7 @@ import {
   Skeleton,
   useAnnounce,
 } from "@/components/ui";
-import { apiFetch, readApiErrorMessage } from "@/lib/api";
+import { apiFetch, isApiError, readApiErrorMessage } from "@/lib/api";
 import {
   invalidatePlaylistCaches,
   usePlaylistDetailQuery,
@@ -76,14 +76,19 @@ export default function PlaylistHealthCheckPage() {
 
   useEffect(() => {
     if (playlistDetailQuery.isError) {
-      setNotice({ type: "error", text: "Couldn’t load tracks for this playlist." });
+      // The server's own wording for a vanished playlist (404) or a SoundCloud
+      // outage (502) says more than the generic line does.
+      const err = playlistDetailQuery.error;
+      const serverText =
+        isApiError(err) && (err.status === 404 || err.status === 502) ? err.message : null;
+      setNotice({ type: "error", text: serverText ?? "Couldn’t load tracks for this playlist." });
       return;
     }
 
     if (playlistDetailQuery.data) {
       setTracks(asArray<Track>(playlistDetailQuery.data.tracks));
     }
-  }, [playlistDetailQuery.data, playlistDetailQuery.isError]);
+  }, [playlistDetailQuery.data, playlistDetailQuery.isError, playlistDetailQuery.error]);
 
   // SoundCloud counts entries it will not hand back at any access level
   // (deleted or private). The server refuses to rewrite a playlist it cannot

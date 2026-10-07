@@ -154,13 +154,35 @@ describe('POST /api/playlists/merge — SoundCloud failures', () => {
     expect(invalidatePlaylistState).toHaveBeenCalledWith('user-a');
   });
 
-  test('a 502 on the very first write (nothing landed) still says nothing was changed', async () => {
+  test('a 502 on the very first write may have landed upstream, so it says some changes may have been made', async () => {
     sources();
     createPlaylist.mockRejectedValue(scError(502));
     const res = await merge();
 
     expect(res.status).toBe(502);
-    expect(res.body.error).toMatch(/nothing was changed/i);
+    expect(res.body.error).toMatch(/some changes may have been made/i);
+    expect(res.body.error).not.toMatch(/nothing was changed/i);
+  });
+
+  test('a timeout on the create (it may still have landed) says some changes may have been made', async () => {
+    sources();
+    createPlaylist.mockRejectedValue(
+      Object.assign(new Error('The operation was aborted.'), { code: 'SC_TIMEOUT', status: 504 }),
+    );
+    const res = await merge();
+
+    expect(res.status).toBe(502);
+    expect(res.body.code).toBe('SOUNDCLOUD_UNAVAILABLE');
+    expect(res.body.error).toMatch(/some changes may have been made/i);
+  });
+
+  test('a 502 on the first PUT to an existing target says some changes may have been made', async () => {
+    sources({ target: [100], tracksA: [200], tracksB: [1] });
+    addTracksToPlaylist.mockRejectedValue(scError(502));
+    const res = await merge({ targetPlaylistId: 1 });
+
+    expect(res.status).toBe(502);
+    expect(res.body.error).toMatch(/some changes may have been made/i);
   });
 
   test('a 502 partway through merge-into-existing says some changes may have been made', async () => {
@@ -242,6 +264,29 @@ describe('GET /api/playlists/:id — SoundCloud failures', () => {
   test('a 429 stays a 500', async () => {
     getPlaylistWithTracks.mockRejectedValue(scError(429));
     const res = await request(app).get('/api/playlists/5');
+    expect(res.status).toBe(500);
+  });
+});
+
+describe('DELETE /api/playlists/:id — upstream statuses pass through', () => {
+  test.each([404, 403, 502, 503, 504])('an upstream %i is returned as that status', async (status) => {
+    deletePlaylist.mockRejectedValue(scError(status));
+    const res = await request(app).delete('/api/playlists/5');
+    expect(res.status).toBe(status);
+    expect(res.body.error).toBe('Failed to delete playlist');
+  });
+
+  test('a timeout is a 504', async () => {
+    deletePlaylist.mockRejectedValue(
+      Object.assign(new Error('The operation was aborted.'), { code: 'SC_TIMEOUT', status: 504 }),
+    );
+    const res = await request(app).delete('/api/playlists/5');
+    expect(res.status).toBe(504);
+  });
+
+  test('an error with no status is a 500', async () => {
+    deletePlaylist.mockRejectedValue(new Error('boom'));
+    const res = await request(app).delete('/api/playlists/5');
     expect(res.status).toBe(500);
   });
 });

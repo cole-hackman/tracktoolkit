@@ -14,6 +14,3 @@ export function classifyScError(err) {
   if (status === 429) return 'rate_limited';
   return null;
 }
-
-export const SC_UNAVAILABLE_MESSAGE =
-  'SoundCloud is having trouble right now. Nothing was changed — try again in a minute.';

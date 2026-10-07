@@ -2,8 +2,8 @@ import { jest } from '@jest/globals';
 import { Response } from 'node-fetch';
 
 process.env.SC_FETCH_TIMEOUT_MS = '50'; // before the module loads
-process.env.SC_GATEWAY_RETRY_MIN_MS = '0';
-process.env.SC_GATEWAY_RETRY_MAX_MS = '1';
+process.env.SC_GATEWAY_RETRY_MIN_MS = '1';
+process.env.SC_GATEWAY_RETRY_MAX_MS = '2';
 process.env.ENCRYPTION_KEY ||= 'x'.repeat(32);
 
 jest.unstable_mockModule('../server/lib/prisma.js', () => ({
@@ -78,6 +78,15 @@ describe('paginate', () => {
     const items = await soundcloudClient.paginate('/me/playlists', 'a', 'r', 200);
     expect(items).toEqual([{ id: 1 }]);
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('a 502 page is NOT retried when the retry delay would overrun the crawl deadline', async () => {
+    fetch.mockResolvedValue(res(502));
+    const err = await soundcloudClient
+      .paginate('/me/playlists', 'a', 'r', 200, { deadlineAt: Date.now() + 1 })
+      .catch((e) => e);
+    expect(err.status).toBe(502);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   test('two 502s on a page throw with status after 2 fetches', async () => {
