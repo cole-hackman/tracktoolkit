@@ -1091,6 +1091,9 @@ export default function DownloadsPage() {
                 onPause={queue.pause}
                 onResume={queue.resume}
                 onClear={queue.clear}
+                onConfirmSaved={queue.confirmSaved}
+                onRetryChecked={queue.retryChecked}
+                multiOk={queue.multiOk}
               />
             </div>
           </aside>
@@ -1103,6 +1106,9 @@ export default function DownloadsPage() {
             onPause={queue.pause}
             onResume={queue.resume}
             onClear={queue.clear}
+            onConfirmSaved={queue.confirmSaved}
+            onRetryChecked={queue.retryChecked}
+            multiOk={queue.multiOk}
           />
         )}
 

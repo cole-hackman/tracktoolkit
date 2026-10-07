@@ -24,6 +24,10 @@ dependency list. What they do not tell you:
 - The frontend is a Next.js static export (`output: 'export'`,
   `trailingSlash: true`) built to `frontend-UI/out/` and served by the Express
   backend from one origin on **Azure App Service**.
+  HTML is served `no-cache` (revalidated by ETag) and `/_next/static/` as
+  immutable for a year (`cacheControlFor` in `server/lib/static-site.js`); it
+  used to be one day for everything, which hid each deploy from returning
+  visitors.
 - The Playwright + axe e2e suite (`frontend-UI/e2e/`) runs against the built
   export at 1280/430/390/360, asserting zero serious or critical axe
   violations, no horizontal overflow, and the keyboard behaviour of the shared
@@ -201,7 +205,15 @@ decision) answers "have I already downloaded this?" **without a table of its
 own**: it unnests `metadata.trackIds` from the caller's successful
 `proxy-download` / `download-links` OperationLog rows. Two consequences: it
 records that a download was *started*, not that the file is on disk, and it
-lasts as long as OperationLog (365 days). It also depends on
+lasts as long as OperationLog (365 days).
+
+**Chrome's "download multiple files" prompt** holds every automatic download
+after a page's first one until the user clicks Allow in the tab — a prompt the
+page cannot see. So, until a browser has confirmed once
+(`track-toolkit-multi-download-ok` in localStorage), the queue fetches links
+only up to the second file and stops on "Did X save?" (`check` in
+`lib/download-queue.ts`). Without that, a run silently saved one file and
+reported them all as started (found verifying #65 live). It also depends on
 `download-links` logging **only the tracks that got a link** — log a failed
 track there and it shows up as downloaded.
 

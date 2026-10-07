@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { EMPTY_QUEUE, loadQueue, nextBatch, queueReducer, summarize, QUEUE_STORAGE_KEY } from "../src/lib/download-queue";
+import { EMPTY_QUEUE, loadQueue, nextBatch, nextBatchSize, queueReducer, summarize, QUEUE_STORAGE_KEY } from "../src/lib/download-queue";
 
 test.beforeEach(({}, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "viewport-independent unit tests");
@@ -48,4 +48,28 @@ test("corrupt or blocked storage loads as an empty queue", () => {
   expect(loadQueue({ getItem: () => "{nope" })).toEqual(EMPTY_QUEUE);
   expect(loadQueue({ getItem: () => { throw new Error("blocked"); } })).toEqual(EMPTY_QUEUE);
   expect(loadQueue(null)).toEqual(EMPTY_QUEUE);
+});
+
+test("before the first confirmation the queue fetches only up to the second file, then waits on a check", () => {
+  let s = queueReducer(queueReducer(EMPTY_QUEUE, { type: "enqueue", sourceTitle: "L", items: items(5) }), { type: "start" });
+  expect(nextBatchSize(s, false)).toBe(2);
+  expect(nextBatchSize(s, true)).toBe(10);
+  s = queueReducer(s, { type: "fetching", trackIds: [1, 2] });
+  s = queueReducer(s, { type: "result", trackId: 1, status: "started" });
+  expect(nextBatchSize(s, false)).toBe(1);
+  s = queueReducer(s, { type: "result", trackId: 2, status: "started" });
+  s = queueReducer(s, { type: "check", trackId: 2, title: "T2" });
+  expect(s.running).toBe(false);
+  expect(s.check).toEqual({ trackId: 2, title: "T2" });
+  // Start is refused until the check is answered.
+  expect(queueReducer(s, { type: "start" }).running).toBe(false);
+
+  const yes = queueReducer(queueReducer(s, { type: "confirmSaved" }), { type: "start" });
+  expect(yes.check).toBeUndefined();
+  expect(yes.running).toBe(true);
+  expect(yes.items.find((i) => i.trackId === 2)!.status).toBe("started");
+
+  const no = queueReducer(queueReducer(s, { type: "retryChecked" }), { type: "start" });
+  expect(no.items.find((i) => i.trackId === 2)!.status).toBe("pending");
+  expect(nextBatch(no)[0].trackId).toBe(2);
 });
