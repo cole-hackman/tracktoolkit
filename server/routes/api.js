@@ -38,6 +38,7 @@ import {
   duplicateTrackBetweenPlaylists,
   moveTrackBetweenPlaylists,
   readPlaylistForRewrite,
+  writeGrowingPrefix,
   PlaylistReadIncompleteError,
   MAX_PLAYLIST_TRACKS,
 } from '../lib/playlist-transfer.js';
@@ -1401,30 +1402,20 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
       const targetChunk = chunks[0] || [];
       const overflowChunks = chunks.slice(1);
 
-      // Update target playlist in 100-track batches
-      const mergeBatchSize = 100;
-      let updateIndex = mergeBatchSize;
-      while (updateIndex < targetChunk.length) {
-        await sleep(SC_WRITE_PACING_MS);
-        const batch = targetChunk.slice(0, updateIndex + mergeBatchSize);
-        await soundcloudClient.addTracksToPlaylist(
+      // Grow the target from its existing length, never from zero: each PUT
+      // replaces the whole list, so a failed later write must not leave the
+      // target shorter than it was.
+      await writeGrowingPrefix({
+        ids: targetChunk,
+        floor: existingIds.length,
+        batchSize: 100,
+        write: (prefix) => soundcloudClient.addTracksToPlaylist(
           req.accessToken,
           req.refreshToken,
           targetPlaylistId,
-          batch
-        );
-        updateIndex += mergeBatchSize;
-      }
-
-      // If target chunk has <= 100 tracks (or remaining after batches), update directly if needed
-      if (targetChunk.length <= 100) {
-        await soundcloudClient.addTracksToPlaylist(
-          req.accessToken,
-          req.refreshToken,
-          targetPlaylistId,
-          targetChunk
-        );
-      }
+          prefix
+        ),
+      });
 
       // Create new playlists for overflow chunks (>500 tracks)
       const baseTitle = (title && title.trim()) || targetPlaylist.title || 'Merged Playlist';
@@ -1806,15 +1797,14 @@ async function createOrAppendTrackIds({ accessToken, refreshToken, trackIds, tit
     const targetChunk = chunks[0] || [];
     const overflowChunks = chunks.slice(1);
 
-    let index = BATCH_SIZE_PLAYLIST_TRACKS;
-    while (index < targetChunk.length) {
-      await sleep(SC_WRITE_PACING_MS);
-      await soundcloudClient.addTracksToPlaylist(accessToken, refreshToken, targetPlaylistId, targetChunk.slice(0, index));
-      index += BATCH_SIZE_PLAYLIST_TRACKS;
-    }
-
-    await sleep(SC_WRITE_PACING_MS);
-    await soundcloudClient.addTracksToPlaylist(accessToken, refreshToken, targetPlaylistId, targetChunk);
+    // Grow from the existing length, never from zero (see writeGrowingPrefix):
+    // a failed later write leaves the target no shorter than it was.
+    await writeGrowingPrefix({
+      ids: targetChunk,
+      floor: existingIds.length,
+      batchSize: BATCH_SIZE_PLAYLIST_TRACKS,
+      write: (prefix) => soundcloudClient.addTracksToPlaylist(accessToken, refreshToken, targetPlaylistId, prefix),
+    });
 
     const overflowPlaylists = [];
     const baseTitle = targetPlaylist.title || title || 'Playlist';
@@ -2180,27 +2170,19 @@ router.post('/playlists/from-likes', authenticateUser, heavyOperationRateLimiter
       const targetChunk = chunks[0] || [];
       const overflowChunks = chunks.slice(1);
 
-      // Update target playlist in 100-track batches
-      const batchSize = 100;
-      let i = batchSize;
-      while (i < targetChunk.length) {
-        await sleep(SC_WRITE_PACING_MS);
-        await soundcloudClient.addTracksToPlaylist(
+      // Grow the target from its existing length, never from zero, so a failed
+      // later write cannot leave it shorter than it was (see writeGrowingPrefix).
+      await writeGrowingPrefix({
+        ids: targetChunk,
+        floor: existingIds.length,
+        batchSize: 100,
+        write: (prefix) => soundcloudClient.addTracksToPlaylist(
           req.accessToken,
           req.refreshToken,
           targetPlaylistId,
-          targetChunk.slice(0, i)
-        );
-        i += batchSize;
-      }
-      // Final PUT with full target chunk
-      await sleep(SC_WRITE_PACING_MS);
-      await soundcloudClient.addTracksToPlaylist(
-        req.accessToken,
-        req.refreshToken,
-        targetPlaylistId,
-        targetChunk
-      );
+          prefix
+        ),
+      });
 
       // Create overflow playlists for tracks beyond 500
       const overflowPlaylists = [];

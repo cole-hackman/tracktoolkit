@@ -585,6 +585,14 @@ bulk-remove reports that playlist as an error row and continues; bulk-add,
 followed-likes append (`createOrAppendTrackIds`) and transfer-track return 409.
 Playlists with no `track_count` are not guarded.
 
+**Append writers grow the target from its existing length, never from zero.**
+Merge-into-existing, from-likes-into-existing and `createOrAppendTrackIds` all
+call `writeGrowingPrefix` with `floor = existingIds.length`: every PUT is a
+prefix at least as long as the existing list, so a later write that fails (429
+after retries, 5xx, timeout) leaves the target holding all its old tracks plus
+some new ones, never fewer than it began with. The route still answers an error.
+`tests/routes/playlist-append-truncation.test.js` pins it.
+
 **Rewrite reads are all-access, because SoundCloud's default hides blocked
 tracks.** `GET /playlists/{id}` defaults `access` to `playable,preview`, so a
 default read omits blocked tracks while `track_count` still counts them — which

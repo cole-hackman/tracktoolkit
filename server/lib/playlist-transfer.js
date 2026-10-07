@@ -4,6 +4,7 @@
  */
 
 import logger from './logger.js';
+import { sleep, SC_WRITE_PACING_MS } from './pacing.js';
 
 export const MAX_PLAYLIST_TRACKS = 500;
 
@@ -67,6 +68,45 @@ export async function readPlaylistForRewrite(client, accessToken, refreshToken, 
   }
 
   return { playlist, ids };
+}
+
+/**
+ * Grow a playlist to `ids` with a series of full-list PUTs, never writing a
+ * prefix shorter than `floor`.
+ *
+ * SoundCloud's PUT replaces the whole list, so every intermediate write is a
+ * moment where the playlist holds only that prefix. The old append loops began
+ * at 100 (merge: 200) tracks regardless of what the target already held, so
+ * appending 30 tracks to a 450-track playlist cut it to 100 on the first PUT,
+ * and a failure on the next one (429 after retries, 5xx, timeout) left it
+ * there. Appends keep existing order and add new ids at the end, so any prefix
+ * at least as long as the existing list contains every existing track: pass
+ * `floor = existingIds.length` and a failed later write leaves the target
+ * holding all of its old tracks plus some new ones, never fewer than it began
+ * with. A brand-new playlist has nothing to protect: `floor = 0`.
+ *
+ * Prefix lengths run max(floor, min(batchSize, n)), then +batchSize, ending
+ * with exactly n. Writes are paced with SC_WRITE_PACING_MS between writes
+ * only. A rejection propagates and ends the sequence.
+ *
+ * @param {object} args
+ * @param {number[]} args.ids       The full final list.
+ * @param {number} [args.floor=0]   Never write fewer than this many ids (capped at ids.length).
+ * @param {number} [args.batchSize=100]
+ * @param {(prefix: number[]) => Promise<unknown>} args.write
+ */
+export async function writeGrowingPrefix({ ids, floor = 0, batchSize = 100, write }) {
+  const n = Array.isArray(ids) ? ids.length : 0;
+  if (n === 0) return;
+  const step = Math.max(1, Math.floor(batchSize) || 1);
+
+  let length = Math.min(n, Math.max(Math.max(0, floor), Math.min(step, n)));
+  for (;;) {
+    await write(ids.slice(0, length));
+    if (length >= n) return;
+    await sleep(SC_WRITE_PACING_MS);
+    length = Math.min(n, length + step);
+  }
 }
 
 /**
