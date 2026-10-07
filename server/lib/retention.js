@@ -17,6 +17,10 @@
  *     the run. Not just before the operation-log purge: the user sweeps
  *     cascade into operation_logs too, so counting after them would drop the
  *     departing users from the all-time figure that exists to remember them.
+ *   - Right after it, step 0 adds the tracks processed since the previous
+ *     run to a running total (accumulateTracksProcessed). Those two metrics
+ *     are what GET /api/stats/public serves, so the public figures move once
+ *     a day, when this job runs.
  *   - Every user delete logs its size before it runs. That is useful *during*
  *     a run, but it is not a preview: the line lands microseconds before the
  *     delete it describes, in the same pass. Reviewing before anything is
@@ -82,6 +86,17 @@ const FEEDBACK_RETENTION_DAYS = 730;
 
 /** The counter that has to outlive the operation logs it is derived from. */
 export const LIFETIME_METRIC_KEY = 'lifetime_distinct_users';
+
+/** Running total of tracks processed, and the createdAt it has counted up to.
+ *  Two keys because the total is an accumulation, not a high-water mark — see
+ *  accumulateTracksProcessed. */
+export const TRACKS_METRIC_KEY = 'lifetime_tracks_processed';
+export const TRACKS_CURSOR_KEY = 'lifetime_tracks_processed_through';
+
+/** How far behind `now` the tracks cursor stops. A log row's createdAt is
+ *  stamped before its insert commits, and the app and database clocks are not
+ *  the same clock; a row landing behind the cursor would never be counted. */
+const TRACKS_SETTLE_MS = 5 * 60 * 1000;
 
 /** Ten minutes: long enough for a cold Neon compute and the first wave of
  *  requests to settle before a job that issues large deletes. */
@@ -213,6 +228,75 @@ async function snapshotLifetimeUsers(dryRun = false) {
 }
 
 /**
+ * Add the tracks processed since the last run to the lifetime total.
+ *
+ * NOT a high-water mark like snapshotLifetimeUsers. SUM("trackCount") over
+ * operation_logs is a sum over whatever the 365-day purge has left, so once
+ * that purge starts deleting, the live sum falls and then only climbs back as
+ * fast as old rows leave. `max(stored, live)` would freeze at the day the
+ * purge began. Instead each run sums only the rows created since the cursor —
+ * rows no earlier run has seen — adds them to the stored total, and moves the
+ * cursor. Every row is counted once, on the first run after it is written,
+ * which is days before any purge can reach it (the earliest is the 6-day
+ * disconnect sweep). The one row this misses is an operation whose user
+ * deletes their account before the next run.
+ *
+ * The first run has no cursor and sums the whole table, which is the all-time
+ * figure for as long as nothing has aged out of it.
+ *
+ * Runs before any delete in the sweep, for the same reason as the user
+ * snapshot: the user sweeps cascade into operation_logs.
+ *
+ * `view:*` and `read:*` rows are excluded to match tracksProcessed in
+ * routes/admin.js — page opens and latency probes are not operations.
+ *
+ * The total and the cursor are written in one transaction. Writing one without
+ * the other would either count the same window twice or skip it.
+ */
+async function accumulateTracksProcessed(now, dryRun = false) {
+  const [storedTotal, storedCursor] = await Promise.all([
+    prisma.metric.findUnique({ where: { key: TRACKS_METRIC_KEY } }),
+    prisma.metric.findUnique({ where: { key: TRACKS_CURSOR_KEY } }),
+  ]);
+  const previous = storedTotal ? BigInt(storedTotal.value) : 0n;
+  const since = new Date(storedCursor ? Number(storedCursor.value) : 0);
+  const through = new Date(now - TRACKS_SETTLE_MS);
+
+  // A cursor at or past `through` (an earlier `now`, or a clock that moved
+  // backwards) has nothing new to count. Writing here would move the cursor
+  // back and count that window a second time.
+  if (through <= since) return Number(previous);
+
+  const rows = await prisma.$queryRaw(Prisma.sql`
+    SELECT COALESCE(SUM("trackCount"), 0)::bigint AS tracks
+    FROM operation_logs
+    WHERE "createdAt" > ${since}
+      AND "createdAt" <= ${through}
+      AND action NOT LIKE 'view:%'
+      AND action NOT LIKE 'read:%'
+  `);
+  const next = previous + BigInt(rows?.[0]?.tracks ?? 0);
+
+  if (dryRun) return Number(next);
+
+  const cursorValue = BigInt(through.getTime());
+  await prisma.$transaction([
+    prisma.metric.upsert({
+      where: { key: TRACKS_METRIC_KEY },
+      create: { key: TRACKS_METRIC_KEY, value: next },
+      update: { value: next },
+    }),
+    prisma.metric.upsert({
+      where: { key: TRACKS_CURSOR_KEY },
+      create: { key: TRACKS_CURSOR_KEY, value: cursorValue },
+      update: { value: cursorValue },
+    }),
+  ]);
+
+  return Number(next);
+}
+
+/**
  * Delete users matching `where`, announcing the size of the sweep first.
  *
  * The count is not decoration. These deletes cascade across every per-user
@@ -263,6 +347,9 @@ export async function runRetentionOnce(now = Date.now(), { dryRun = isRetentionD
   //    to operation_logs and would otherwise erase the very users this figure
   //    exists to remember.
   await runStep('lifetime-users-metric', () => snapshotLifetimeUsers(dryRun), results, 'snapshot');
+  //    The tracks total, for the same reason. It also feeds the public stats
+  //    endpoint, which is why that endpoint changes once a day.
+  await runStep('lifetime-tracks-metric', () => accumulateTracksProcessed(now, dryRun), results, 'snapshot');
 
   // 1. Library cache tier. Pages are immutable once written, so they age by
   //    createdAt; the state row is rewritten on every sync, so it ages by

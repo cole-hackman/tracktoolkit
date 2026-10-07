@@ -203,6 +203,10 @@ behind #60 — see Next 1.
 - Public numbers must be traceable to the production operation_log. The landing
   says "3,500+ SoundCloud users" against a real 3,570; README carries the exact
   figures plus their source. Never round up past the measurement (2026-08-25).
+  Since 2026-10-07 the README figures are live shields.io badges reading
+  `/api/stats/public` (lifetime users + lifetime tracks processed from the
+  `metrics` table, refreshed daily by the retention job) instead of hand-copied
+  numbers.
 - CLAUDE.md is the single authoritative project brief; AGENTS.md is only a
   pointer at it. Do not re-fork the two (2026-08-25).
 - `express.json()` stays the ONLY body parser — it is load-bearing CSRF defense.

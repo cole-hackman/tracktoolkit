@@ -253,6 +253,18 @@ describe('RETENTION_DRY_RUN', () => {
     expect(results['lifetime-users-metric']).toBe(3);
   });
 
+  test('the tracks total is computed but neither it nor its cursor is stored', async () => {
+    process.env.RETENTION_DRY_RUN = 'true';
+    declared.$queryRaw.mockImplementation(async (sql) => (
+      /SUM\("trackCount"\)/.test(sql.strings.join('')) ? [{ tracks: 250n }] : [{ count: 3 }]));
+
+    const results = await runRetentionOnce(NOW);
+
+    expect(at('metric.upsert')).not.toHaveBeenCalled();
+    expect(writes).toEqual([]);
+    expect(results['lifetime-tracks-metric']).toBe(250);
+  });
+
   test('a failing count is isolated like any other step, and still writes nothing', async () => {
     process.env.RETENTION_DRY_RUN = 'true';
     at('operationLog.count').mockRejectedValue(new Error('boom'));

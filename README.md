@@ -7,12 +7,16 @@ else changed: same tools, same accounts, same OAuth connection to SoundCloud.
 Bulk library management for SoundCloud power users — the batch operations the
 official site makes you do one click at a time.
 
-**3,570 registered users · 1,216 active in the last 90 days · 2,032,233 tracks
-processed all-time** (users and tracks as of August 25, 2026; the 90-day active
-figure is from August 2026 and has not been re-measured since)
+[![Users, all-time](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftracktoolkit.com%2Fapi%2Fstats%2Fpublic&query=%24.formatted.lifetimeUsers&label=users%20all-time&color=ff5500&cacheSeconds=3600)](https://tracktoolkit.com/api/stats/public)
+[![Tracks processed, all-time](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftracktoolkit.com%2Fapi%2Fstats%2Fpublic&query=%24.formatted.tracksProcessed&label=tracks%20processed&color=ff5500&cacheSeconds=3600)](https://tracktoolkit.com/api/stats/public)
 
-Numbers come from the production `operation_log` table (see
-[docs/internal/ANALYSIS.md](docs/internal/ANALYSIS.md) for methodology).
+The badges update daily. They read
+[`/api/stats/public`](https://tracktoolkit.com/api/stats/public), which serves
+two counters the production retention job recomputes every day:
+**users** is everyone who has ever run an operation, and **tracks processed**
+is the running total of tracks across every operation. Both are kept in the
+`metrics` table so neither goes down when old `operation_logs` rows age out
+(see `server/lib/retention.js`).
 
 Live at [tracktoolkit.com](https://tracktoolkit.com). The old
 `soundcloudtoolkit.com` hostnames 301/308 to it; what is left of the move is
