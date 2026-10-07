@@ -28,6 +28,24 @@ function resolveWithin(buildPath, reqPath) {
   return null;
 }
 
+// Content-hashed build output: a new deploy writes new filenames, so a cached
+// copy can never be wrong and never needs revalidating.
+const IMMUTABLE = 'public, max-age=31536000, immutable';
+// Route HTML and the RSC payloads beside it (`<route>/index.txt`) keep the
+// same name across deploys while naming that deploy's hashed chunks. Cached
+// for a day, a browser that visited before a deploy fed its stale payload to
+// the new chunks after it: the client router threw `e[o] is not a function`
+// and fell back to a hard navigation to the raw `/dashboard/index.txt`.
+// `no-cache` still lets the browser keep the file — it revalidates against
+// the ETag on every use, which costs a 304, not a download.
+const REVALIDATE = 'no-cache';
+
+function cacheControlFor(filePath, hashedDir) {
+  if (filePath.startsWith(hashedDir)) return IMMUTABLE;
+  if (filePath.endsWith('.html') || filePath.endsWith('.txt')) return REVALIDATE;
+  return null;
+}
+
 /**
  * Mounts the Next.js static export (`frontend-UI/out`) onto an Express app.
  *
@@ -69,10 +87,15 @@ export function mountStaticSite(app, buildPath, { aliases = {} } = {}) {
   });
 
   // 2. Real static files from the Next.js build.
+  const hashedDir = join(resolve(buildPath), '_next', 'static') + sep;
   app.use(
     express.static(buildPath, {
       maxAge: '1d',
       etag: true,
+      setHeaders: (res, filePath) => {
+        const value = cacheControlFor(filePath, hashedDir);
+        if (value) res.setHeader('Cache-Control', value);
+      },
     })
   );
 
@@ -97,19 +120,22 @@ export function mountStaticSite(app, buildPath, { aliases = {} } = {}) {
       return res.status(400).send('Bad request');
     }
 
+    // `cacheControl: false` stops `send` overwriting the header set here.
+    const htmlOptions = { headers: { 'Cache-Control': REVALIDATE }, cacheControl: false };
+
     if (htmlFile && existsSync(htmlFile)) {
-      return res.sendFile(htmlFile);
+      return res.sendFile(htmlFile, htmlOptions);
     }
 
     if (exactHtmlFile && existsSync(exactHtmlFile)) {
-      return res.sendFile(exactHtmlFile);
+      return res.sendFile(exactHtmlFile, htmlOptions);
     }
 
     // Unknown path (including anything resolveWithin rejected as outside
     // buildPath): serve the branded 404 page with a real 404 status.
     const notFoundFile = join(buildPath, '404.html');
     if (existsSync(notFoundFile)) {
-      return res.status(404).sendFile(notFoundFile);
+      return res.status(404).sendFile(notFoundFile, htmlOptions);
     }
 
     next();
