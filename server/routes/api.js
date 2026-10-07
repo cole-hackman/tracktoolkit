@@ -2349,6 +2349,10 @@ router.post(
   validateFollowingUserId,
   validateCloneFollowedPlaylists,
   async (req, res) => {
+    // Set immediately BEFORE each create (see the merge handler): a create
+    // that timed out or 502'd may still have landed upstream. Declared above
+    // the try so the outer catch sees the real value.
+    let writeAttempted = false;
     try {
       const targetUser = await assertFollowedUser(req, req.params.userId);
       const playlistIds = uniquePositiveIds(req.body.playlistIds);
@@ -2359,9 +2363,6 @@ router.post(
       const perPlaylistCounts = [];
       let fetchedTotal = 0;
       let acceptedTotal = 0;
-      // Set immediately BEFORE each create (see the merge handler): a create
-      // that timed out or 502'd may still have landed upstream.
-      let writeAttempted = false;
       let skippedCount = 0;
       let upstreamFailure = false;
 
@@ -2370,6 +2371,8 @@ router.post(
         let playlist;
         try {
           playlist = await soundcloudClient.getPlaylistWithTracks(req.accessToken, req.refreshToken, playlistId);
+          // An empty 2xx body parses to null; that is a failed read, not a crash.
+          if (!playlist || typeof playlist !== 'object') throw new Error('Empty playlist response');
         } catch (error) {
           logger.warn('Followed playlist clone read failed:', { playlistId, error: safeError(error) });
           const kind = classifyScError(error);
@@ -2419,6 +2422,10 @@ router.post(
             logger.warn('Followed playlist clone write failed:', { playlistId, error: safeError(error) });
             if (classifyScError(error) === 'upstream_unavailable') upstreamFailure = true;
             const partial = error?.partialPlaylist;
+            const remaining = chunks.length - i - 1;
+            const notAttempted = remaining > 0
+              ? ` ${remaining} more part${remaining === 1 ? ' was' : 's were'} not attempted.`
+              : '';
             if (partial) {
               partialPlaylists.push({
                 id: partial.id,
@@ -2431,16 +2438,17 @@ router.post(
               errors.push({
                 id: playlistId,
                 partialPlaylistId: partial.id,
-                error: `A copy was created but only partly filled (${partial.tracksWritten} of ${chunks[i].length} tracks). Check it on SoundCloud.`,
+                // A lower bound: a PUT that timed out may have landed.
+                error: `A copy was created but only partly filled (at least ${partial.tracksWritten} of ${chunks[i].length} tracks). Check it on SoundCloud.${notAttempted}`,
               });
             } else {
               errors.push({
                 id: playlistId,
-                error: 'Copy may not have been created — check your playlists before trying again.',
+                error: `Copy may not have been created — check your playlists before trying again.${notAttempted}`,
               });
             }
-            // Never retry a write, and do not pile more copies on top of a
-            // failing upstream: later chunks of this source are not attempted.
+            // Never retry a write. The remaining chunks of this source are not
+            // attempted (reported above); other sources still run.
             break;
           }
         }
@@ -2525,9 +2533,10 @@ router.post(
       if (error?.code === 'NOT_FOLLOWED') {
         return res.status(403).json({ error: 'Choose a user you follow to clone their public playlists.' });
       }
-      // Every create/PUT sits inside the per-item try above, which swallows its
-      // own errors, so anything that reaches this catch wrote nothing.
-      const mapped = scErrorResponse(error, { writeAttempted: false });
+      // Per-item failures are handled in the loop, but an unforeseen throw
+      // after a create must not claim nothing changed or skip the refresh.
+      if (writeAttempted) invalidatePlaylistState(req.user.id);
+      const mapped = scErrorResponse(error, { writeAttempted });
       if (mapped) return res.status(mapped.status).json(mapped.body);
       res.status(500).json({ error: 'Failed to clone followed user playlists' });
     }

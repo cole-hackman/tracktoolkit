@@ -22,7 +22,7 @@ const PARTIAL = {
 const PARTIAL_ERROR = {
   id: 400,
   partialPlaylistId: 91,
-  error: "A copy was created but only partly filled (200 of 250 tracks). Check it on SoundCloud.",
+  error: "A copy was created but only partly filled (at least 200 of 250 tracks). Check it on SoundCloud.",
 };
 
 async function openAndClone(page: Page) {
@@ -74,9 +74,13 @@ for (const width of [1280, 360]) {
     const link = page.getByRole("link", { name: /Open partly filled copy/ });
     await expect(link).toBeVisible();
     await expect(link).toHaveAttribute("href", PARTIAL.permalink_url);
-    await expect(page.getByRole("status").filter({ hasText: "200 of 250 tracks" }).first()).toBeVisible();
+    await expect(page.getByText(PARTIAL.title, { exact: true })).toBeVisible();
+    await expect(page.getByText("at least 200 of 250 tracks", { exact: true })).toBeVisible();
     await expect(page.getByText("Cloned 1 playlist.")).toBeVisible();
-    await expect(page.getByRole("alert").filter({ hasText: /not all of them finished/ })).toBeVisible();
+    // The summary lives inside the panel; no second alert repeats it.
+    await expect(page.getByText(/not all of them finished/)).toBeVisible();
+    await expect(page.getByRole("alert").filter({ hasText: /not all of them finished/ })).toHaveCount(0);
+    await expect(page.getByText("Sample Public Playlist 1:")).toBeVisible();
 
     await expectNoBlockingViolations(page);
     await expectNoHorizontalOverflow(page);
@@ -103,10 +107,11 @@ for (const width of [1280, 360]) {
 
     await openAndClone(page);
 
-    await expect(page.getByRole("alert").filter({ hasText: MESSAGE })).toBeVisible();
+    await expect(page.getByText(MESSAGE, { exact: true })).toBeVisible();
+    await expect(page.getByRole("alert").filter({ hasText: MESSAGE })).toHaveCount(0);
     const link = page.getByRole("link", { name: /Open partly filled copy/ });
     await expect(link).toHaveAttribute("href", PARTIAL.permalink_url);
-    await expect(page.getByText("200 of 250 tracks", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("at least 200 of 250 tracks", { exact: true })).toBeVisible();
     await expectNoBlockingViolations(page);
     await expectNoHorizontalOverflow(page);
   });
@@ -122,4 +127,27 @@ test("a non-JSON 502 body falls back to the generic text and does not crash", as
   await openAndClone(page);
 
   await expect(page.getByRole("alert").filter({ hasText: "Failed to clone playlists" })).toBeVisible();
+});
+
+test("a 400 with only per-item errors lists each reason under its playlist's name", async ({ page }) => {
+  await mockApi(page);
+  await page.route(
+    (url) => /^\/api\/followings\/\d+\/playlists\/clone$/.test(url.pathname),
+    (route) =>
+      route.fulfill({
+        status: 400,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: "None of the selected playlists could be cloned.",
+          errors: [{ id: 400, error: "This playlist no longer exists or is private." }],
+        }),
+      }),
+  );
+
+  await openAndClone(page);
+
+  await expect(page.getByText("None of the selected playlists could be cloned.")).toBeVisible();
+  await expect(page.getByText("Sample Public Playlist 1:")).toBeVisible();
+  await expect(page.getByText("This playlist no longer exists or is private.")).toBeVisible();
+  await expectNoBlockingViolations(page);
 });

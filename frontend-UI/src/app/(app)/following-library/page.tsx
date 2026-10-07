@@ -93,6 +93,8 @@ interface CloneResult {
   addedCount?: number;
   stats?: Record<string, unknown>;
   errors?: { id: number; error: string }[];
+  /** A sentence for the panel itself, so the outcome is not announced twice. */
+  summary?: string;
 }
 
 type LibraryTab = "likes" | "playlists" | "liked-playlists";
@@ -333,26 +335,33 @@ export default function FollowingLibraryPage() {
       // One read: a non-JSON body (a proxy's HTML error page) becomes null.
       const data = await response.json().catch(() => null);
       if (!response.ok) {
+        const message = errorMessageFromBody(data, "Failed to clone playlists");
         const partials = Array.isArray(data?.partialPlaylists) ? data.partialPlaylists : [];
-        if (partials.length > 0) setResult({ partialPlaylists: partials, errors: data?.errors });
-        setNotice({ type: "error", text: errorMessageFromBody(data, "Failed to clone playlists") });
-        // A create may have landed even though the request failed (the server
-        // says so with partialPlaylists or a SoundCloud error code), so the
-        // cached lists are stale. Show the outcome first, then refresh.
-        if (partials.length > 0 || typeof data?.code === "string") {
+        const itemErrors = Array.isArray(data?.errors) ? data.errors : [];
+        if (partials.length > 0 || itemErrors.length > 0) {
+          // The panel carries the outcome (its heading takes focus), so the
+          // server's sentence goes inside it rather than in a second alert.
+          setResult({ partialPlaylists: partials, errors: itemErrors, summary: message });
+        } else {
+          setNotice({ type: "error", text: message });
+        }
+        // A create may have landed even though the request failed: any 5xx, a
+        // SoundCloud error code, or a partialPlaylists list says so. The
+        // cached lists are then stale. Show the outcome first, then refresh.
+        if (response.status >= 500 || Array.isArray(data?.partialPlaylists) || typeof data?.code === "string") {
           void invalidatePlaylistCaches(queryClient);
         }
         return;
       }
-      setResult(data);
       const hasProblems =
         (Array.isArray(data?.errors) && data.errors.length > 0) ||
         (Array.isArray(data?.partialPlaylists) && data.partialPlaylists.length > 0);
-      setNotice(
+      setResult(
         hasProblems
-          ? { type: "error", text: "Some playlists were cloned, but not all of them finished. Details are below." }
-          : { type: "success", text: "Selected playlists were cloned into your library." },
+          ? { ...data, summary: "Some playlists were cloned, but not all of them finished." }
+          : data,
       );
+      if (!hasProblems) setNotice({ type: "success", text: "Selected playlists were cloned into your library." });
       void invalidatePlaylistCaches(queryClient);
     } catch (error) {
       console.error("Failed to clone followed playlists:", error);
@@ -744,7 +753,10 @@ export default function FollowingLibraryPage() {
 
               {result && (
                 <div className="border-t border-border/60 px-5 pb-5 pt-4">
-                  <ResultSummary result={result} />
+                  <ResultSummary
+                    result={result}
+                    sourceName={(id) => playlists.find((p) => Number(p.id) === Number(id))?.title || `Playlist ${id}`}
+                  />
                 </div>
               )}
             </Card>
@@ -965,7 +977,7 @@ function ContentListState({
   return <>{children}</>;
 }
 
-function ResultSummary({ result }: { result: CloneResult }) {
+function ResultSummary({ result, sourceName }: { result: CloneResult; sourceName: (id: number) => string }) {
   const playlists = result.playlists || (result.playlist ? [result.playlist] : []);
   const partialPlaylists = result.partialPlaylists || [];
   const hasProblems = (result.errors && result.errors.length > 0) || partialPlaylists.length > 0;
@@ -973,6 +985,7 @@ function ResultSummary({ result }: { result: CloneResult }) {
   // nothing was fully created) with partialPlaylists and no track totals.
   const isClone =
     typeof result.stats?.numPlaylistsCreated === "number" ||
+    result.summary !== undefined ||
     (partialPlaylists.length > 0 && result.addedCount == null && result.totalTracks == null);
 
   // The outcome of a clone appears at the bottom of a long card with no focus
@@ -991,10 +1004,13 @@ function ResultSummary({ result }: { result: CloneResult }) {
     <div ref={containerRef} role="status">
     <ResultPanel title={hasProblems ? "Finished with problems" : "Done"} tone={hasProblems ? "neutral" : "success"}>
       <div className="space-y-4">
+        {result.summary && <p className="text-sm font-semibold">{result.summary}</p>}
         {isClone ? (
-          <p className="text-sm text-muted-foreground">
-            {`Cloned ${playlists.length} playlist${playlists.length === 1 ? "" : "s"}.`}
-          </p>
+          playlists.length > 0 && (
+            <p className="text-sm text-muted-foreground">
+              {`Cloned ${playlists.length} playlist${playlists.length === 1 ? "" : "s"}.`}
+            </p>
+          )
         ) : (
           <p className="text-sm text-muted-foreground">
             {typeof result.addedCount === "number"
@@ -1030,7 +1046,7 @@ function ResultSummary({ result }: { result: CloneResult }) {
         {partialPlaylists.length > 0 && (
           <div className="space-y-2">
             <p className="text-sm font-semibold text-warning-text">
-              {partialPlaylists.length === 1 ? "This copy is only partly filled." : "These copies are only partly filled."} Open it on SoundCloud to finish or delete it.
+              {partialPlaylists.length === 1 ? "This copy is only partly filled." : "These copies are only partly filled."} Open {partialPlaylists.length === 1 ? "it" : "them"} on SoundCloud to finish or delete {partialPlaylists.length === 1 ? "it" : "them"}.
             </p>
             {partialPlaylists.map((playlist, index) => (
               <div key={`${playlist.id ?? index}`} className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2">
@@ -1038,7 +1054,7 @@ function ResultSummary({ result }: { result: CloneResult }) {
                   <div className="truncate text-sm font-semibold">{playlist.title}</div>
                   {playlist.tracksWritten != null && playlist.intendedTrackCount != null && (
                     <div className="text-xs text-muted-foreground">
-                      {playlist.tracksWritten} of {playlist.intendedTrackCount} tracks
+                      at least {playlist.tracksWritten} of {playlist.intendedTrackCount} tracks
                     </div>
                   )}
                 </div>
@@ -1059,11 +1075,15 @@ function ResultSummary({ result }: { result: CloneResult }) {
         )}
 
         {result.errors && result.errors.length > 0 && (
-          <ul className="space-y-1 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200">
-            {result.errors.map((entry, index) => (
-              <li key={`${entry.id}-${index}`} className="break-words">{entry.error}</li>
-            ))}
-          </ul>
+          <InlineAlert variant="warning">
+            <ul className="space-y-1">
+              {result.errors.map((entry, index) => (
+                <li key={`${entry.id}-${index}`} className="break-words">
+                  <span className="font-semibold">{sourceName(entry.id)}:</span> {entry.error}
+                </li>
+              ))}
+            </ul>
+          </InlineAlert>
         )}
       </div>
     </ResultPanel>

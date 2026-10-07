@@ -129,7 +129,7 @@ describe('followed clone: partly created playlists are reported', () => {
     expect(res.body.errors).toEqual([{
       id: 5,
       partialPlaylistId: 90,
-      error: 'A copy was created but only partly filled (200 of 250 tracks). Check it on SoundCloud.',
+      error: 'A copy was created but only partly filled (at least 200 of 250 tracks). Check it on SoundCloud.',
     }]);
     expect(invalidatePlaylistState).toHaveBeenCalledWith('user-a');
     expect(logOperation).toHaveBeenCalledWith(expect.objectContaining({ action: 'followed-playlist-clone', status: 'error' }));
@@ -142,7 +142,7 @@ describe('followed clone: partly created playlists are reported', () => {
 
     expect(res.status).toBe(502);
     expect(res.body.partialPlaylists[0].tracksWritten).toBe(100);
-    expect(res.body.errors[0].error).toMatch(/100 of 250 tracks/);
+    expect(res.body.errors[0].error).toMatch(/at least 100 of 250 tracks/);
   });
 
   test('a non-upstream failure on the PUT is a 500 with the same body shape', async () => {
@@ -287,6 +287,37 @@ describe('followed clone: nothing was written', () => {
     expect(res.body.errors).toEqual([{ id: 6, error: 'This playlist no longer exists or is private.' }]);
   });
 
+  test('a null read body (empty 2xx) is a per-item read failure, not an escape to the outer catch', async () => {
+    getPlaylistWithTracks.mockImplementation(async (at, rt, id) => (
+      id === 6 ? null : { id, title: 'Src 5', tracks: toTracks(range(50)) }
+    ));
+    playlistsApi();
+    const res = await clone([5, 6]);
+
+    expect(res.status).toBe(207);
+    expect(res.body.playlists).toHaveLength(1);
+    expect(res.body.errors).toEqual([{ id: 6, error: 'Playlist could not be cloned. It may be private or unavailable.' }]);
+    expect(invalidatePlaylistState).toHaveBeenCalledWith('user-a');
+  });
+
+  test('a null read body on its own is a 400 with the per-item reason', async () => {
+    getPlaylistWithTracks.mockResolvedValue(null);
+    const res = await clone([5]);
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors).toHaveLength(1);
+  });
+
+  test('a multi-chunk failure says how many parts were not attempted', async () => {
+    sources({ 5: 1200 }); // chunks 500, 500, 200
+    playlistsApi({ failPut: (id) => id === 90 });
+    const res = await clone([5]);
+
+    expect(res.body.errors[0].error).toMatch(/at least 100 of 500 tracks/);
+    expect(res.body.errors[0].error).toMatch(/2 more parts were not attempted\.$/);
+    expect(createPlaylist).toHaveBeenCalledTimes(1);
+  });
+
   test('NOT_FOLLOWED is still the 403, ahead of everything', async () => {
     getFollowings.mockResolvedValue([{ id: 222 }]);
     const res = await clone([5]);
@@ -298,6 +329,26 @@ describe('followed clone: nothing was written', () => {
 });
 
 describe('createPlaylistFromTrackIds stays byte-identical for other callers', () => {
+  test('followed-likes overflow PUT failure: same status and body, no partialPlaylist leaking', async () => {
+    getFollowings.mockResolvedValue([{ id: 999, username: 'friend' }]);
+    const existing = range(450);
+    getPlaylistWithTracks.mockResolvedValue({ id: 1, title: 'Target', track_count: existing.length, tracks: toTracks(existing) });
+    createPlaylist.mockResolvedValue({ id: 99, title: 'Target (overflow 1)', permalink_url: 'x' });
+    addTracksToPlaylist.mockImplementation(async (at, rt, id) => {
+      if (id === 99) throw scError(502);
+      return { id };
+    });
+    const res = await request(app)
+      .post('/api/followings/999/likes/playlist')
+      .send({ mode: 'selected', trackIds: range(260, 10000), targetPlaylistId: 1 });
+
+    // Today's behaviour: this route has no upstream mapping, so a generic 500.
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Failed to create playlist from followed user likes' });
+    expect(invalidatePlaylistState).toHaveBeenCalledWith('user-a');
+    expect(JSON.stringify(res.body)).not.toMatch(/partial/i);
+  });
+
   // The overflow playlist of an append is created by the same helper. Its
   // failure response must not grow a partialPlaylist or change wording.
   test('from-likes overflow PUT failure keeps today\'s response', async () => {
