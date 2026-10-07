@@ -492,7 +492,7 @@ test("no clipped controls with a long title: /downloads/", async ({ page }, test
             artwork_url: null,
             duration: 200000,
             downloadable: true,
-            download_url: "https://api.soundcloud.com/tracks/100/download",
+            download_url: "https://api.soundcloud.com/tracks/soundcloud:tracks:100/download",
             permalink_url: "https://soundcloud.com/testartist/sample-track-1",
           },
         ],

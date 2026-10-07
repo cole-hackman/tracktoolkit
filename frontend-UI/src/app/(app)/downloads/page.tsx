@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { ArrowLeft, Download, Heart, ListMusic, Trash2, X, CheckSquare, Search, Zap } from "lucide-react";
 import { apiFetch, readApiErrorMessage } from "@/lib/api";
+import { startSoundCloudDownload } from "@/lib/download";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   Button,
@@ -103,6 +104,10 @@ export default function DownloadsPage() {
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [downloadingTrackId, setDownloadingTrackId] = useState<number | null>(null);
+  // A failed download is reported in its own row, not in the page banner —
+  // the banner sits at the top of a list that can be hundreds of rows long,
+  // so a click on row 28 showed its error 27 rows out of sight.
+  const [downloadError, setDownloadError] = useState<{ id: number; message: string } | null>(null);
 
   // Hypeddit batch mode
   const [hypedditMode, setHypedditMode] = useState(false);
@@ -411,7 +416,7 @@ export default function DownloadsPage() {
   };
 
   const handleDownload = async (track: Track) => {
-    setInlineError(null);
+    setDownloadError(null);
 
     if (track.access === "blocked") return;
 
@@ -421,28 +426,17 @@ export default function DownloadsPage() {
     }
 
     setDownloadingTrackId(track.id);
-    try {
-      const response = await apiFetch(
-        `/api/proxy-download?format=json&url=${encodeURIComponent(track.download_url)}`
-      );
-      const data = await response.json().catch(() => null);
-
-      if (!response.ok || !data?.url) {
-        setInlineError(
-          data?.error ||
-            "SoundCloud did not provide a valid download link for this track. Try opening it on SoundCloud."
-        );
-        return;
-      }
-
-      window.open(data.url, "_blank", "noopener,noreferrer");
-    } catch (error) {
-      console.error("Failed to start download:", error);
-      setInlineError("Could not start the download. Try again or open the track on SoundCloud.");
-    } finally {
-      setDownloadingTrackId(null);
-    }
+    const result = await startSoundCloudDownload(track.download_url);
+    setDownloadingTrackId(null);
+    if (!result.ok) setDownloadError({ id: track.id, message: result.error });
   };
+
+  const renderDownloadError = (track: Track) =>
+    downloadError?.id === track.id ? (
+      <InlineAlert variant="error" className="mt-1" onDismiss={() => setDownloadError(null)}>
+        {`${track.title}: ${downloadError.message}`}
+      </InlineAlert>
+    ) : null;
 
   const hdActive = hypedditProgress?.active ?? false;
   const hdTotal = hypedditProgress?.total ?? 0;
@@ -787,38 +781,40 @@ export default function DownloadsPage() {
 
                     if (selectionMode) {
                       return (
-                        <TrackRow
-                          key={track.id}
-                          track={{ ...track, subtitle: track.user?.username }}
-                          isSelected={selectedTrackIds.has(track.id)}
-                          onToggle={() => toggleTrackSelection(track.id)}
-                          rightSlot={
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs text-muted-foreground">
-                                {formatDuration(track.duration)}
-                              </span>
-                              {isBlocked(track) ? (
-                                <span className="text-xs font-medium text-destructive-text">Blocked</span>
-                              ) : (
-                                <IconButton
-                                  label={getDownloadLabel(track)}
-                                  disabled={downloadingTrackId === track.id}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleDownload(track);
-                                  }}
-                                  className={getDownloadTone(track)}
-                                >
-                                  {downloadingTrackId === track.id ? (
-                                    <LoadingSpinner className="h-5 w-5 text-current" />
-                                  ) : (
-                                    <Download className="h-5 w-5" />
-                                  )}
-                                </IconButton>
-                              )}
-                            </div>
-                          }
-                        />
+                        <div key={track.id}>
+                          <TrackRow
+                            track={{ ...track, subtitle: track.user?.username }}
+                            isSelected={selectedTrackIds.has(track.id)}
+                            onToggle={() => toggleTrackSelection(track.id)}
+                            rightSlot={
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs text-muted-foreground">
+                                  {formatDuration(track.duration)}
+                                </span>
+                                {isBlocked(track) ? (
+                                  <span className="text-xs font-medium text-destructive-text">Blocked</span>
+                                ) : (
+                                  <IconButton
+                                    label={getDownloadLabel(track)}
+                                    disabled={downloadingTrackId === track.id}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDownload(track);
+                                    }}
+                                    className={getDownloadTone(track)}
+                                  >
+                                    {downloadingTrackId === track.id ? (
+                                      <LoadingSpinner className="h-5 w-5 text-current" />
+                                    ) : (
+                                      <Download className="h-5 w-5" />
+                                    )}
+                                  </IconButton>
+                                )}
+                              </div>
+                            }
+                          />
+                          {renderDownloadError(track)}
+                        </div>
                       );
                     }
 
@@ -846,54 +842,56 @@ export default function DownloadsPage() {
                     }
 
                     return (
-                      <div
-                        key={track.id}
-                        className={`group flex items-center gap-4 rounded-xl bg-gray-50 p-3 transition-colors dark:bg-secondary/20 ${hypedditMode ? "opacity-40" : "hover:bg-gray-100 dark:hover:bg-secondary/40"}`}
-                      >
-                        <span
-                          aria-hidden="true"
-                          className="hidden w-8 shrink-0 text-center text-sm text-muted-foreground-subtle sm:block"
+                      <div key={track.id}>
+                        <div
+                          className={`group flex items-center gap-4 rounded-xl bg-gray-50 p-3 transition-colors dark:bg-secondary/20 ${hypedditMode ? "opacity-40" : "hover:bg-gray-100 dark:hover:bg-secondary/40"}`}
                         >
-                          {index + 1}
-                        </span>
-                        <img
-                          src={track.artwork_url || "/brand/icon-192.png"}
-                          alt=""
-                          width={40}
-                          height={40}
-                          loading="lazy"
-                          decoding="async"
-                          className="h-10 w-10 shrink-0 rounded-lg object-cover"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate font-semibold text-foreground">
-                            {track.title}
-                          </div>
-                          <div className="truncate text-sm text-muted-foreground">
-                            {track.user?.username} • {formatDuration(track.duration)}
-                          </div>
-                        </div>
-                        {isOwner && isHypeddit && !hypedditMode && (
-                          <span className="rounded-md px-2 py-0.5 text-xs font-medium bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 shrink-0">
-                            Hypeddit
-                          </span>
-                        )}
-                        {isBlocked(track) ? (
-                          <span className="shrink-0 text-xs font-medium text-destructive-text">Blocked</span>
-                        ) : (
-                          <IconButton
-                            label={getDownloadLabel(track)}
-                            disabled={downloadingTrackId === track.id}
-                            onClick={() => handleDownload(track)}
-                            className={getDownloadTone(track)}
+                          <span
+                            aria-hidden="true"
+                            className="hidden w-8 shrink-0 text-center text-sm text-muted-foreground-subtle sm:block"
                           >
-                            {downloadingTrackId === track.id ? (
-                              <LoadingSpinner className="h-5 w-5 text-current" />
-                            ) : (
-                              <Download className="w-5 h-5" />
-                            )}
-                          </IconButton>
-                        )}
+                            {index + 1}
+                          </span>
+                          <img
+                            src={track.artwork_url || "/brand/icon-192.png"}
+                            alt=""
+                            width={40}
+                            height={40}
+                            loading="lazy"
+                            decoding="async"
+                            className="h-10 w-10 shrink-0 rounded-lg object-cover"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate font-semibold text-foreground">
+                              {track.title}
+                            </div>
+                            <div className="truncate text-sm text-muted-foreground">
+                              {track.user?.username} • {formatDuration(track.duration)}
+                            </div>
+                          </div>
+                          {isOwner && isHypeddit && !hypedditMode && (
+                            <span className="rounded-md px-2 py-0.5 text-xs font-medium bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 shrink-0">
+                              Hypeddit
+                            </span>
+                          )}
+                          {isBlocked(track) ? (
+                            <span className="shrink-0 text-xs font-medium text-destructive-text">Blocked</span>
+                          ) : (
+                            <IconButton
+                              label={getDownloadLabel(track)}
+                              disabled={downloadingTrackId === track.id}
+                              onClick={() => handleDownload(track)}
+                              className={getDownloadTone(track)}
+                            >
+                              {downloadingTrackId === track.id ? (
+                                <LoadingSpinner className="h-5 w-5 text-current" />
+                              ) : (
+                                <Download className="w-5 h-5" />
+                              )}
+                            </IconButton>
+                          )}
+                        </div>
+                        {renderDownloadError(track)}
                       </div>
                     );
                   })}

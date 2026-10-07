@@ -5,6 +5,7 @@ import logger from './logger.js';
 import prisma from './prisma.js';
 import { getTokenContext, countScCall } from './token-context.js';
 import { invalidateCachedAuth } from './auth-cache.js';
+import { isAllowedDownloadUrl } from './download-utils.js';
 
 /**
  * Safely parse a fetch Response body as JSON.
@@ -1141,18 +1142,11 @@ class SoundCloudClient {
    * Handles the redirect manually to ensure we get the final URL
    */
   async getDownloadLink(accessToken, refreshToken, downloadUrl, triedRefresh = false) {
-    // Only allow SoundCloud API download URLs to prevent SSRF / token leakage
-    try {
-      const u = new URL(downloadUrl);
-      const host = u.hostname.toLowerCase();
-      if (u.protocol !== 'https:' || host !== 'api.soundcloud.com') {
-        throw new Error('Invalid download URL');
-      }
-      if (!/^\/tracks\/\d+\/download$/.test(u.pathname)) {
-        throw new Error('Invalid download path');
-      }
-    } catch (e) {
-      if (e.message === 'Invalid download URL' || e.message === 'Invalid download path') throw e;
+    // Only allow SoundCloud API download URLs to prevent SSRF / token leakage.
+    // One definition (download-utils.js) — this used to be a second copy of
+    // the numeric-only regex, and both had to be found when SoundCloud moved
+    // download_url to the URN form.
+    if (!isAllowedDownloadUrl(downloadUrl)) {
       throw new Error('Invalid download URL');
     }
 
@@ -1192,7 +1186,11 @@ class SoundCloudClient {
         return this.getDownloadLink(refreshed.access_token, refreshed.refresh_token || refreshToken, downloadUrl, true);
     }
     
-    throw new Error(`Download request failed: ${res.status}`);
+    // Carry the upstream status so the route can tell "the artist turned
+    // downloads off" (403/404) and "slow down" (429) apart from a fault.
+    const err = new Error(`Download request failed: ${res.status}`);
+    err.status = res.status;
+    throw err;
   }
 }
 

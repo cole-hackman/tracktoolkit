@@ -37,6 +37,7 @@ import {
   Skeleton,
 } from "@/components/ui";
 import { apiFetch, errorMessageFromBody } from "@/lib/api";
+import { startSoundCloudDownload } from "@/lib/download";
 import {
   invalidatePlaylistCaches,
   playlistDetailQueryOptions,
@@ -561,24 +562,9 @@ export default function PlaylistModifierPage() {
   const handleDownload = async (track: Track) => {
     if (!track.download_url) return;
     setDownloadingTrackId(track.id);
-    try {
-      const response = await apiFetch(
-        `/api/proxy-download?format=json&url=${encodeURIComponent(track.download_url)}`
-      );
-      const data = await response.json().catch(() => null);
-      if (!response.ok || !data?.url) {
-        setBanner({
-          tone: "error",
-          text: data?.error || "SoundCloud did not provide a valid download link for this track.",
-        });
-        return;
-      }
-      window.open(data.url, "_blank", "noopener,noreferrer");
-    } catch {
-      setBanner({ tone: "error", text: "Could not start the download. Try again." });
-    } finally {
-      setDownloadingTrackId(null);
-    }
+    const result = await startSoundCloudDownload(track.download_url);
+    setDownloadingTrackId(null);
+    if (!result.ok) setBanner({ tone: "error", text: result.error });
   };
 
   // Both only computed while their confirm dialog is open — no point

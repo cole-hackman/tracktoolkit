@@ -15,7 +15,7 @@ const track = (id: number, title: string, access: string) => ({
   artwork_url: null as string | null,
   duration: 200000,
   downloadable: true,
-  download_url: `https://api.soundcloud.com/tracks/${id}/download`,
+  download_url: `https://api.soundcloud.com/tracks/soundcloud:tracks:${id}/download`,
   permalink_url: `https://soundcloud.com/testartist/${id}`,
   access,
 });
