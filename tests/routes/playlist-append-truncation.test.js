@@ -62,37 +62,35 @@ app.use('/api', apiRoutes);
 
 afterAll(() => { process.env.NODE_ENV = ORIGINAL_NODE_ENV; });
 
-const EXISTING = 450;
-const APPENDED = 30;
 const TARGET = 1;
-
-const existingIds = Array.from({ length: EXISTING }, (_, i) => i + 1);
-const newIds = Array.from({ length: APPENDED }, (_, i) => 10000 + i);
-
+const range = (n, from = 1) => Array.from({ length: n }, (_, i) => from + i);
 const toTracks = (ids) => ids.map((id) => ({ id, streamable: true }));
 
-function installPlaylists() {
+// The scenario under test; set per test by scenario().
+let existing = [];
+let fresh = [];
+
+function scenario(existingIds, freshIds) {
+  existing = existingIds;
+  fresh = freshIds;
   getPlaylistWithTracks.mockImplementation(async (at, rt, id) => {
-    if (id === TARGET) {
-      return { id, title: 'Big target', track_count: EXISTING, tracks: toTracks(existingIds) };
-    }
-    if (id === 2) return { id, title: 'Src A', track_count: APPENDED, tracks: toTracks(newIds) };
-    if (id === 3) return { id, title: 'Src B', track_count: 1, tracks: toTracks([10000]) };
+    if (id === TARGET) return { id, title: 'Big target', track_count: existing.length, tracks: toTracks(existing) };
+    if (id === 2) return { id, title: 'Src A', track_count: fresh.length, tracks: toTracks(fresh) };
+    if (id === 3) return { id, title: 'Src B', track_count: 1, tracks: toTracks([fresh[0]]) };
     throw new Error(`no playlist ${id}`);
   });
+  getUserLikedTracks.mockResolvedValue(toTracks(fresh));
 }
 
 const targetWrites = () => addTracksToPlaylist.mock.calls
   .filter((c) => c[2] === TARGET)
   .map((c) => c[3]);
 
-/** Every PUT keeps the whole existing list, in its original order. */
-function expectNeverShorterThanExisting() {
-  const writes = targetWrites();
-  expect(writes.length).toBeGreaterThan(0);
-  for (const w of writes) {
-    expect(w.length).toBeGreaterThanOrEqual(EXISTING);
-    expect(w.slice(0, EXISTING)).toEqual(existingIds);
+/** Every PUT to the target, including a failed one, keeps the whole existing list as its prefix. */
+function expectExistingIsPrefixOfEveryWrite() {
+  for (const w of targetWrites()) {
+    expect(w.length).toBeGreaterThanOrEqual(existing.length);
+    expect(w.slice(0, existing.length)).toEqual(existing);
   }
 }
 
@@ -101,18 +99,17 @@ beforeEach(() => {
   getPlaylistWithTracks.mockReset();
   addTracksToPlaylist.mockReset().mockResolvedValue({ id: TARGET, title: 'ok' });
   getFollowings.mockReset().mockResolvedValue([{ id: 77, username: 'friend' }]);
-  getUserLikedTracks.mockReset().mockResolvedValue(toTracks(newIds));
-  createPlaylist.mockReset();
-  installPlaylists();
+  getUserLikedTracks.mockReset();
+  createPlaylist.mockReset().mockResolvedValue({ id: 99, permalink_url: 'x' });
 });
 
-/** Make the second PUT to the target fail the way a 429-after-retries does. */
-function failSecondTargetWrite() {
+/** Make the nth PUT to the target fail the way a 429-after-retries does. */
+function failNthTargetWrite(nth) {
   let n = 0;
   addTracksToPlaylist.mockImplementation(async (at, rt, id) => {
     if (id === TARGET) {
       n += 1;
-      if (n === 2) throw Object.assign(new Error('rate limited'), { status: 429 });
+      if (n === nth) throw Object.assign(new Error('rate limited'), { status: 429 });
     }
     return { id, title: 'ok' };
   });
@@ -127,7 +124,7 @@ const writers = [
   {
     name: 'from-likes into an existing target',
     send: () => request(app).post('/api/playlists/from-likes')
-      .send({ trackIds: newIds, targetPlaylistId: TARGET }),
+      .send({ trackIds: fresh, targetPlaylistId: TARGET }),
   },
   {
     name: 'followed likes into an existing target (createOrAppendTrackIds)',
@@ -138,22 +135,61 @@ const writers = [
 
 describe.each(writers)('$name', ({ send }) => {
   test('appending 30 to a 450-track target never PUTs fewer than 450 tracks', async () => {
+    scenario(range(450), range(30, 10000));
     const res = await send();
 
     expect(res.status).toBe(200);
-    expectNeverShorterThanExisting();
+    expectExistingIsPrefixOfEveryWrite();
     const writes = targetWrites();
-    expect(writes[writes.length - 1]).toHaveLength(EXISTING + APPENDED);
+    expect(writes.length).toBeGreaterThan(0);
+    expect(writes[writes.length - 1]).toHaveLength(480);
   });
 
-  test('a failing second PUT leaves nothing shorter than 450 and does not report success', async () => {
-    failSecondTargetWrite();
+  test.each([1, 2, 3])('a failure on PUT %i (50 existing + 300 new) keeps the existing list in every write and reports no success', async (nth) => {
+    scenario(range(50), range(300, 10000));
+    failNthTargetWrite(nth);
     const res = await send();
 
     expect(res.status).toBeGreaterThanOrEqual(500);
     expect(res.body.playlist).toBeUndefined();
     expect(res.body.totalTracks).toBeUndefined();
     expect(typeof res.body.error).toBe('string');
-    expectNeverShorterThanExisting();
+    expect(targetWrites()).toHaveLength(nth);
+    expectExistingIsPrefixOfEveryWrite();
+  });
+
+  test('duplicate existing ids and new ids that overlap the target', async () => {
+    const dupes = [...range(40), ...range(10)]; // 50 entries, ids 1-10 twice
+    scenario(dupes, [...range(10), ...range(200, 10000)]); // 10 overlap, 200 new
+    const res = await send();
+
+    expect(res.status).toBe(200);
+    expectExistingIsPrefixOfEveryWrite();
+    const writes = targetWrites();
+    expect(writes[writes.length - 1]).toEqual([...dupes, ...range(200, 10000)]);
+  });
+
+  test('a merged list over 500 fills the target to 500 and creates an overflow playlist for the rest', async () => {
+    scenario(range(450), range(100, 10000));
+    const res = await send();
+
+    expect(res.status).toBe(200);
+    expectExistingIsPrefixOfEveryWrite();
+    const writes = targetWrites();
+    expect(writes[writes.length - 1]).toHaveLength(500);
+    expect(createPlaylist).toHaveBeenCalledTimes(1);
+    expect(createPlaylist.mock.calls[0][4]).toEqual(range(50, 10050));
+    expect(res.body.overflowPlaylists).toHaveLength(1);
+    expect(res.body.overflowPlaylists[0].trackCount).toBe(50);
+  });
+
+  test('a target already over 500 tracks is refused with 409 before any write', async () => {
+    scenario(range(520), range(5, 10000));
+    const res = await send();
+
+    expect(res.status).toBe(409);
+    expect(typeof res.body.error).toBe('string');
+    expect(addTracksToPlaylist).not.toHaveBeenCalled();
+    expect(createPlaylist).not.toHaveBeenCalled();
   });
 });

@@ -29,32 +29,42 @@ async function run(ids, floor, batchSize = 100) {
 describe('writeGrowingPrefix', () => {
   beforeEach(() => sleep.mockClear());
 
-  test('never writes a prefix shorter than the floor, and ends with the full list', async () => {
+  test('every write keeps the floor as its prefix and the last write is the full list', async () => {
     const ids = range(480);
     const { lengths, writes } = await run(ids, 450);
-    expect(lengths.every((n) => n >= 450)).toBe(true);
+    expect(lengths).toEqual([480]);
     expect(writes[writes.length - 1]).toEqual(ids);
-    // every write is a true prefix, so existing order is preserved
     for (const w of writes) expect(w).toEqual(ids.slice(0, w.length));
   });
 
-  test('a floor of 0 grows by batchSize from the first batch', async () => {
-    const { lengths } = await run(range(250), 0);
-    expect(lengths).toEqual([100, 200, 250]);
+  test('floor 150, n 350, batch 100 writes 250 then 350', async () => {
+    const { lengths } = await run(range(350), 150);
+    expect(lengths).toEqual([250, 350]);
   });
 
-  test('a list shorter than one batch is a single write', async () => {
+  test('a floor of 0 grows by batchSize from the first batch', async () => {
+    expect((await run(range(250), 0)).lengths).toEqual([100, 200, 250]);
     expect((await run(range(40), 0)).lengths).toEqual([40]);
   });
 
-  test('a floor at or beyond the list length gives a single full write', async () => {
-    expect((await run(range(30), 30)).lengths).toEqual([30]);
-    expect((await run(range(30), 500)).lengths).toEqual([30]);
+  test('n equal to floor means nothing new: no write', async () => {
+    expect((await run(range(30), 30)).lengths).toEqual([]);
   });
 
   test('an empty list makes no write', async () => {
     expect((await run([], 0)).lengths).toEqual([]);
-    expect((await run([], 10)).lengths).toEqual([]);
+  });
+
+  test.each([NaN, -1, 1.5, '3', Infinity])('floor %p is rejected with a TypeError and writes nothing', async (floor) => {
+    const write = jest.fn();
+    await expect(writeGrowingPrefix({ ids: range(10), floor, batchSize: 100, write })).rejects.toThrow(TypeError);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  test('floor greater than ids.length is rejected, not capped', async () => {
+    const write = jest.fn();
+    await expect(writeGrowingPrefix({ ids: range(10), floor: 11, batchSize: 100, write })).rejects.toThrow(RangeError);
+    expect(write).not.toHaveBeenCalled();
   });
 
   test('paces between writes only, not before the first or after the last', async () => {
