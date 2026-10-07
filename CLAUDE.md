@@ -580,9 +580,49 @@ tracks already present and stopping at 500.
 list, and `extractOrderedTrackIds` drops entries whose id is unusable — so a
 read that came back short of the playlist's own `track_count` would silently
 delete the difference. A mismatch throws `PlaylistReadIncompleteError`:
-bulk-remove reports that playlist as an error row and continues, bulk-add and
-`PUT /api/playlists/:id` return 409. Playlists with no `track_count` are not
-guarded.
+bulk-remove reports that playlist as an error row and continues; bulk-add,
+`PUT /api/playlists/:id`, merge-into-existing, from-likes-into-existing, the
+followed-likes append (`createOrAppendTrackIds`) and transfer-track return 409.
+Playlists with no `track_count` are not guarded.
+
+**Rewrite reads are all-access, because SoundCloud's default hides blocked
+tracks.** `GET /playlists/{id}` defaults `access` to `playable,preview`, so a
+default read omits blocked tracks while `track_count` still counts them — which
+made the guard refuse every playlist containing one (101 of 148 PUTs in
+production). `readPlaylistForRewrite` therefore always calls
+`getPlaylistWithTracks(..., { allAccess: true })` (`&access=playable,preview,blocked`).
+Everything else keeps the default: the merge's *source* reads still filter
+blocked tracks out of what gets merged in. A short read that survives all-access
+means entries SoundCloud will not return at any level (deleted/private); that
+is still refused, and logs `[playlist-rewrite] refused short read`.
+`GET /api/playlists/:id?access=all` returns the same all-access read for the
+pages that write back; without the parameter the response is unchanged.
+
+**`PUT /api/playlists/:id` takes a client-declared `remove: number[]`
+(≤500 positive ints; an id in both `tracks` and `remove` is a 400).** The guard
+compares the *server's* read to `track_count`; it never compared the *client's*
+list to the server's read, so once blocked tracks were readable a client that
+had not loaded them would have deleted them. Now a track can leave a playlist
+only if the client named it: after the guarded read, any id the server read that
+is in neither `tracks` nor `remove` is **undeclared** and the write is refused
+with 409 `{ code: 'PLAYLIST_OUT_OF_SYNC', error, undeclared }`. A short read is
+409 `{ code: 'PLAYLIST_READ_INCOMPLETE', error, seen, expected }`. Ids in
+`tracks` the server did not read are appends and allowed; ids in `remove` it did
+not read are ignored. The comparison is count-aware: if the server read more
+copies of an id than `tracks` carries and the id is not in `remove`, it is
+undeclared (an id in both lists is a 400, so deliberately dropping one copy of
+a duplicate is not expressible and is simply refused). The five pages that PUT
+(health-check, activity-to-playlist, recently-played, downloads,
+playlist-modifier) read with `allAccess` and show the server's `error` text via
+`readApiErrorMessage`. health-check, downloads and playlist-modifier send
+`remove`; activity-to-playlist and recently-played are append-only and send
+none. On a 409 the pages show the server's message first and then invalidate
+the playlist caches so "reload and try again" fetches fresh data. The one
+exception is playlist-modifier, which reads the body's `code` (via
+`errorMessageFromBody`): only `PLAYLIST_OUT_OF_SYNC` refetches and resets its
+list and shows fixed text saying the playlist was reloaded and unsaved edits
+were dropped; `PLAYLIST_READ_INCOMPLETE` and any other failure show the
+server's own text and keep the user's edits.
 
 **Both `/api/library/audit` and `/api/playlists/search-tracks` page by `offset`
 against the cached playlist list, not against SoundCloud.** `/me/playlists`

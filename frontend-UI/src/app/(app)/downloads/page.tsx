@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { ArrowLeft, Download, Heart, ListMusic, Trash2, X, CheckSquare, Search, Zap } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, readApiErrorMessage } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   Button,
@@ -50,6 +50,7 @@ interface Track {
   duration: number;
   downloadable?: boolean | string;
   download_url?: string;
+  access?: string;
   purchase_url?: string;
   purchase_title?: string;
   permalink_url: string;
@@ -76,6 +77,10 @@ const isHypedditUrl = (url?: string) =>
   !!url && url.includes("hypeddit");
 
 const hasGateUrl = (url?: string) => !!url;
+
+function wouldBeDownloadable(t: Track) {
+  return Boolean(t.downloadable) || t.downloadable === "true" || !!t.download_url || !!t.purchase_url;
+}
 
 export default function DownloadsPage() {
   const queryClient = useQueryClient();
@@ -112,6 +117,9 @@ export default function DownloadsPage() {
   const likesQuery = useLikesQuery({ enabled: isLikedSource });
   const playlistDetailQuery = usePlaylistDetailQuery(selectedSource?.id ?? 0, {
     enabled: selectedSource != null && !isLikedSource,
+    // Blocked tracks must be in the list or they can't be seen, removed, or
+    // kept: the server refuses a write that drops one nobody named.
+    allAccess: true,
   });
 
   const loading = playlistsQuery.isLoading;
@@ -244,7 +252,7 @@ export default function DownloadsPage() {
       const response = await apiFetch(`/api/playlists/${selectedSource.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tracks: remainingIds }),
+        body: JSON.stringify({ tracks: remainingIds, remove: [...selectedTrackIds] }),
       });
 
       if (response.ok) {
@@ -257,7 +265,15 @@ export default function DownloadsPage() {
         setSelectionMode(false);
         await invalidatePlaylistCaches(queryClient, selectedSource.id);
       } else {
-        setInlineError("Failed to update playlist. Please try again.");
+        setInlineError(
+          await readApiErrorMessage(response, "Failed to update playlist. Please try again."),
+        );
+        // A 409 means the server's view differs from this page's: refetch so
+        // "reload and try again" has fresh data. After the message, so the
+        // re-crawl does not delay it.
+        if (response.status === 409) {
+          await invalidatePlaylistCaches(queryClient, selectedSource.id);
+        }
       }
     } catch (error) {
       console.error("Failed to remove tracks:", error);
@@ -313,13 +329,24 @@ export default function DownloadsPage() {
     setHypedditProgress(null);
   };
 
+  // A blocked track can't be played or downloaded. It is read (allAccess) so
+  // the playlist can be rewritten whole, and it keeps its row so it can be
+  // selected and removed, but it is never counted or offered as a download.
+  const isBlocked = (t: Track) => t.access === "blocked";
+
   const downloadableTracks = useMemo(
-    () =>
-      tracks.filter(
-        (t) => Boolean(t.downloadable) || t.downloadable === "true" || !!t.download_url || !!t.purchase_url
-      ),
+    () => tracks.filter((t) => t.access !== "blocked" && wouldBeDownloadable(t)),
     [tracks],
   );
+
+  // Rows on screen: everything downloadable, plus blocked tracks (no chip).
+  // A blocked track is listed only if it would otherwise count as
+  // downloadable, so a playlist with nothing downloadable still gets the
+  // "No downloadable tracks found" state.
+  const listedTracks = useMemo(() => {
+    const downloadable = new Set(downloadableTracks);
+    return tracks.filter((t) => downloadable.has(t) || (t.access === "blocked" && wouldBeDownloadable(t)));
+  }, [tracks, downloadableTracks]);
 
   // Any track with a purchase_url can be queued — Hypeddit, ToneDen, link trees, etc.
   const hypedditTracks = useMemo(
@@ -385,6 +412,8 @@ export default function DownloadsPage() {
 
   const handleDownload = async (track: Track) => {
     setInlineError(null);
+
+    if (track.access === "blocked") return;
 
     if (!track.download_url) {
       window.open(track.purchase_url || track.permalink_url, "_blank", "noopener,noreferrer");
@@ -629,7 +658,7 @@ export default function DownloadsPage() {
             )}
 
             {/* Toolbar */}
-            {downloadableTracks.length > 0 && (
+            {listedTracks.length > 0 && (
               <div className="mb-6 flex flex-wrap items-center gap-2">
                 {/* Remove-from-playlist mode (playlists only, not likes) */}
                 {selectedSource.id !== LIKED_TRACKS_ID && !hypedditMode && (
@@ -745,7 +774,7 @@ export default function DownloadsPage() {
                     <Skeleton key={i} className="h-16 rounded-lg bg-gray-100 dark:bg-secondary/50" />
                   ))}
                 </div>
-              ) : downloadableTracks.length === 0 ? (
+              ) : listedTracks.length === 0 ? (
                 <EmptyState
                   icon={<Download className="w-12 h-12" />}
                   title="No downloadable tracks found"
@@ -753,7 +782,7 @@ export default function DownloadsPage() {
                 />
               ) : (
                 <div className="space-y-2">
-                  {(hypedditMode ? hypedditTracks : downloadableTracks).map((track, index) => {
+                  {(hypedditMode ? hypedditTracks : listedTracks).map((track, index) => {
                     const isHypeddit = isHypedditUrl(track.purchase_url);
 
                     if (selectionMode) {
@@ -768,21 +797,25 @@ export default function DownloadsPage() {
                               <span className="text-xs text-muted-foreground">
                                 {formatDuration(track.duration)}
                               </span>
-                              <IconButton
-                                label={getDownloadLabel(track)}
-                                disabled={downloadingTrackId === track.id}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDownload(track);
-                                }}
-                                className={getDownloadTone(track)}
-                              >
-                                {downloadingTrackId === track.id ? (
-                                  <LoadingSpinner className="h-5 w-5 text-current" />
-                                ) : (
-                                  <Download className="h-5 w-5" />
-                                )}
-                              </IconButton>
+                              {isBlocked(track) ? (
+                                <span className="text-xs font-medium text-destructive-text">Blocked</span>
+                              ) : (
+                                <IconButton
+                                  label={getDownloadLabel(track)}
+                                  disabled={downloadingTrackId === track.id}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDownload(track);
+                                  }}
+                                  className={getDownloadTone(track)}
+                                >
+                                  {downloadingTrackId === track.id ? (
+                                    <LoadingSpinner className="h-5 w-5 text-current" />
+                                  ) : (
+                                    <Download className="h-5 w-5" />
+                                  )}
+                                </IconButton>
+                              )}
                             </div>
                           }
                         />
@@ -845,18 +878,22 @@ export default function DownloadsPage() {
                             Hypeddit
                           </span>
                         )}
-                        <IconButton
-                          label={getDownloadLabel(track)}
-                          disabled={downloadingTrackId === track.id}
-                          onClick={() => handleDownload(track)}
-                          className={getDownloadTone(track)}
-                        >
-                          {downloadingTrackId === track.id ? (
-                            <LoadingSpinner className="h-5 w-5 text-current" />
-                          ) : (
-                            <Download className="w-5 h-5" />
-                          )}
-                        </IconButton>
+                        {isBlocked(track) ? (
+                          <span className="shrink-0 text-xs font-medium text-destructive-text">Blocked</span>
+                        ) : (
+                          <IconButton
+                            label={getDownloadLabel(track)}
+                            disabled={downloadingTrackId === track.id}
+                            onClick={() => handleDownload(track)}
+                            className={getDownloadTone(track)}
+                          >
+                            {downloadingTrackId === track.id ? (
+                              <LoadingSpinner className="h-5 w-5 text-current" />
+                            ) : (
+                              <Download className="w-5 h-5" />
+                            )}
+                          </IconButton>
+                        )}
                       </div>
                     );
                   })}

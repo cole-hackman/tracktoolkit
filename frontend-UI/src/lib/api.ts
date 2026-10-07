@@ -92,6 +92,37 @@ export function isApiError(error: unknown): error is ApiError {
   return error instanceof Error && typeof (error as ApiError).status === "number";
 }
 
+/**
+ * The text to show for an error body: `details[0].message` when a validation
+ * payload carries one (it is the actionable reason, where `error` is just
+ * "Validation failed"), else the server's `{ error }` string, else `fallback`.
+ */
+export function errorMessageFromBody(data: unknown, fallback: string): string {
+  const body = data as { error?: unknown; details?: unknown } | null | undefined;
+  // A validation 400 carries a generic "Validation failed" plus the reason a
+  // user can act on in `details[0].message`; show the reason.
+  if (Array.isArray(body?.details)) {
+    const first = body.details[0] as { message?: unknown } | undefined;
+    if (typeof first?.message === "string" && first.message.trim() !== "") return first.message;
+  }
+  const error = body?.error;
+  return typeof error === "string" && error.trim() !== "" ? error : fallback;
+}
+
+/**
+ * The text to show for a non-OK response: a validation `details[0].message`
+ * if there is one, otherwise the server's own `error` string (the 409 refusals
+ * on playlist writes carry a reason a user can act on), or `fallback` when the
+ * body is not JSON or has neither. Consumes the response body.
+ */
+export async function readApiErrorMessage(
+  response: Response,
+  fallback: string,
+): Promise<string> {
+  const data = await response.json().catch(() => null);
+  return errorMessageFromBody(data, fallback);
+}
+
 export async function apiFetchJson<T>(
   path: string,
   init?: RequestInit,
@@ -100,10 +131,10 @@ export async function apiFetchJson<T>(
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const message =
-      typeof data?.error === "string"
-        ? data.error
-        : `Request failed with status ${response.status}`;
+    const message = errorMessageFromBody(
+      data,
+      `Request failed with status ${response.status}`,
+    );
     const error = new Error(message) as ApiError;
     error.status = response.status;
     if (Array.isArray(data?.details)) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Stethoscope, Music, AlertTriangle, CheckCircle, Trash2 } from "lucide-react";
 import {
@@ -16,7 +16,7 @@ import {
   Skeleton,
   useAnnounce,
 } from "@/components/ui";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, readApiErrorMessage } from "@/lib/api";
 import {
   invalidatePlaylistCaches,
   usePlaylistDetailQuery,
@@ -54,9 +54,15 @@ export default function PlaylistHealthCheckPage() {
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
+  // Set by a successful save to the scan announcement it makes redundant.
+  const postSaveScanMessage = useRef<string | null>(null);
+
   const playlistsQuery = usePlaylistsQuery();
   const playlistDetailQuery = usePlaylistDetailQuery(selectedPlaylist?.id ?? 0, {
     enabled: selectedPlaylist != null,
+    // Blocked tracks are omitted from SoundCloud's default read, so without
+    // this they never appear here and cannot be removed.
+    allAccess: true,
   });
   const playlists = asArray<Playlist>(playlistsQuery.data?.collection);
   const loading = playlistsQuery.isLoading;
@@ -79,7 +85,23 @@ export default function PlaylistHealthCheckPage() {
     }
   }, [playlistDetailQuery.data, playlistDetailQuery.isError]);
 
+  // SoundCloud counts entries it will not hand back at any access level
+  // (deleted or private). The server refuses to rewrite a playlist it cannot
+  // read in full, so a shortfall here means the removal would be refused.
+  // Counted the way the server counts (usable integer ids >= 1, like
+  // extractOrderedTrackIds), and any mismatch with `track_count` — in either
+  // direction — is a read the server would refuse to write back.
+  const detailTrackCount = playlistDetailQuery.data?.track_count;
+  const detailReadCount = asArray<Track>(playlistDetailQuery.data?.tracks).filter((t) => {
+    const id = typeof t?.id === "number" ? t.id : parseInt(String(t?.id), 10);
+    return Number.isInteger(id) && id >= 1;
+  }).length;
+  const readMismatch =
+    typeof detailTrackCount === "number" && detailTrackCount !== detailReadCount;
+  const unreadableCount = readMismatch ? Math.abs(detailTrackCount - detailReadCount) : 0;
+
   const selectPlaylist = (playlist: Playlist) => {
+    postSaveScanMessage.current = null;
     setSelectedPlaylist(playlist);
     setFilter("all");
   };
@@ -123,7 +145,15 @@ export default function PlaylistHealthCheckPage() {
   // gets spoken — otherwise the whole outcome is a silent repaint.
   useEffect(() => {
     if (loadingTracks || tracks.length === 0) return;
-    announce(`${healthyCount} of ${tracks.length} tracks healthy — ${verdict}.`);
+    const message = `${healthyCount} of ${tracks.length} tracks healthy — ${verdict}.`;
+    // Right after a save the combined "Removed N… M of M healthy" message has
+    // already been spoken; a second one would overwrite it.
+    // One-shot: read and clear first, so it can never outlive this render and
+    // swallow a later, legitimate announcement.
+    const expected = postSaveScanMessage.current;
+    postSaveScanMessage.current = null;
+    if (message === expected) return;
+    announce(message);
   }, [loadingTracks, tracks.length, healthyCount, verdict, announce]);
 
   const filteredTracks = useMemo(() => {
@@ -135,6 +165,13 @@ export default function PlaylistHealthCheckPage() {
   const removeDeadTracks = async () => {
     if (!selectedPlaylist) return;
     if (healthyTracks.length === tracks.length) return;
+    if (healthyTracks.length === 0) {
+      setNotice({
+        type: "error",
+        text: "Cannot remove all tracks from a playlist. Delete the playlist on SoundCloud instead.",
+      });
+      return;
+    }
     setShowRemoveConfirm(true);
   };
 
@@ -142,24 +179,47 @@ export default function PlaylistHealthCheckPage() {
     if (!selectedPlaylist) return;
     const removedCount = tracks.length - healthyTracks.length;
     setShowRemoveConfirm(false);
+    if (healthyTracks.length === 0) return;
     setSaving(true);
     setNotice(null);
     try {
       const response = await apiFetch(`/api/playlists/${selectedPlaylist.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tracks: healthyTracks.map((t) => t.id) }),
+        body: JSON.stringify({
+          tracks: healthyTracks.map((t) => t.id),
+          // Declare every removal: the server refuses to drop a track the
+          // page did not name.
+          remove: tracks.filter((t) => !isHealthy(t)).map((t) => t.id),
+        }),
       });
       if (response.ok) {
-        await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
+        // Local work first, before any await: the refetch below re-crawls the
+        // playlist and must not delay the result.
         setTracks(healthyTracks);
         const done = `Removed ${removedCount} unavailable track${removedCount === 1 ? "" : "s"}.`;
+        const remaining = healthyTracks.length;
+        // One combined announcement. A status region that mounts with its
+        // text already in it is not reliably spoken, and the scan effect's
+        // own "M of M healthy" would overwrite a separate one — so that
+        // message is suppressed for this save.
+        postSaveScanMessage.current = `${remaining} of ${remaining} tracks healthy — Healthy.`;
         setNotice({ type: "success", text: done });
-        announce(done);
+        announce(`${done} ${postSaveScanMessage.current}`);
+        await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
       } else {
         // The error notice renders as `InlineAlert variant="error"`, which is
         // `role="alert"` — announcing as well would say it twice.
-        setNotice({ type: "error", text: "Failed to update playlist." });
+        setNotice({
+          type: "error",
+          text: await readApiErrorMessage(response, "Failed to update playlist."),
+        });
+        // A 409 means the server's view differs from this page's: refetch so
+        // "reload and try again" has fresh data. After the message, so the
+        // re-crawl does not delay it.
+        if (response.status === 409) {
+          await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
+        }
       }
     } catch (error) {
       console.error("Error updating playlist:", error);
@@ -281,8 +341,15 @@ export default function PlaylistHealthCheckPage() {
               </div>
               {issueCount > 0 && (
                 <Button
-                  onClick={removeDeadTracks}
+                  onClick={() => {
+                    // aria-disabled, not `disabled`: the button stays in the
+                    // tab order so its explanation can be reached and read.
+                    if (unreadableCount > 0) return;
+                    removeDeadTracks();
+                  }}
                   disabled={saving}
+                  aria-disabled={unreadableCount > 0 ? true : undefined}
+                  aria-describedby={unreadableCount > 0 ? "health-shortfall" : undefined}
                   variant="destructive"
                 >
                   {saving ? (
@@ -294,6 +361,23 @@ export default function PlaylistHealthCheckPage() {
                 </Button>
               )}
             </div>
+
+            {unreadableCount > 0 && !loadingTracks && (
+              <InlineAlert id="health-shortfall" variant="warning" className="mb-6">
+                {detailReadCount < (detailTrackCount ?? 0) ? (
+                  <>
+                    SoundCloud returned {detailReadCount} of {detailTrackCount} tracks; the other{" "}
+                    {unreadableCount} can&rsquo;t be read here, so remove them on SoundCloud.
+                  </>
+                ) : (
+                  <>
+                    SoundCloud returned {detailReadCount} tracks but counts {detailTrackCount}.
+                    Reload the page, or check the playlist on SoundCloud.
+                  </>
+                )}{" "}
+                Removing tracks from this page is turned off for this playlist until then.
+              </InlineAlert>
+            )}
 
             {/* Summary bar */}
             {!loadingTracks && tracks.length > 0 && (

@@ -36,7 +36,7 @@ import {
   Select,
   Skeleton,
 } from "@/components/ui";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, errorMessageFromBody } from "@/lib/api";
 import {
   invalidatePlaylistCaches,
   playlistDetailQueryOptions,
@@ -134,6 +134,10 @@ export default function PlaylistModifierPage() {
   const queryClient = useQueryClient();
   const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
+  const [baselineIds, setBaselineIds] = useState<number[]>([]);
+  // The playlist currently on screen, readable from an async save handler.
+  const selectedIdRef = useRef<number | null>(null);
+  selectedIdRef.current = selectedPlaylist?.id ?? null;
   const [saving, setSaving] = useState(false);
   const [trackFilter, setTrackFilter] = useState<TrackFilter>("all");
   const [loadError, setLoadError] = useState(false);
@@ -202,6 +206,9 @@ export default function PlaylistModifierPage() {
   );
   const selectedPlaylistQuery = usePlaylistDetailQuery(selectedPlaylist?.id ?? 0, {
     enabled: selectedPlaylist != null,
+    // Blocked tracks must be in the list: the server refuses a save that
+    // would drop a track this page did not explicitly remove.
+    allAccess: true,
   });
   const likesQuery = useLikesQuery({ enabled: isLikedTracksView });
   const loading = playlistsQuery.isLoading;
@@ -257,7 +264,9 @@ export default function PlaylistModifierPage() {
   );
 
   useEffect(() => {
-    if (!banner) return;
+    // Errors stay until dismissed: they say what to do next, and a 9 s timer
+    // can remove one before it has been read.
+    if (!banner || banner.tone === "error" || banner.tone === "warning") return;
     const t = window.setTimeout(() => setBanner(null), 9000);
     return () => clearTimeout(t);
   }, [banner]);
@@ -283,17 +292,25 @@ export default function PlaylistModifierPage() {
     }
 
     if (selectedPlaylistQuery.data) {
-      setTracks(asArray<Track>(selectedPlaylistQuery.data.tracks));
+      const loaded = asArray<Track>(selectedPlaylistQuery.data.tracks);
+      setTracks(loaded);
+      // What this page actually showed the user. Removals are declared
+      // against this, not against whatever the query holds at save time: a
+      // refetch in between must not turn a track the user never saw into one
+      // they "removed".
+      setBaselineIds(loaded.map((t) => t.id));
       setTracksError(false);
     }
   }, [selectedPlaylistQuery.data, selectedPlaylistQuery.isError]);
 
   const selectPlaylist = (playlist: Playlist) => {
+    setBanner(null);
     setIsLikedTracksView(false);
     setSelectedPlaylist(playlist);
   };
 
   const selectLikedTracks = () => {
+    setBanner(null);
     setSelectedPlaylist(null);
     setTracks([]);
     setIsLikedTracksView(true);
@@ -303,6 +320,7 @@ export default function PlaylistModifierPage() {
   };
 
   const goBackToList = () => {
+    setBanner(null);
     setSelectedPlaylist(null);
     setTracks([]);
     setIsLikedTracksView(false);
@@ -478,17 +496,53 @@ export default function PlaylistModifierPage() {
     if (!selectedPlaylist) return;
     setShowSaveConfirm(false);
     setSaving(true);
+    const savedId = selectedPlaylist.id;
+    // The user may open another playlist while the save is in flight; a result
+    // about playlist A must not appear over playlist B.
+    const selectionChanged = () => selectedIdRef.current !== savedId;
     try {
+      // Everything the page loaded that is no longer in the edited list was
+      // removed on purpose; the server only lets a track go if it is named.
+      const editedIds = tracks.map((t) => t.id);
+      const kept = new Set(editedIds);
+      const removedIds = [...new Set(baselineIds.filter((id) => !kept.has(id)))];
       const response = await apiFetch(`/api/playlists/${selectedPlaylist.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tracks: tracks.map((t) => t.id) }),
+        body: JSON.stringify({ tracks: editedIds, remove: removedIds }),
       });
       if (response.ok) {
-        await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
-        setBanner({ tone: "success", text: "Playlist saved successfully." });
+        if (!selectionChanged()) {
+          setBanner({ tone: "success", text: "Playlist saved successfully." });
+        }
+        await invalidatePlaylistCaches(queryClient, savedId);
       } else {
-        setBanner({ tone: "error", text: "Failed to save playlist." });
+        const body = await response.json().catch(() => null);
+        // Only OUT_OF_SYNC means the server's view moved on: that one
+        // refetches (which replaces the page's list and drops unsaved edits).
+        // READ_INCOMPLETE and every other failure leave the edits in place and
+        // just show the server's reason.
+        const outOfSync = response.status === 409 && body?.code === "PLAYLIST_OUT_OF_SYNC";
+        if (!selectionChanged()) {
+          setBanner({
+            tone: "error",
+            text: outOfSync
+              ? "This playlist changed on SoundCloud and has been reloaded. Your edits were not saved — make them again."
+              : errorMessageFromBody(body, "Failed to save playlist."),
+          });
+        }
+        if (outOfSync) {
+          // Reset the list explicitly from the fresh read: a payload that is
+          // structurally identical to the cached one would not re-run the
+          // load effect, and the banner would be lying about a reload.
+          const fresh = await selectedPlaylistQuery.refetch();
+          if (!selectionChanged() && fresh.data) {
+            const loaded = asArray<Track>(fresh.data.tracks);
+            setTracks(loaded);
+            setBaselineIds(loaded.map((t) => t.id));
+          }
+          await invalidatePlaylistCaches(queryClient, savedId);
+        }
       }
     } catch (error) {
       console.error("Error saving playlist:", error);

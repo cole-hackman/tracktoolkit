@@ -19,7 +19,7 @@ import {
   TrackRow,
   useAnnounce,
 } from "@/components/ui";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, readApiErrorMessage } from "@/lib/api";
 import {
   invalidatePlaylistCaches,
   useRecentlyPlayedQuery,
@@ -62,6 +62,8 @@ export default function RecentlyPlayedPage() {
   const playlistsQuery = usePlaylistsQuery({ enabled: mode === "existing" });
   const selectedPlaylistQuery = usePlaylistDetailQuery(selectedPlaylistId ?? 0, {
     enabled: mode === "existing" && selectedPlaylistId != null,
+    // Include blocked tracks so the list sent back is the whole playlist.
+    allAccess: true,
   });
 
   const tracks = useMemo(
@@ -160,12 +162,21 @@ export default function RecentlyPlayedPage() {
             body: JSON.stringify({ tracks: mergedIds }),
           });
           if (response.ok) {
-            await invalidatePlaylistCaches(queryClient, selectedPlaylistId);
             setNotice({ type: "success", text: "Playlist saved successfully." });
             announce("Playlist saved", { assertive: true });
             setSelected(new Set());
+            await invalidatePlaylistCaches(queryClient, selectedPlaylistId);
           } else {
-            setNotice({ type: "error", text: "Failed to update playlist." });
+            setNotice({
+              type: "error",
+              text: await readApiErrorMessage(response, "Failed to update playlist."),
+            });
+            // A 409 means the server's view differs from this page's: refetch
+            // so "reload and try again" has fresh data to work with. After the
+            // message, so the re-crawl does not delay it.
+            if (response.status === 409) {
+              await invalidatePlaylistCaches(queryClient, selectedPlaylistId);
+            }
           }
         } else {
           setNotice({ type: "error", text: "Couldn’t load the selected playlist." });
