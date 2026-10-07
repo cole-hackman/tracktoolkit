@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic Rekordbox collection export for the e2e suite. Shaped like a
+     real "File → Export Collection in xml format" file; no real paths. -->
+<DJ_PLAYLISTS Version="1.0.0">
+  <PRODUCT Name="rekordbox" Version="7.2.8" Company="AlphaTheta"/>
+  <COLLECTION Entries="4">
+    <TRACK TrackID="1" Name="Innerbloom" Artist="RÜFUS DU SOL" Mix="Machaki Remix" Genre="House" TotalTime="212" AverageBpm="124.00" Tonality="8A" Location="file://localhost/Music/fake/innerbloom.mp3"/>
+    <TRACK TrackID="2" Name="Lights Go Out" Artist="John Summit" Remixer="Dennett" Genre="Tech House" TotalTime="190" AverageBpm="128.00" Tonality="5A" Location="file://localhost/Music/fake/lights.mp3"/>
+    <TRACK TrackID="3" Name="Unrelated Tune" Artist="Nobody You Know" TotalTime="300" AverageBpm="0.00" Location="file://localhost/Music/fake/unrelated.mp3"/>
+    <TRACK TrackID="4" Name="" Artist="" TotalTime="0"/>
+  </COLLECTION>
+  <PLAYLISTS>
+    <NODE Type="0" Name="ROOT" Count="1">
+      <NODE Name="Set" Type="1" KeyType="0" Entries="1"><TRACK Key="1"/></NODE>
+    </NODE>
+  </PLAYLISTS>
+</DJ_PLAYLISTS>
