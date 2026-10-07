@@ -380,7 +380,7 @@ Read `docs/internal/MIGRATION.md` ("CUTOVER DONE") for that story.
 - `westus2` has no Burstable Postgres capacity for this subscription; the
   stack lives in `westus3`. Don't "fix" the region.
 - The rebrand banner publishes its height as `--announcement-h` and the two
-  `position: fixed` headers (landing nav in `app/page.tsx`, mobile header in
+  `position: fixed` headers (landing nav in `app/(home)/page.tsx`, mobile header in
   `AppShell.tsx`) read it as their `top`. If you add another fixed element
   anchored to the top of the viewport, give it the same offset or it will sit
   underneath the banner. The variable is declared `0px` in `globals.css`, so
