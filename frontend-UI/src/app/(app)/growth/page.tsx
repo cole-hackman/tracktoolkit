@@ -614,7 +614,7 @@ export default function GrowthPage() {
       n > 0
         ? focused
           ? `${n} ${n === 1 ? "candidate was" : "candidates were"} not checked for genre and ${n === 1 ? "was" : "were"} left out`
-          : `${n} ${n === 1 ? "suggestion wasn't" : "suggestions weren't"} scored for genre or recent tracks — those details are missing, and they were ranked without genre fit`
+          : `${n} ${n === 1 ? "suggestion wasn't" : "suggestions weren't"} checked for genre or recent tracks — those details are missing, and ${n === 1 ? "it was" : "they were"} ranked without genre fit`
         : null;
     if (crawlCut && lookupCut) {
       return `The scan hit its time budget: results come from a partial crawl, and ${lookupCut}.`;

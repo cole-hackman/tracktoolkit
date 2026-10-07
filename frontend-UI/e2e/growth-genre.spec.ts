@@ -245,7 +245,7 @@ test("an unfocused scan whose lookups ran out of time still warns: /growth/", as
   await expect(page.getByText("unscored-1")).toBeVisible();
   await expect(page.getByTestId("budget-notice")).toHaveCount(1);
   await expect(
-    page.getByText(/3 suggestions weren't scored for genre or recent tracks.*ranked without genre fit/),
+    page.getByText(/3 suggestions weren't checked for genre or recent tracks.*they were ranked without genre fit/),
   ).toBeVisible();
   await expect(page.getByText(/partial crawl/)).toHaveCount(0);
   await expect(page.getByText(/fully scored/)).toHaveCount(0);

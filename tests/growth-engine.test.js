@@ -476,7 +476,7 @@ describe('GrowthEngine', () => {
 
       let result;
       try {
-        // limit 5: the first five lookups run, the clock passes the deadline on the 2nd
+        // limit 5: five lookups start; the deadline passes during the 2nd, so three skip
         result = await growthEngine.discoverSuggestions({ ...focusOpts, timeBudgetMs: 5_000 });
       } finally {
         clock.restore();
