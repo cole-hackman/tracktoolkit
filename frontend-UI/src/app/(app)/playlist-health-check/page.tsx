@@ -148,10 +148,11 @@ export default function PlaylistHealthCheckPage() {
     const message = `${healthyCount} of ${tracks.length} tracks healthy — ${verdict}.`;
     // Right after a save the combined "Removed N… M of M healthy" message has
     // already been spoken; a second one would overwrite it.
-    if (message === postSaveScanMessage.current) {
-      postSaveScanMessage.current = null;
-      return;
-    }
+    // One-shot: read and clear first, so it can never outlive this render and
+    // swallow a later, legitimate announcement.
+    const expected = postSaveScanMessage.current;
+    postSaveScanMessage.current = null;
+    if (message === expected) return;
     announce(message);
   }, [loadingTracks, tracks.length, healthyCount, verdict, announce]);
 
@@ -193,7 +194,8 @@ export default function PlaylistHealthCheckPage() {
         }),
       });
       if (response.ok) {
-        await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
+        // Local work first, before any await: the refetch below re-crawls the
+        // playlist and must not delay the result.
         setTracks(healthyTracks);
         const done = `Removed ${removedCount} unavailable track${removedCount === 1 ? "" : "s"}.`;
         const remaining = healthyTracks.length;
@@ -204,18 +206,20 @@ export default function PlaylistHealthCheckPage() {
         postSaveScanMessage.current = `${remaining} of ${remaining} tracks healthy — Healthy.`;
         setNotice({ type: "success", text: done });
         announce(`${done} ${postSaveScanMessage.current}`);
+        await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
       } else {
-        // A 409 means the server's view differs from this page's: refetch so
-        // "reload and try again" has fresh data to work with.
-        if (response.status === 409) {
-          await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
-        }
         // The error notice renders as `InlineAlert variant="error"`, which is
         // `role="alert"` — announcing as well would say it twice.
         setNotice({
           type: "error",
           text: await readApiErrorMessage(response, "Failed to update playlist."),
         });
+        // A 409 means the server's view differs from this page's: refetch so
+        // "reload and try again" has fresh data. After the message, so the
+        // re-crawl does not delay it.
+        if (response.status === 409) {
+          await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
+        }
       }
     } catch (error) {
       console.error("Error updating playlist:", error);
@@ -346,7 +350,6 @@ export default function PlaylistHealthCheckPage() {
                   disabled={saving}
                   aria-disabled={unreadableCount > 0 ? true : undefined}
                   aria-describedby={unreadableCount > 0 ? "health-shortfall" : undefined}
-                  className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                   variant="destructive"
                 >
                   {saving ? (

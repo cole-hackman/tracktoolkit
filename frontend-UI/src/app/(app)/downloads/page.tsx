@@ -265,14 +265,15 @@ export default function DownloadsPage() {
         setSelectionMode(false);
         await invalidatePlaylistCaches(queryClient, selectedSource.id);
       } else {
-        // A 409 means the server's view differs from this page's: refetch so
-        // "reload and try again" has fresh data to work with.
-        if (response.status === 409) {
-          await invalidatePlaylistCaches(queryClient, selectedSource.id);
-        }
         setInlineError(
           await readApiErrorMessage(response, "Failed to update playlist. Please try again."),
         );
+        // A 409 means the server's view differs from this page's: refetch so
+        // "reload and try again" has fresh data. After the message, so the
+        // re-crawl does not delay it.
+        if (response.status === 409) {
+          await invalidatePlaylistCaches(queryClient, selectedSource.id);
+        }
       }
     } catch (error) {
       console.error("Failed to remove tracks:", error);

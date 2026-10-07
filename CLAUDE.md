@@ -616,8 +616,12 @@ a duplicate is not expressible and is simply refused). The five pages that PUT
 playlist-modifier) read with `allAccess` and show the server's `error` text via
 `readApiErrorMessage`. health-check, downloads and playlist-modifier send
 `remove`; activity-to-playlist and recently-played are append-only and send
-none. On a 409 every one of these pages invalidates the playlist caches so "reload and
-try again" fetches fresh data.
+none. On a 409 the pages show the server's message first and then invalidate
+the playlist caches so "reload and try again" fetches fresh data. The one
+exception is playlist-modifier, which reads the body's `code`: only
+`PLAYLIST_OUT_OF_SYNC` reloads (and says unsaved edits were dropped);
+`PLAYLIST_READ_INCOMPLETE` and any other failure show the server's text and
+keep the user's edits.
 
 **Both `/api/library/audit` and `/api/playlists/search-tracks` page by `offset`
 against the cached playlist list, not against SoundCloud.** `/me/playlists`

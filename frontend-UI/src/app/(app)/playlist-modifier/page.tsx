@@ -36,7 +36,7 @@ import {
   Select,
   Skeleton,
 } from "@/components/ui";
-import { apiFetch, readApiErrorMessage } from "@/lib/api";
+import { apiFetch, errorMessageFromBody } from "@/lib/api";
 import {
   invalidatePlaylistCaches,
   playlistDetailQueryOptions,
@@ -263,7 +263,7 @@ export default function PlaylistModifierPage() {
   useEffect(() => {
     // Errors stay until dismissed: they say what to do next, and a 9 s timer
     // can remove one before it has been read.
-    if (!banner || banner.tone === "error") return;
+    if (!banner || banner.tone === "error" || banner.tone === "warning") return;
     const t = window.setTimeout(() => setBanner(null), 9000);
     return () => clearTimeout(t);
   }, [banner]);
@@ -301,11 +301,13 @@ export default function PlaylistModifierPage() {
   }, [selectedPlaylistQuery.data, selectedPlaylistQuery.isError]);
 
   const selectPlaylist = (playlist: Playlist) => {
+    setBanner(null);
     setIsLikedTracksView(false);
     setSelectedPlaylist(playlist);
   };
 
   const selectLikedTracks = () => {
+    setBanner(null);
     setSelectedPlaylist(null);
     setTracks([]);
     setIsLikedTracksView(true);
@@ -315,6 +317,7 @@ export default function PlaylistModifierPage() {
   };
 
   const goBackToList = () => {
+    setBanner(null);
     setSelectedPlaylist(null);
     setTracks([]);
     setIsLikedTracksView(false);
@@ -505,18 +508,21 @@ export default function PlaylistModifierPage() {
         await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
         setBanner({ tone: "success", text: "Playlist saved successfully." });
       } else {
-        // A 409 means the server's view differs from this page's: refetch so
-        // "reload and try again" has fresh data to work with.
-        if (response.status === 409) {
-          await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
-        }
+        const body = await response.json().catch(() => null);
+        // Only OUT_OF_SYNC means the server's view moved on: that one
+        // refetches (which replaces the page's list and drops unsaved edits).
+        // READ_INCOMPLETE and every other failure leave the edits in place and
+        // just show the server's reason.
+        const outOfSync = response.status === 409 && body?.code === "PLAYLIST_OUT_OF_SYNC";
         setBanner({
           tone: "error",
-          text:
-            response.status === 409
-              ? "This playlist changed on SoundCloud and has been reloaded. Your edits were not saved — make them again."
-              : await readApiErrorMessage(response, "Failed to save playlist."),
+          text: outOfSync
+            ? "This playlist changed on SoundCloud and has been reloaded. Your edits were not saved — make them again."
+            : errorMessageFromBody(body, "Failed to save playlist."),
         });
+        if (outOfSync) {
+          await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
+        }
       }
     } catch (error) {
       console.error("Error saving playlist:", error);

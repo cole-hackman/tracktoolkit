@@ -187,6 +187,14 @@ test.describe("playlist health check: blocked tracks", () => {
     await expect(page.getByRole("button", { name: "Remove", exact: true })).toHaveCount(0);
     expect(seen.putBodies).toHaveLength(0);
 
+    // Keyboard: Enter and Space on the focused control do nothing either.
+    await removeButton.focus();
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Space");
+    await page.waitForTimeout(300);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(seen.putBodies).toHaveLength(0);
+
     await page.mouse.move(0, 0);
     const results = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])

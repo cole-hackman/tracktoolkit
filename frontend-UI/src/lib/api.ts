@@ -97,7 +97,7 @@ export function isApiError(error: unknown): error is ApiError {
  * payload carries one (it is the actionable reason, where `error` is just
  * "Validation failed"), else the server's `{ error }` string, else `fallback`.
  */
-function errorMessageFromBody(data: unknown, fallback: string): string {
+export function errorMessageFromBody(data: unknown, fallback: string): string {
   const body = data as { error?: unknown; details?: unknown } | null | undefined;
   // A validation 400 carries a generic "Validation failed" plus the reason a
   // user can act on in `details[0].message`; show the reason.

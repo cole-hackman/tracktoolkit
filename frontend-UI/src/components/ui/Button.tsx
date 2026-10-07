@@ -32,6 +32,10 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
           "inline-flex items-center justify-center gap-2 rounded-lg text-sm font-semibold transition-all duration-150",
           nowrap && "whitespace-nowrap",
           "disabled:cursor-not-allowed disabled:opacity-50",
+          // `aria-disabled` is for a control that must stay focusable (so its
+          // explanation can be reached). It looks disabled and takes no
+          // hover lift/glow or press feedback.
+          "aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:shadow-none aria-disabled:hover:translate-y-0 aria-disabled:hover:shadow-none aria-disabled:active:scale-100",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/80 focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           "active:scale-[0.98]",
           // Variants
@@ -45,7 +49,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
           ],
           variant === "destructive" && [
             "bg-destructive text-destructive-foreground shadow-sm",
-            "hover:bg-destructive/90",
+            "hover:bg-destructive/90 aria-disabled:hover:bg-destructive",
             "data-[shake=true]:animate-[shake_150ms_ease-in-out_1]",
           ],
           variant === "ghost" && [
