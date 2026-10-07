@@ -7,8 +7,8 @@ else changed: same tools, same accounts, same OAuth connection to SoundCloud.
 Bulk library management for SoundCloud power users — the batch operations the
 official site makes you do one click at a time.
 
-[![Users, all-time](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftracktoolkit.com%2Fapi%2Fstats%2Fpublic&query=%24.formatted.lifetimeUsers&label=users%20all-time&color=ff5500&cacheSeconds=3600)](https://tracktoolkit.com/api/stats/public)
-[![Tracks processed, all-time](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftracktoolkit.com%2Fapi%2Fstats%2Fpublic&query=%24.formatted.tracksProcessed&label=tracks%20processed&color=ff5500&cacheSeconds=3600)](https://tracktoolkit.com/api/stats/public)
+[![Users, all-time](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftracktoolkit.com%2Fapi%2Fstats%2Fpublic&query=%24.formatted.lifetimeUsers&label=users%20all-time&color=ff5500&cacheSeconds=1800)](https://tracktoolkit.com/api/stats/public)
+[![Tracks processed, all-time](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftracktoolkit.com%2Fapi%2Fstats%2Fpublic&query=%24.formatted.tracksProcessed&label=tracks%20processed&color=ff5500&cacheSeconds=1800)](https://tracktoolkit.com/api/stats/public)
 
 The badges update daily. They read
 [`/api/stats/public`](https://tracktoolkit.com/api/stats/public), which serves
