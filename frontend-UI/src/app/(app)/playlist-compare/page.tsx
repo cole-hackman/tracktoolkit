@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { ArrowRightLeft, Download, ListPlus } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, errorMessageFromBody } from "@/lib/api";
 import { downloadCsv } from "@/lib/csv";
 import {
   Button,
@@ -16,7 +17,7 @@ import {
   Select,
   useAnnounce,
 } from "@/components/ui";
-import { usePlaylistsQuery } from "@/lib/queries";
+import { invalidatePlaylistCaches, usePlaylistsQuery } from "@/lib/queries";
 import { asArray } from "@/lib/api-shape";
 
 interface Playlist {
@@ -47,6 +48,7 @@ interface CompareResult {
 
 export default function PlaylistComparePage() {
   const announce = useAnnounce();
+  const queryClient = useQueryClient();
   const [playlistAId, setPlaylistAId] = useState<number | "">("");
   const [playlistBId, setPlaylistBId] = useState<number | "">("");
   const [comparing, setComparing] = useState(false);
@@ -73,8 +75,21 @@ export default function PlaylistComparePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ playlistAId, playlistBId }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Could not compare playlists");
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        // Show the reason first: it must not wait on a cold list refetch.
+        setNotice({ type: "error", text: errorMessageFromBody(data, "Could not compare playlists.") });
+        if (response.status === 404 && data?.code === "PLAYLIST_NOT_FOUND") {
+          // One of the two selections is gone from SoundCloud. Clear it and
+          // refetch the list so it stops being offered.
+          const missingId = Number(data.playlistId);
+          if (Number(playlistAId) === missingId) setPlaylistAId("");
+          if (Number(playlistBId) === missingId) setPlaylistBId("");
+          void invalidatePlaylistCaches(queryClient);
+        }
+        return;
+      }
+      if (!data) throw new Error("Could not compare playlists.");
       setResult(data);
       announce(
         `${data.summary.overlapCount} shared, ${data.summary.uniqueToACount} only in A, ${data.summary.uniqueToBCount} only in B.`,
