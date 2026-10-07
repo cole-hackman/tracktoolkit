@@ -46,6 +46,30 @@ function cacheControlFor(filePath, hashedDir) {
   return null;
 }
 
+// When the App Router cannot use an RSC payload (a stale copy, a deploy race, a
+// network error) it falls back to a hard navigation to the payload URL itself —
+// `/dashboard/index.txt`, not `/dashboard/` — which shows the user raw RSC
+// text. The router's own fetches send `RSC: 1`; a top-level navigation sends
+// `Sec-Fetch-Dest: document` (or, from a browser without Fetch Metadata, an
+// HTML Accept). Only that navigation is redirected.
+const RSC_PAYLOAD = /^(.*\/)index\.txt$/;
+
+function isPageNavigation(req) {
+  if (req.get('rsc')) return false;
+  const dest = req.get('sec-fetch-dest');
+  if (dest) return dest === 'document';
+  return (req.get('accept') || '').includes('text/html');
+}
+
+function routeForPayloadNavigation(req) {
+  const match = RSC_PAYLOAD.exec(req.path);
+  if (!match || !isPageNavigation(req)) return null;
+  const query = new URLSearchParams(req.originalUrl.split('?')[1] || '');
+  query.delete('_rsc');
+  const search = query.toString();
+  return match[1] + (search ? `?${search}` : '');
+}
+
 /**
  * Mounts the Next.js static export (`frontend-UI/out`) onto an Express app.
  *
@@ -53,7 +77,9 @@ function cacheControlFor(filePath, hashedDir) {
  *   1. A hit in `aliases` (request path, trailing slash normalized away) ->
  *      301 redirect to the mapped target. Lets retired paths
  *      (`/sc-toolkit`, `/soundcloud-toolkit`, `/rebrand`) point somewhere
- *      useful instead of soft-404ing.
+ *      useful instead of soft-404ing. Then a page navigation (not an RSC
+ *      fetch) to `<route>/index.txt` -> 302 to `<route>/`, so the App
+ *      Router's hard-navigation fallback lands on the page, not raw payload.
  *   2. `express.static` — real files (JS/CSS/images/etc.) served as-is.
  *      (`serve-static`/`send` already confine this to `buildPath`.)
  *   3. `<path>/index.html` — a Next.js static-export route.
@@ -82,6 +108,12 @@ export function mountStaticSite(app, buildPath, { aliases = {} } = {}) {
     const target = aliases[normalizedPath];
     if (target) {
       return res.redirect(301, target);
+    }
+
+    // 302, not 301: the same URL is a valid payload for the router's fetches.
+    const route = routeForPayloadNavigation(req);
+    if (route) {
+      return res.redirect(302, route);
     }
     next();
   });
