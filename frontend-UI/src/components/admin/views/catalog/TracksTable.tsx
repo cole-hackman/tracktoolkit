@@ -28,7 +28,7 @@ import { TrackPlayer } from "./TrackPlayer";
 const TRACK_ACTIONS = [
   "merge", "from-likes", "bulk-unlike", "bulk-like", "clone", "genre-search",
   "library-audit", "playlist-compare", "resolve", "batch-resolve",
-  "bulk-remove-reposts", "proxy-download", "admin-re-resolve",
+  "bulk-remove-reposts", "proxy-download", "download-links", "admin-re-resolve",
 ];
 const ACCESS_STATES = ["playable", "preview", "blocked", "gone", "unknown", "not_playable"];
 const RESOLVE_STATES = ["resolved", "pending", "not_found", "gone"];
