@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { X, Combine, Check, Music, Trash2, AlertTriangle } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, errorMessageFromBody } from "@/lib/api";
 import {
   BulkReviewDetails,
   ConfirmDialog,
@@ -171,11 +171,23 @@ export default function CombinePlaylistsPage() {
         setResult(data);
         setIsComplete(true);
       } else {
-        const error = await response.json().catch(() => ({}));
+        const errorBody = await response.json().catch(() => null);
+        if (
+          response.status === 409 &&
+          errorBody?.code === "PLAYLIST_NOT_FOUND"
+        ) {
+          // A playlist we were still offering is gone from SoundCloud. Nothing
+          // was written, so drop it from the selection (and the target slot),
+          // refetch the list so it stops being offered, and say why.
+          const missingId = Number(errorBody.playlistId);
+          if (Number.isFinite(missingId)) {
+            setSelectedPlaylists((prev) => prev.filter((p) => Number(p.id) !== missingId));
+            setTargetPlaylist((prev) => (prev && Number(prev.id) === missingId ? null : prev));
+          }
+          await invalidatePlaylistCaches(queryClient);
+        }
         setMergeError(
-          typeof error?.error === "string"
-            ? error.error
-            : "Failed to merge playlists. Please try again."
+          errorMessageFromBody(errorBody, "Failed to merge playlists. Please try again."),
         );
       }
     } catch (error) {
