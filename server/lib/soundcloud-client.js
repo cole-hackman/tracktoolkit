@@ -6,6 +6,7 @@ import prisma from './prisma.js';
 import { getTokenContext, countScCall } from './token-context.js';
 import { invalidateCachedAuth } from './auth-cache.js';
 import { isAllowedDownloadUrl } from './download-utils.js';
+import { cursorEndpoint } from './sc-cursor.js';
 
 /**
  * Safely parse a fetch Response body as JSON.
@@ -925,8 +926,8 @@ class SoundCloudClient {
 
   buildPagedEndpoint(endpoint, { limit = 50, next, extraParams = {} } = {}) {
     if (next) {
-      const nextUrl = new URL(String(next));
-      return `${nextUrl.pathname}${nextUrl.search}`;
+      // Only ever continues this same endpoint (see lib/sc-cursor.js).
+      return cursorEndpoint(next, endpoint);
     }
 
     const params = new URLSearchParams({
