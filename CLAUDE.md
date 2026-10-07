@@ -40,9 +40,9 @@ dependency list. What they do not tell you:
 
 - `docs/internal/` — STATE.md (session state + decisions — read first),
   MIGRATION.md, ANALYSIS.md, DATA-COLLECTION.md, NOTES.md, TERMS-CHECK.md.
-- `server/routes/` is **five** files, not one: `api.js`, `growth.js`,
+- `server/routes/` is **six** files, not one: `api.js`, `growth.js`,
   `admin.js`, `auth.js`, `feedback.js` (which also holds the retired rebrand
-  vote).
+  vote) and `stats.js` (the public README-badge figures).
 - `server/lib/pacing.js` — shared `sleep()` + `SC_WRITE_PACING_MS` (300ms), the
   single source for write pacing.
 - `server/lib/auth-cache.js` — 30s memo of user + **decrypted** tokens (see
@@ -142,7 +142,7 @@ The schema (`prisma/schema.prisma`) has **18 models**, not two:
 | `chat_conversations` / `chat_messages` | AI library chat (owned by `feature/ai-library-chat`; declared here so `prisma db push` does not drop them) |
 | `indexed_likes` / `indexed_playlist_tracks` / `library_snapshots` | Library indexing for that same feature — same db-push caveat |
 | `LibraryCachePage` / `LibraryCacheState` | Persistent tier of the library cache — one row per 200-item page plus a sync-state row. **Not** the same thing as `library_snapshots` above |
-| `Metric` | Counters that must outlive the rows they were computed from. One key today: `lifetime_distinct_users`, snapshotted as the first step of every retention run — before any delete in that run. Deliberately **not** per-user, so it is absent from the deletion cascade by design |
+| `Metric` | Counters that must outlive the rows they were computed from. `lifetime_distinct_users` (a high-water mark) plus `lifetime_tracks_processed` and its cursor `lifetime_tracks_processed_through` (a running total), all written at the start of every retention run — before any delete in that run. Deliberately **not** per-user, so it is absent from the deletion cascade by design |
 
 `User.lastLoginAt` (stamped by the OAuth callback on every login; null on rows
 predating the column, which fall back to `updatedAt`) drives the dormant-account
@@ -159,6 +159,22 @@ The authoritative list is the source: `grep -n "router\." server/routes/*.js`.
 Everything is under `/api/`, and everything except `/health`, `/` and the auth
 redirects runs `authenticateUser`. What follows is only what the route code
 does not make obvious.
+
+### Public stats (`routes/stats.js`)
+
+`GET /api/stats/public` is unauthenticated and serves the README badges
+(shields.io dynamic-JSON badges): `lifetimeUsers`, `tracksProcessed`,
+`updatedAt` and a `formatted` copy of both with thousands separators. It only
+reads the `metrics` table — two primary-key rows, `Cache-Control: public,
+max-age=3600` — so the figures move once a day, when the retention job writes
+them. A counter not written yet is `null`, never 0. Anything added to this
+response is published, so keep it to all-time aggregates.
+
+The tracks total is **not** a high-water mark like the user count. Summing
+`trackCount` over what the 365-day purge leaves would fall, and `max()` would
+freeze it on the day the purge began, so each run adds only the rows created
+since `lifetime_tracks_processed_through` (stopping 5 minutes behind now) and
+writes total and cursor in one transaction.
 
 ### Auth
 
@@ -449,7 +465,7 @@ REPL.
 
 | # | Step | Window |
 |---|------|--------|
-| 0 | Lifetime-user snapshot → `Metric.lifetime_distinct_users` | every run, **first** |
+| 0 | Lifetime-user snapshot → `Metric.lifetime_distinct_users`, then the tracks total → `Metric.lifetime_tracks_processed` | every run, **first** |
 | 1 | `LibraryCachePage` (by `createdAt`) + `LibraryCacheState` (by `updatedAt`) | `CACHE_TTL_DAYS` (7) |
 | 2 | Users still stamped `disconnectedAt` | 6 days (constant, see below) |
 | 3 | Dormant users (`lastLoginAt`, or `updatedAt` when null) | `INACTIVE_MONTHS` (24) |

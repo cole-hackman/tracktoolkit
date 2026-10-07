@@ -133,6 +133,7 @@ import apiRoutes from './routes/api.js';
 import growthRoutes from './routes/growth.js';
 import adminRoutes from './routes/admin.js';
 import feedbackRoutes from './routes/feedback.js';
+import statsRoutes from './routes/stats.js';
 
 // Stricter OAuth rate limiting only where brute-force matters (/login + /callback).
 // /auth/me runs on every app load; coupling it to the OAuth limit broke sessions for heavy users.
@@ -148,6 +149,9 @@ app.use('/api', apiRateLimiter);
 
 // Routes
 app.use('/api/auth', authRoutes);
+// Public and unauthenticated (README badges). Mounted ahead of the `/api`
+// routers so nothing they register can shadow it.
+app.use('/api/stats', statsRoutes);
 app.use('/api', apiRoutes);
 app.use('/api', growthRoutes);
 app.use('/api/admin', adminRoutes);

@@ -39,13 +39,17 @@ const prismaMock = {
   track: { updateMany: trackUpdateMany },
   metric: { findUnique: metricFindUnique, upsert: metricUpsert },
 };
-// $queryRaw hangs off the client itself, not off a model delegate.
+// $queryRaw and $transaction hang off the client itself, not off a model delegate.
 prismaMock.$queryRaw = queryRaw;
+const transaction = jest.fn();
+prismaMock.$transaction = transaction;
 
 jest.unstable_mockModule('../server/lib/prisma.js', () => ({ default: prismaMock }));
 
-const { runRetentionOnce, startRetentionScheduler, resolveIntervalMs, LIFETIME_METRIC_KEY } =
-  await import('../server/lib/retention.js');
+const {
+  runRetentionOnce, startRetentionScheduler, resolveIntervalMs,
+  LIFETIME_METRIC_KEY, TRACKS_METRIC_KEY, TRACKS_CURSOR_KEY,
+} = await import('../server/lib/retention.js');
 
 const infoSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
 const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -67,6 +71,7 @@ beforeEach(() => {
   userCount.mockResolvedValue(1);
   metricFindUnique.mockResolvedValue(null);
   metricUpsert.mockResolvedValue({});
+  transaction.mockImplementation((ops) => Promise.all(ops));
 });
 
 const logLines = () => infoSpy.mock.calls.map((c) => c.join(' '));
@@ -213,7 +218,7 @@ describe('lifetime distinct-user snapshot', () => {
     await runRetentionOnce(NOW);
 
     // Aggregated in Postgres, not by dragging one row per user into Node.
-    expect(queryRaw).toHaveBeenCalledTimes(1);
+    // The first raw query is this one; the second is the tracks total.
     const sql = queryRaw.mock.calls[0][0];
     const text = Array.isArray(sql?.strings) ? sql.strings.join('') : String(sql);
     expect(text).toMatch(/COUNT\(DISTINCT "userId"\)/);
@@ -271,6 +276,95 @@ describe('lifetime distinct-user snapshot', () => {
 
     expect(Math.min(...everythingElse))
       .toBeGreaterThan(queryRaw.mock.invocationCallOrder[0]);
+  });
+});
+
+describe('lifetime tracks-processed total', () => {
+  const SETTLE_MS = 5 * 60 * 1000;
+  const sqlText = (call) => {
+    const sql = call[0];
+    return Array.isArray(sql?.strings) ? sql.strings.join('?') : String(sql);
+  };
+  /** The raw query that sums trackCount, wherever it falls in the run. */
+  const tracksQuery = () => queryRaw.mock.calls.find((c) => /SUM\("trackCount"\)/.test(sqlText(c)));
+  const stored = (values) => metricFindUnique.mockImplementation(async ({ where }) =>
+    (where.key in values ? { key: where.key, value: values[where.key] } : null));
+  const upsertFor = (key) => metricUpsert.mock.calls.map((c) => c[0]).find((a) => a.where.key === key);
+
+  beforeEach(() => {
+    queryRaw.mockImplementation(async (sql) => (
+      /SUM\("trackCount"\)/.test(Array.isArray(sql?.strings) ? sql.strings.join('') : String(sql))
+        ? [{ tracks: 250n }]
+        : [{ count: 3 }]));
+  });
+
+  test('the first run sums every row and starts the cursor just behind now', async () => {
+    const results = await runRetentionOnce(NOW);
+
+    const [sql] = tracksQuery();
+    expect(sql.values).toEqual([new Date(0), new Date(NOW - SETTLE_MS)]);
+    // Same definition as admin tracksProcessed: page opens and probes are not operations.
+    expect(sqlText(tracksQuery())).toMatch(/NOT LIKE 'view:%'/);
+    expect(sqlText(tracksQuery())).toMatch(/NOT LIKE 'read:%'/);
+
+    expect(upsertFor(TRACKS_METRIC_KEY)).toEqual({
+      where: { key: TRACKS_METRIC_KEY },
+      create: { key: TRACKS_METRIC_KEY, value: 250n },
+      update: { value: 250n },
+    });
+    expect(upsertFor(TRACKS_CURSOR_KEY).update).toEqual({ value: BigInt(NOW - SETTLE_MS) });
+    expect(results['lifetime-tracks-metric']).toBe(250);
+  });
+
+  test('a later run counts only rows after the cursor and ADDS them — it is not a high-water mark', async () => {
+    // The live table could sum to far less than 10,000 after a purge; the
+    // total must still grow by exactly the new rows.
+    const cursor = NOW - DAY_MS;
+    stored({ [TRACKS_METRIC_KEY]: 10000n, [TRACKS_CURSOR_KEY]: BigInt(cursor) });
+
+    await runRetentionOnce(NOW);
+
+    expect(tracksQuery()[0].values).toEqual([new Date(cursor), new Date(NOW - SETTLE_MS)]);
+    expect(upsertFor(TRACKS_METRIC_KEY).update).toEqual({ value: 10250n });
+    expect(upsertFor(TRACKS_CURSOR_KEY).update).toEqual({ value: BigInt(NOW - SETTLE_MS) });
+  });
+
+  test('the total and the cursor are written in one transaction', async () => {
+    await runRetentionOnce(NOW);
+
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(transaction.mock.calls[0][0]).toHaveLength(2);
+  });
+
+  test('a cursor already at or past now writes nothing, so no window is counted twice', async () => {
+    stored({ [TRACKS_METRIC_KEY]: 10000n, [TRACKS_CURSOR_KEY]: BigInt(NOW) });
+
+    const results = await runRetentionOnce(NOW);
+
+    expect(tracksQuery()).toBeUndefined();
+    expect(transaction).not.toHaveBeenCalled();
+    expect(results['lifetime-tracks-metric']).toBe(10000);
+  });
+
+  test('it runs before any delete — the user sweeps cascade into operation_logs', async () => {
+    await runRetentionOnce(NOW);
+
+    const firstDelete = Math.min(
+      ...userDeleteMany.mock.invocationCallOrder,
+      ...operationLogDeleteMany.mock.invocationCallOrder,
+      ...libraryCachePageDeleteMany.mock.invocationCallOrder,
+    );
+    expect(transaction.mock.invocationCallOrder[0]).toBeLessThan(firstDelete);
+  });
+
+  test('a failing transaction is isolated like any other step', async () => {
+    transaction.mockRejectedValueOnce(new Error('serialization failure'));
+
+    const results = await runRetentionOnce(NOW);
+
+    expect(results['lifetime-tracks-metric']).toBeNull();
+    expect(results['lifetime-users-metric']).toBe(3);
+    expect(operationLogDeleteMany).toHaveBeenCalled();
   });
 });
 
