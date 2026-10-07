@@ -1,5 +1,17 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { SupportLink } from "@/components/SupportLink";
+
+// Next adds its own `noindex` to the 404, but the root layout's
+// `index, follow` was emitted beside it — two contradictory robots tags.
+// Stating it here replaces the inherited value, leaving one.
+export const metadata: Metadata = {
+  title: "Page not found · Track Toolkit",
+  robots: {
+    index: false,
+    follow: false,
+  },
+};
 
 export default function NotFound() {
   return (
