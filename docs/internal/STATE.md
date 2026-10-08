@@ -101,6 +101,13 @@ decides**. **Still unproven live:** the SoundCloud `access` default behind #60
      2026-08-10 planning docs.
    - `origin/feature/ai-library-chat`: #11 (closed). Its 23 commits are on
      no `main`; the schema still declares its tables.
+   - `docs/state-2026-10-08` (local + remote): #68 (closed), the stale
+     overnight handoff. What was still open in it is item 3 below.
+
+   Everything else was deleted on 2026-10-08: 56 local branches (including
+   ~25 `worktree-agent-*`) and 26 remote branches, each checked to add
+   nothing to `main` (`git merge-tree --write-tree origin/main <branch>` gives
+   main's own tree), plus 17 clean worktrees.
 3. **Carried from #68 (closed), still open:**
    - The extension repair (`~/Developer/tracktoolkit-extension-work`, branch
      `fix/extension-domain`) and the Hypeddit runner are unpushed because the
