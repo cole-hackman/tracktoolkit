@@ -1,15 +1,15 @@
 # STATE
 
 ## Now
-**Two PRs open, not merged.** #89 (`fix/download-check-unmissable`): the
-multiple-downloads check as an unmissable dialog. #92 (`feat/download-to-folder`,
-stacked on #89, worktree `.worktrees/download-to-folder`): folder mode — the
-Downloads page fetches each file and writes it as "Artist - Title.ext" into a
-folder picked once, so the Chrome prompt and the check never come up. Cole
-chose this over proxying through the server after the CDN proved CORS-open.
-Merging #89 then #92 deploys both. **Still unproven live:** the SoundCloud
-`access` default behind #60 (see Next 1, 2026-10-07), the check dialog, and
-folder mode itself (Next 2026-10-08 item 0).
+**Merging #92 to `main` (it carries #89's commits; #89 itself conflicted with
+`main` on STATE.md and is closed as superseded).** #89: the multiple-downloads
+check as an unmissable dialog. #92 (`feat/download-to-folder`, worktree
+`.worktrees/download-to-folder`): folder mode — the Downloads page fetches
+each file and writes it as "Artist - Title.ext" into a folder picked once, so
+the Chrome prompt and the check never come up. Cole chose this over proxying
+through the server after the CDN proved CORS-open. Live verification is in
+progress (Next 2026-10-08 item 0). **Still unproven live:** the SoundCloud
+`access` default behind #60 (see Next 1, 2026-10-07).
 
 ## Just done
 - PR #92 — folder mode for the Downloads queue (Cole's filename report).
@@ -40,6 +40,23 @@ folder mode itself (Next 2026-10-08 item 0).
   filename (`drakeMASTERED_.wav`, `final styler mashup.wav`). A cross-origin
   navigation cannot be renamed by the page. Options and the open question
   are under Next, 2026-10-08 item 0b.
+- `42718c0` + `a398c23` — #93 and #94 merged and live: **Work through gates
+  (N)** on `/rekordbox-gaps`. Every free gate (any site) for a track not in
+  Rekordbox, one at a time: Open gate (new tab), Done — next, Skip, Undo, and
+  a progress bar. Progress is per browser (`track-toolkit-gate-progress`). It
+  only opens links. This is the manual route now that the runner is
+  bot-blocked. Live, signed in, with a synthetic XML: 643 gates, matching the
+  Downloads page; a toggle takes 7–12 ms with no long tasks. (Scripts that
+  wait on `requestAnimationFrame` hang in the Claude tab group, because its
+  window is a hidden tab.)
+- `2642fa0` — #91: `7d8a86b` (the #90 docs commit) was made with
+  `git commit -a` in the shared checkout. It swept in another session's
+  uncommitted edit to `tests/security-headers.test.js` (a `connectSrc`
+  assertion for `*.sndcdn.com` / `*.cloudfront.net`, without its
+  `security.js` change). `main` failed and the `fc652a7` deploy stopped
+  (production stayed on `783f997`). #91 restored the file. That session's
+  edit is still in `7d8a86b` if it wants it back. **In a checkout another
+  session may be using, use a worktree and stage files by name.**
 - `783f997` — #87 merged and live: `/rekordbox-gaps` gets **Export Hypeddit
   queue**, with Hypeddit gates only for tracks missing or in a different
   version, in the local runner's format (`hypeddit-queue-not-in-rekordbox.json`).
@@ -192,7 +209,14 @@ folder mode itself (Next 2026-10-08 item 0).
    - The extension's own Hypeddit stepper no longer matches live gates; the
      runner is the way to do gates. Its `comment-cleanup.js` does not check
      which page it is on (see the extension repo's README).
-   - First real Hypeddit run:
+   - **2026-10-08: the runner's logins are bot-blocked.** SoundCloud,
+     Instagram and Spotify all refused sign-in in the runner's Playwright
+     Chromium, and SoundCloud blocked the network IP ("We detected unusual
+     activity…"). The runner cannot work without evading bot detection, which
+     is out of scope, so don't add stealth or session-copying workarounds.
+     Gates go manual in Cole's normal browser. A "work through gates"
+     checklist on `/rekordbox-gaps` was offered (it opens links only).
+   - First real Hypeddit run (superseded by the line above):
      `cd tools/hypeddit-runner && npm install && npm run run-queue -- --queue <file> --limit 5 --headed`
      (queue from Downloads → Auto-Download → Export queue). No live gate has
      been run, and the signed-in selectors were only checked logged out. The
