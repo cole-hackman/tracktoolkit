@@ -99,7 +99,7 @@ export function GateWalkthrough({ gates, onClose }: { gates: WalkthroughGate[]; 
       <ProgressBar
         value={counts.done + counts.skipped}
         max={counts.total}
-        label={`${(counts.done + counts.skipped).toLocaleString()} of ${counts.total.toLocaleString()} gates`}
+        label="Gates worked through"
         detail={`${counts.done.toLocaleString()} done · ${counts.skipped.toLocaleString()} skipped`}
       />
 

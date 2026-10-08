@@ -128,7 +128,7 @@ test("work through gates: opens each gate in a new tab, remembers done and skipp
   // Gates for tracks you don't have, any site: 4 and 8 missing, 6 another version. 7 is owned.
   await page.getByRole("button", { name: "Work through gates (3)" }).click();
   const panel = page.getByRole("region", { name: "Work through gates" });
-  await expect(panel.getByText("0 of 3 gates")).toBeVisible();
+  await expect(panel.getByText("Gates worked through — 0/3")).toBeVisible();
   await expect(panel.getByText("Gated One", { exact: true })).toBeVisible();
 
   const popupPromise = page.waitForEvent("popup");
@@ -150,7 +150,7 @@ test("work through gates: opens each gate in a new tab, remembers done and skipp
   await page.getByLabel("Rekordbox collection (XML)").setInputFiles(XML);
   await page.getByRole("button", { name: "Work through gates (3)" }).click();
   await expect(panel.getByText("Droploud One")).toBeVisible();
-  await expect(panel.getByText("2 of 3 gates")).toBeVisible();
+  await expect(panel.getByText("Gates worked through — 2/3")).toBeVisible();
 
   await panel.getByRole("button", { name: "Undo" }).click();
   await expect(panel.getByText("John Summit - Lights Go Out (Gate Remix)")).toBeVisible();
