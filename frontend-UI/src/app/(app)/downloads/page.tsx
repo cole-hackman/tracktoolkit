@@ -46,6 +46,7 @@ import {
   usePlaylistsQuery,
 } from "@/lib/queries";
 import { asArray } from "@/lib/api-shape";
+import { type HypedditQueueItem, downloadHypedditQueue } from "@/lib/hypeddit-queue";
 
 interface Playlist {
   id: number;
@@ -68,13 +69,6 @@ interface Track {
   purchase_url?: string;
   purchase_title?: string;
   permalink_url: string;
-}
-
-interface HypedditQueueItem {
-  id: number;
-  title: string;
-  artist: string;
-  hypedditUrl: string;
 }
 
 interface HypedditProgress {
@@ -354,13 +348,7 @@ export default function DownloadsPage() {
       artist: t.user?.username ?? "",
       hypedditUrl: t.purchase_url!,
     }));
-    const blob = new Blob([JSON.stringify({ queue }, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "hypeddit-queue.json";
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadHypedditQueue(queue);
   };
 
   const dismissProgress = () => {
