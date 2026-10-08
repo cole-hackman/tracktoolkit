@@ -14,7 +14,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, errorMessageFromBody } from "@/lib/api";
 import {
   Button,
   Card,
@@ -74,6 +74,29 @@ interface CreatedPlaylist {
   trackCount?: number;
 }
 
+/** A copy the server created but could not finish filling. */
+interface PartialPlaylist {
+  id?: number | string;
+  title?: string;
+  permalink_url?: string;
+  tracksWritten?: number;
+  intendedTrackCount?: number;
+  sourcePlaylistId?: number;
+}
+
+interface CloneResult {
+  playlist?: CreatedPlaylist;
+  playlists?: CreatedPlaylist[];
+  overflowPlaylists?: CreatedPlaylist[];
+  partialPlaylists?: PartialPlaylist[];
+  totalTracks?: number;
+  addedCount?: number;
+  stats?: Record<string, unknown>;
+  errors?: { id: number; error: string }[];
+  /** A sentence for the panel itself, so the outcome is not announced twice. */
+  summary?: string;
+}
+
 type LibraryTab = "likes" | "playlists" | "liked-playlists";
 type AddMode = "new" | "existing";
 
@@ -109,15 +132,7 @@ export default function FollowingLibraryPage() {
   const [titlePrefix, setTitlePrefix] = useState("");
   const [working, setWorking] = useState(false);
   const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
-  const [result, setResult] = useState<{
-    playlist?: CreatedPlaylist;
-    playlists?: CreatedPlaylist[];
-    overflowPlaylists?: CreatedPlaylist[];
-    totalTracks?: number;
-    addedCount?: number;
-    stats?: Record<string, unknown>;
-    errors?: { id: number; error: string }[];
-  } | null>(null);
+  const [result, setResult] = useState<CloneResult | null>(null);
 
   const followingsQuery = useFollowingsQuery();
   const ownPlaylistsQuery = usePlaylistsQuery({ enabled: addMode === "existing" });
@@ -317,13 +332,37 @@ export default function FollowingLibraryPage() {
           ...(titlePrefix.trim() ? { titlePrefix: titlePrefix.trim() } : {}),
         }),
       });
-      const data = await response.json().catch(() => ({}));
+      // One read: a non-JSON body (a proxy's HTML error page) becomes null.
+      const data = await response.json().catch(() => null);
       if (!response.ok) {
-        throw new Error(data.error || "Failed to clone playlists");
+        const message = errorMessageFromBody(data, "Failed to clone playlists");
+        const partials = Array.isArray(data?.partialPlaylists) ? data.partialPlaylists : [];
+        const itemErrors = Array.isArray(data?.errors) ? data.errors : [];
+        if (partials.length > 0 || itemErrors.length > 0) {
+          // The panel carries the outcome (its heading takes focus), so the
+          // server's sentence goes inside it rather than in a second alert.
+          setResult({ partialPlaylists: partials, errors: itemErrors, summary: message });
+        } else {
+          setNotice({ type: "error", text: message });
+        }
+        // A create may have landed even though the request failed: any 5xx, a
+        // SoundCloud error code, or a partialPlaylists list says so. The
+        // cached lists are then stale. Show the outcome first, then refresh.
+        if (response.status >= 500 || Array.isArray(data?.partialPlaylists) || typeof data?.code === "string") {
+          void invalidatePlaylistCaches(queryClient);
+        }
+        return;
       }
-      await invalidatePlaylistCaches(queryClient);
-      setResult(data);
-      setNotice({ type: "success", text: "Selected playlists were cloned into your library." });
+      const hasProblems =
+        (Array.isArray(data?.errors) && data.errors.length > 0) ||
+        (Array.isArray(data?.partialPlaylists) && data.partialPlaylists.length > 0);
+      setResult(
+        hasProblems
+          ? { ...data, summary: "Some playlists were cloned, but not all of them finished." }
+          : data,
+      );
+      if (!hasProblems) setNotice({ type: "success", text: "Selected playlists were cloned into your library." });
+      void invalidatePlaylistCaches(queryClient);
     } catch (error) {
       console.error("Failed to clone followed playlists:", error);
       setNotice({ type: "error", text: error instanceof Error ? error.message : "Couldn't clone the selected playlists." });
@@ -714,7 +753,10 @@ export default function FollowingLibraryPage() {
 
               {result && (
                 <div className="border-t border-border/60 px-5 pb-5 pt-4">
-                  <ResultSummary result={result} />
+                  <ResultSummary
+                    result={result}
+                    sourceName={(id) => playlists.find((p) => Number(p.id) === Number(id))?.title || `Playlist ${id}`}
+                  />
                 </div>
               )}
             </Card>
@@ -935,8 +977,16 @@ function ContentListState({
   return <>{children}</>;
 }
 
-function ResultSummary({ result }: { result: { playlist?: CreatedPlaylist; playlists?: CreatedPlaylist[]; overflowPlaylists?: CreatedPlaylist[]; totalTracks?: number; addedCount?: number; stats?: Record<string, unknown>; errors?: { id: number; error: string }[] } }) {
+function ResultSummary({ result, sourceName }: { result: CloneResult; sourceName: (id: number) => string }) {
   const playlists = result.playlists || (result.playlist ? [result.playlist] : []);
+  const partialPlaylists = result.partialPlaylists || [];
+  const hasProblems = (result.errors && result.errors.length > 0) || partialPlaylists.length > 0;
+  // Only the clone endpoint answers with stats.numPlaylistsCreated, or (when
+  // nothing was fully created) with partialPlaylists and no track totals.
+  const isClone =
+    typeof result.stats?.numPlaylistsCreated === "number" ||
+    result.summary !== undefined ||
+    (partialPlaylists.length > 0 && result.addedCount == null && result.totalTracks == null);
 
   // The outcome of a clone appears at the bottom of a long card with no focus
   // change, so it can be missed entirely. A `role="status"` region that mounts
@@ -952,13 +1002,22 @@ function ResultSummary({ result }: { result: { playlist?: CreatedPlaylist; playl
 
   return (
     <div ref={containerRef} role="status">
-    <ResultPanel title="Done" tone={result.errors && result.errors.length > 0 ? "neutral" : "success"}>
+    <ResultPanel title={hasProblems ? "Finished with problems" : "Done"} tone={hasProblems ? "neutral" : "success"}>
       <div className="space-y-4">
-        <p className="text-sm text-muted-foreground">
-          {typeof result.addedCount === "number"
-            ? `Added ${result.addedCount} track${result.addedCount === 1 ? "" : "s"} to your playlist.`
-            : `Saved ${result.totalTracks || 0} track${(result.totalTracks || 0) === 1 ? "" : "s"} across ${playlists.length || 1} playlist${(playlists.length || 1) === 1 ? "" : "s"}.`}
-        </p>
+        {result.summary && <p className="text-sm font-semibold">{result.summary}</p>}
+        {isClone ? (
+          playlists.length > 0 && (
+            <p className="text-sm text-muted-foreground">
+              {`Cloned ${playlists.length} playlist${playlists.length === 1 ? "" : "s"}.`}
+            </p>
+          )
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            {typeof result.addedCount === "number"
+              ? `Added ${result.addedCount} track${result.addedCount === 1 ? "" : "s"} to your playlist.`
+              : `Saved ${result.totalTracks || 0} track${(result.totalTracks || 0) === 1 ? "" : "s"} across ${playlists.length || 1} playlist${(playlists.length || 1) === 1 ? "" : "s"}.`}
+          </p>
+        )}
 
         {playlists.length > 0 && (
           <div className="space-y-2">
@@ -984,10 +1043,47 @@ function ResultSummary({ result }: { result: { playlist?: CreatedPlaylist; playl
           </div>
         )}
 
-        {result.errors && result.errors.length > 0 && (
-          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200">
-            {result.errors.length} playlist{result.errors.length === 1 ? "" : "s"} could not be cloned because they were private, unavailable, or empty.
+        {partialPlaylists.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-sm font-semibold text-warning-text">
+              {partialPlaylists.length === 1 ? "This copy is only partly filled." : "These copies are only partly filled."} Open {partialPlaylists.length === 1 ? "it" : "them"} on SoundCloud to finish or delete {partialPlaylists.length === 1 ? "it" : "them"}.
+            </p>
+            {partialPlaylists.map((playlist, index) => (
+              <div key={`${playlist.id ?? index}`} className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold">{playlist.title}</div>
+                  {playlist.tracksWritten != null && playlist.intendedTrackCount != null && (
+                    <div className="text-xs text-muted-foreground">
+                      at least {playlist.tracksWritten} of {playlist.intendedTrackCount} tracks
+                    </div>
+                  )}
+                </div>
+                {playlist.permalink_url && (
+                  <a
+                    href={playlist.permalink_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`Open partly filled copy ${playlist.title ?? "of the playlist"} on SoundCloud`}
+                    className="inline-flex min-h-11 shrink-0 items-center px-2 text-sm font-semibold text-primary-text"
+                  >
+                    Open
+                  </a>
+                )}
+              </div>
+            ))}
           </div>
+        )}
+
+        {result.errors && result.errors.length > 0 && (
+          <InlineAlert variant="warning">
+            <ul className="space-y-1">
+              {result.errors.map((entry, index) => (
+                <li key={`${entry.id}-${index}`} className="break-words">
+                  <span className="font-semibold">{sourceName(entry.id)}:</span> {entry.error}
+                </li>
+              ))}
+            </ul>
+          </InlineAlert>
         )}
       </div>
     </ResultPanel>

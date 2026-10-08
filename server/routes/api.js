@@ -2027,16 +2027,34 @@ async function createPlaylistFromTrackIds(accessToken, refreshToken, trackIds, t
     initialBatch
   );
 
+  // Length of the last write that succeeded. If a later PUT throws, the
+  // playlist exists upstream holding exactly this many tracks.
+  let tracksWritten = initialBatch.length;
   let index = BATCH_SIZE_PLAYLIST_TRACKS;
   while (index < trackIds.length) {
     await sleep(SC_WRITE_PACING_MS);
     const batch = trackIds.slice(0, index + BATCH_SIZE_PLAYLIST_TRACKS);
-    await soundcloudClient.addTracksToPlaylist(
-      accessToken,
-      refreshToken,
-      newPlaylist.id,
-      batch
-    );
+    try {
+      await soundcloudClient.addTracksToPlaylist(
+        accessToken,
+        refreshToken,
+        newPlaylist.id,
+        batch
+      );
+    } catch (err) {
+      // Additive only: same error object, same message and status. A caller
+      // that wants to say "a half-filled copy exists" reads partialPlaylist.
+      if (err && typeof err === 'object') {
+        err.partialPlaylist = {
+          id: newPlaylist.id,
+          permalink_url: newPlaylist.permalink_url,
+          title,
+          tracksWritten,
+        };
+      }
+      throw err;
+    }
+    tracksWritten = batch.length;
     index += BATCH_SIZE_PLAYLIST_TRACKS;
   }
 
@@ -2331,36 +2349,61 @@ router.post(
   validateFollowingUserId,
   validateCloneFollowedPlaylists,
   async (req, res) => {
+    // Set immediately BEFORE each create (see the merge handler): a create
+    // that timed out or 502'd may still have landed upstream. Declared above
+    // the try so the outer catch sees the real value.
+    let writeAttempted = false;
     try {
       const targetUser = await assertFollowedUser(req, req.params.userId);
       const playlistIds = uniquePositiveIds(req.body.playlistIds);
       const titlePrefix = req.body.titlePrefix?.trim();
       const playlists = [];
+      const partialPlaylists = [];
       const errors = [];
       const perPlaylistCounts = [];
       let fetchedTotal = 0;
       let acceptedTotal = 0;
+      let skippedCount = 0;
+      let upstreamFailure = false;
 
       for (const playlistId of playlistIds) {
+        // Read the source first. A failure here wrote nothing for this item.
+        let playlist;
         try {
-          const playlist = await soundcloudClient.getPlaylistWithTracks(req.accessToken, req.refreshToken, playlistId);
-          const allTracks = Array.isArray(playlist.tracks) ? playlist.tracks : [];
-          const trackIds = getPlayableTrackIds(allTracks);
-          fetchedTotal += allTracks.length;
-          acceptedTotal += trackIds.length;
-          perPlaylistCounts.push({ id: playlistId, fetched: allTracks.length, accepted: trackIds.length });
+          playlist = await soundcloudClient.getPlaylistWithTracks(req.accessToken, req.refreshToken, playlistId);
+          // An empty 2xx body parses to null; that is a failed read, not a crash.
+          if (!playlist || typeof playlist !== 'object') throw new Error('Empty playlist response');
+        } catch (error) {
+          logger.warn('Followed playlist clone read failed:', { playlistId, error: safeError(error) });
+          const kind = classifyScError(error);
+          if (kind === 'upstream_unavailable') upstreamFailure = true;
+          let message = 'Playlist could not be cloned. It may be private or unavailable.';
+          if (kind === 'not_found') message = 'This playlist no longer exists or is private.';
+          else if (kind === 'upstream_unavailable') message = 'SoundCloud did not respond for this playlist.';
+          errors.push({ id: playlistId, error: message });
+          continue;
+        }
 
-          if (trackIds.length === 0) {
-            errors.push({ id: playlistId, error: 'Playlist has no public streamable tracks to clone.' });
-            continue;
-          }
+        const allTracks = Array.isArray(playlist.tracks) ? playlist.tracks : [];
+        const trackIds = getPlayableTrackIds(allTracks);
+        fetchedTotal += allTracks.length;
+        acceptedTotal += trackIds.length;
+        perPlaylistCounts.push({ id: playlistId, fetched: allTracks.length, accepted: trackIds.length });
 
-          const sourceTitle = playlist.title || `Playlist ${playlistId}`;
-          const baseTitle = titlePrefix ? `${titlePrefix} - ${sourceTitle}` : `Clone of ${sourceTitle}`;
-          const chunks = splitIntoChunks(trackIds, MAX_TRACKS_PER_PLAYLIST);
+        if (trackIds.length === 0) {
+          skippedCount += 1;
+          errors.push({ id: playlistId, error: 'Playlist has no public streamable tracks to clone.' });
+          continue;
+        }
 
-          for (let i = 0; i < chunks.length; i++) {
-            const playlistTitle = chunks.length > 1 ? `${baseTitle} (${i + 1}/${chunks.length})` : baseTitle;
+        const sourceTitle = playlist.title || `Playlist ${playlistId}`;
+        const baseTitle = titlePrefix ? `${titlePrefix} - ${sourceTitle}` : `Clone of ${sourceTitle}`;
+        const chunks = splitIntoChunks(trackIds, MAX_TRACKS_PER_PLAYLIST);
+
+        for (let i = 0; i < chunks.length; i++) {
+          const playlistTitle = chunks.length > 1 ? `${baseTitle} (${i + 1}/${chunks.length})` : baseTitle;
+          try {
+            writeAttempted = true;
             const created = await createPlaylistFromTrackIds(
               req.accessToken,
               req.refreshToken,
@@ -2375,18 +2418,88 @@ router.post(
               trackCount: chunks[i].length,
               sourcePlaylistId: playlistId,
             });
+          } catch (error) {
+            logger.warn('Followed playlist clone write failed:', { playlistId, error: safeError(error) });
+            if (classifyScError(error) === 'upstream_unavailable') upstreamFailure = true;
+            const partial = error?.partialPlaylist;
+            const remaining = chunks.length - i - 1;
+            const notAttempted = remaining > 0
+              ? ` ${remaining} more part${remaining === 1 ? ' was' : 's were'} not attempted.`
+              : '';
+            if (partial) {
+              partialPlaylists.push({
+                id: partial.id,
+                title: partial.title,
+                permalink_url: partial.permalink_url,
+                tracksWritten: partial.tracksWritten,
+                intendedTrackCount: chunks[i].length,
+                sourcePlaylistId: playlistId,
+              });
+              errors.push({
+                id: playlistId,
+                partialPlaylistId: partial.id,
+                // A lower bound: a PUT that timed out may have landed.
+                error: `A copy was created but only partly filled (at least ${partial.tracksWritten} of ${chunks[i].length} tracks). Check it on SoundCloud.${notAttempted}`,
+              });
+            } else {
+              errors.push({
+                id: playlistId,
+                error: `Copy may not have been created — check your playlists before trying again.${notAttempted}`,
+              });
+            }
+            // Never retry a write. The remaining chunks of this source are not
+            // attempted (reported above); other sources still run.
+            break;
           }
-        } catch (error) {
-          logger.warn('Followed playlist clone item failed:', { playlistId, error: safeError(error) });
-          errors.push({ id: playlistId, error: 'Playlist could not be cloned. It may be private or unavailable.' });
         }
       }
 
+      // A create may have landed even when it reported failure, so every exit
+      // after the first attempt refreshes the cached playlist list.
+      if (writeAttempted) invalidatePlaylistState(req.user.id);
+
       if (playlists.length === 0) {
-        return res.status(400).json({
-          error: 'No selected playlists had public streamable tracks to clone.',
-          errors,
+        const allSkipped = skippedCount === playlistIds.length;
+        let status;
+        let body;
+        let errorCode;
+        if (allSkipped) {
+          status = 400;
+          body = { error: 'No selected playlists had public streamable tracks to clone.', errors };
+          errorCode = 'NOTHING_TO_CLONE';
+        } else if (partialPlaylists.length > 0 || writeAttempted) {
+          status = upstreamFailure ? 502 : 500;
+          body = {
+            ...(upstreamFailure ? { code: 'SOUNDCLOUD_UNAVAILABLE' } : {}),
+            error: 'Some copies may have been partly created — check your playlists before trying again.',
+            errors,
+            partialPlaylists,
+          };
+          errorCode = upstreamFailure ? 'SOUNDCLOUD_UNAVAILABLE' : 'CLONE_FAILED';
+        } else if (upstreamFailure) {
+          status = 502;
+          body = {
+            code: 'SOUNDCLOUD_UNAVAILABLE',
+            error: 'SoundCloud is having trouble right now. Nothing was changed — try again in a minute.',
+            errors,
+          };
+          errorCode = 'SOUNDCLOUD_UNAVAILABLE';
+        } else {
+          status = 400;
+          body = { error: 'None of the selected playlists could be cloned.', errors };
+          errorCode = 'ALL_ITEMS_FAILED';
+        }
+        logOperation({
+          userId: req.user.id,
+          action: 'followed-playlist-clone',
+          itemCount: playlistIds.length,
+          trackCount: acceptedTotal,
+          status: 'error',
+          errorCode,
+          playlistIds: [...playlistIds, ...partialPlaylists.map(p => p.id)],
+          targetUserIds: [Number(req.params.userId)],
         });
+        return res.status(status).json(body);
       }
 
       logOperation({
@@ -2395,13 +2508,13 @@ router.post(
         itemCount: playlistIds.length,
         trackCount: acceptedTotal,
         status: errors.length > 0 ? 'partial' : 'success',
-        playlistIds: [...playlistIds, ...playlists.map(p => p.id)],
+        playlistIds: [...playlistIds, ...playlists.map(p => p.id), ...partialPlaylists.map(p => p.id)],
         targetUserIds: [Number(req.params.userId)],
       });
 
-      invalidatePlaylistState(req.user.id);
       res.status(errors.length > 0 ? 207 : 200).json({
         playlists,
+        partialPlaylists: partialPlaylists.length > 0 ? partialPlaylists : undefined,
         errors: errors.length > 0 ? errors : undefined,
         stats: {
           sourceUserId: Number(req.params.userId),
@@ -2420,9 +2533,10 @@ router.post(
       if (error?.code === 'NOT_FOLLOWED') {
         return res.status(403).json({ error: 'Choose a user you follow to clone their public playlists.' });
       }
-      // Every create/PUT sits inside the per-item try above, which swallows its
-      // own errors, so anything that reaches this catch wrote nothing.
-      const mapped = scErrorResponse(error, { writeAttempted: false });
+      // Per-item failures are handled in the loop, but an unforeseen throw
+      // after a create must not claim nothing changed or skip the refresh.
+      if (writeAttempted) invalidatePlaylistState(req.user.id);
+      const mapped = scErrorResponse(error, { writeAttempted });
       if (mapped) return res.status(mapped.status).json(mapped.body);
       res.status(500).json({ error: 'Failed to clone followed user playlists' });
     }
