@@ -73,3 +73,20 @@ test("before the first confirmation the queue fetches only up to the second file
   expect(no.items.find((i) => i.trackId === 2)!.status).toBe("pending");
   expect(nextBatch(no)[0].trackId).toBe(2);
 });
+
+test("a pending check blocks a new enqueue as well as start — it must be answered, not restarted around", () => {
+  let s = queueReducer(queueReducer(EMPTY_QUEUE, { type: "enqueue", sourceTitle: "L", items: items(3) }), { type: "start" });
+  s = queueReducer(s, { type: "fetching", trackIds: [1, 2] });
+  s = queueReducer(s, { type: "result", trackId: 1, status: "started" });
+  s = queueReducer(s, { type: "result", trackId: 2, status: "started" });
+  s = queueReducer(s, { type: "check", trackId: 2, title: "T2" });
+  // "Download all" again used to replace the queue and forget the check, so a
+  // browser that never answered it stopped at two files on every run.
+  const again = queueReducer(s, { type: "enqueue", sourceTitle: "L", items: items(3) });
+  expect(again).toBe(s);
+  expect(again.check).toEqual({ trackId: 2, title: "T2" });
+  expect(summarize(again).started).toBe(2);
+  // Answered, a new source is accepted as before.
+  const answered = queueReducer(s, { type: "confirmSaved" });
+  expect(queueReducer(answered, { type: "enqueue", sourceTitle: "M", items: items(1) }).sourceTitle).toBe("M");
+});

@@ -7,7 +7,7 @@ import { ArrowLeft, Download, Heart, ListMusic, Trash2, X, CheckSquare, Search, 
 import { apiFetch, readApiErrorMessage } from "@/lib/api";
 import { startSoundCloudDownload } from "@/lib/download";
 import { downloadedLabel, downloadedMap } from "@/lib/download-history";
-import { DownloadQueuePanel, DownloadQueueSheet, useDownloadQueue } from "@/components/downloads/DownloadQueue";
+import { DownloadCheckDialog, DownloadQueuePanel, DownloadQueueSheet, useDownloadQueue } from "@/components/downloads/DownloadQueue";
 import { DownloadLinkAction, DownloadStatusLine, downloadTone } from "@/components/downloads/DownloadStatus";
 import {
   type DownloadFilter,
@@ -1030,6 +1030,15 @@ export default function DownloadsPage() {
             onConfirmSaved={queue.confirmSaved}
             onRetryChecked={queue.retryChecked}
             multiOk={queue.multiOk}
+          />
+        )}
+        {hasQueue && (
+          <DownloadCheckDialog
+            check={queue.state.check}
+            open={queue.checkOpen}
+            onClose={queue.dismissCheck}
+            onConfirmSaved={queue.confirmSaved}
+            onRetryChecked={queue.retryChecked}
           />
         )}
 

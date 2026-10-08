@@ -217,6 +217,18 @@ reported them all as started (found verifying #65 live). It also depends on
 `download-links` logging **only the tracks that got a link** — log a failed
 track there and it shows up as downloaded.
 
+**The check has to be where the user is looking, and it blocks a restart.**
+Its first version was a card inside the queue panel — the side column on
+`lg`, a grey "check needed" bar below it — and live it was never answered:
+Cole pressed "Download all" again, `enqueue` replaced the queue and forgot
+the check, and three runs in a row stopped at two files
+(`track-toolkit-multi-download-ok` never set). Now the question is a
+`Dialog` on every width (`DownloadCheckDialog`), it is painted into the
+helper tab too with working buttons (the first time, Chrome's prompt appears
+*there* and that tab has focus), and both the reducer (`enqueue` while
+`check` is set returns the state unchanged) and `begin` refuse a new queue
+until it is answered — "Download all" re-opens the question instead.
+
 ### Growth & Discovery (`routes/growth.js`)
 
 All `/growth/*` routes are `authenticateUser`; the write-heavy ones also carry

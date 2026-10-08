@@ -59,7 +59,62 @@ const MULTI_DOWNLOAD_HELP =
   "Chrome lets a page start one download by itself and asks before the next. Look in the download tab for " +
   "“This site is trying to download multiple files” and click Allow. You only need to do this once per browser.";
 
+/** The same question, worded for the helper tab itself (the prompt appears there). */
+const HELPER_TAB_CHECK_HELP =
+  "Chrome lets a page start one download by itself and asks before the next. If it asked here, click Allow, " +
+  "then say whether the file saved. You only need to do this once per browser.";
+
+const YES_LABEL = "Yes, it saved — continue";
+const NO_LABEL = "No — try it again";
+
 type Announce = (message: string, options?: { assertive?: boolean }) => void;
+
+/**
+ * Writes the helper tab's text — and, while the queue is waiting on the
+ * check, the question itself with working buttons. The first time, Chrome's
+ * multiple-downloads prompt appears in this tab and the user is looking at
+ * it, not at the page that asked; a question only on the page went
+ * unanswered live. Plain DOM, no styles beyond the browser's own.
+ */
+function paintHelperTab(
+  tab: Window | null,
+  text: string,
+  question?: { title: string; onYes: () => void; onNo: () => void },
+) {
+  if (!tab || tab.closed) return;
+  try {
+    const doc = tab.document;
+    doc.title = "Track Toolkit — downloads";
+    const body = doc.body;
+    body.replaceChildren();
+    body.style.cssText = "font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 32px; max-width: 40rem; color-scheme: light dark";
+    const note = doc.createElement("p");
+    note.textContent = text;
+    body.appendChild(note);
+    if (!question) return;
+    const heading = doc.createElement("h1");
+    heading.textContent = `Did “${question.title}” save?`;
+    heading.style.cssText = "font-size: 22px; margin: 24px 0 8px";
+    const help = doc.createElement("p");
+    help.textContent = HELPER_TAB_CHECK_HELP;
+    const row = doc.createElement("div");
+    row.style.cssText = "display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px";
+    for (const [label, onClick] of [
+      [YES_LABEL, question.onYes],
+      [NO_LABEL, question.onNo],
+    ] as const) {
+      const button = doc.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.style.cssText = "font: inherit; padding: 10px 16px; cursor: pointer";
+      button.addEventListener("click", onClick);
+      row.appendChild(button);
+    }
+    body.append(heading, help, row);
+  } catch {
+    /* not ours to write (a file is showing); the page's dialog still asks */
+  }
+}
 
 /**
  * The queue's behaviour. Files go to the browser through ONE helper tab,
@@ -78,6 +133,12 @@ export function useDownloadQueue(announce: Announce) {
   // Has this browser been through Chrome's multiple-downloads prompt?
   const [multiOk, setMultiOk] = useState(false);
   const multiOkRef = useRef(false);
+  // The check as a modal: shown whenever a check arrives (including on a
+  // reload with one pending), dismissable, and brought back by Download all.
+  const [checkOpen, setCheckOpen] = useState(false);
+  useEffect(() => {
+    if (state.check) setCheckOpen(true);
+  }, [state.check]);
 
   useEffect(() => {
     dispatch({ type: "load", state: loadQueue(typeof window === "undefined" ? null : window.localStorage) });
@@ -106,11 +167,22 @@ export function useDownloadQueue(announce: Announce) {
     return true;
   }, []);
 
+  // The helper tab's buttons call whatever these are *now*, not what they
+  // were when the question was painted.
+  const confirmSavedRef = useRef<() => void>(() => {});
+  const retryCheckedRef = useRef<() => void>(() => {});
+
   const popupBlocked = "Your browser blocked the download tab. Allow pop-ups for this site, then Resume.";
 
   /** Call from a click handler: it opens the helper tab. */
   const begin = useCallback(
     (sourceTitle: string, items: Array<Omit<QueueItem, "status" | "reason">>) => {
+      if (stateRef.current.check) {
+        // Nothing is replaced until the question is answered — bring it back.
+        setCheckOpen(true);
+        announce(`Answer first: did ${stateRef.current.check.title} save?`, { assertive: true });
+        return;
+      }
       dispatch({ type: "enqueue", sourceTitle, items });
       if (!openHelperTab()) {
         dispatch({ type: "pause", reason: popupBlocked });
@@ -138,15 +210,24 @@ export function useDownloadQueue(announce: Announce) {
     saveMultiDownloadOk(window.localStorage);
     multiOkRef.current = true;
     setMultiOk(true);
+    setCheckOpen(false);
     dispatch({ type: "confirmSaved" });
+    paintHelperTab(tabRef.current, HELPER_TAB_TEXT);
     resume();
   }, [resume]);
 
   /** "No": hand that file to the browser again. From a click. */
   const retryChecked = useCallback(() => {
+    setCheckOpen(false);
     dispatch({ type: "retryChecked" });
+    paintHelperTab(tabRef.current, HELPER_TAB_TEXT);
     resume();
   }, [resume]);
+  confirmSavedRef.current = confirmSaved;
+  retryCheckedRef.current = retryChecked;
+
+  /** Hide the modal; the queue stays waiting and Download all re-asks. */
+  const dismissCheck = useCallback(() => setCheckOpen(false), []);
 
   const clear = useCallback(() => {
     dispatch({ type: "clear" });
@@ -215,6 +296,11 @@ export function useDownloadQueue(announce: Announce) {
           if (!multiOkRef.current && startedBefore + handed >= 2) {
             stopped = true;
             dispatch({ type: "check", trackId: item.trackId, title: item.title });
+            paintHelperTab(tabRef.current, HELPER_TAB_TEXT, {
+              title: item.title,
+              onYes: () => confirmSavedRef.current(),
+              onNo: () => retryCheckedRef.current(),
+            });
             announce(`Check the download tab: did ${item.title} save?`, { assertive: true });
             return;
           }
@@ -249,18 +335,56 @@ export function useDownloadQueue(announce: Announce) {
         `Download queue finished: ${summary.started} started, ${summary.unavailable} not available, ${summary.failed} failed`,
         { assertive: true },
       );
-      try {
-        if (tabRef.current && !tabRef.current.closed) {
-          tabRef.current.document.body.textContent = "Done — every file has been handed to the browser. You can close this tab.";
-        }
-      } catch {
-        /* the tab is showing a file; leave it */
-      }
+      paintHelperTab(tabRef.current, "Done — every file has been handed to the browser. You can close this tab.");
     }
     if (!done) finishedRef.current = false;
   }, [summary.total, summary.waiting, summary.started, summary.unavailable, summary.failed, state.running, announce]);
 
-  return { state, summary, begin, resume, pause, clear, confirmSaved, retryChecked, multiOk, hydrated };
+  return { state, summary, begin, resume, pause, clear, confirmSaved, retryChecked, checkOpen, dismissCheck, multiOk, hydrated };
+}
+
+interface CheckDialogProps {
+  check: QueueState["check"];
+  open: boolean;
+  onClose: () => void;
+  onConfirmSaved: () => void;
+  onRetryChecked: () => void;
+}
+
+/**
+ * The check as a modal, on every width. It used to be a card inside the
+ * queue panel only — on a desktop in the side column, on anything narrower
+ * behind a grey "check needed" bar — and live it went unanswered: the user
+ * pressed Download all again, which replaced the queue, and every run stopped
+ * at two files. Mounted once by the page, outside the panel and the sheet.
+ */
+export function DownloadCheckDialog({ check, open, onClose, onConfirmSaved, onRetryChecked }: CheckDialogProps) {
+  const yesRef = useRef<HTMLButtonElement>(null);
+  return (
+    <Dialog
+      open={open && !!check}
+      onClose={onClose}
+      title={`Did “${check?.title ?? ""}” save?`}
+      description={MULTI_DOWNLOAD_HELP}
+      size="sm"
+      initialFocusRef={yesRef}
+      footer={
+        <div className="flex flex-wrap gap-2">
+          <Button ref={yesRef} onClick={onConfirmSaved}>
+            {YES_LABEL}
+          </Button>
+          <Button variant="secondary" onClick={onRetryChecked}>
+            {NO_LABEL}
+          </Button>
+        </div>
+      }
+    >
+      <p className="text-sm text-muted-foreground">
+        The queue is waiting on your answer; nothing else downloads until then. “No” hands the same file to the
+        browser again.
+      </p>
+    </Dialog>
+  );
 }
 
 interface PanelProps {
@@ -311,10 +435,10 @@ export function DownloadQueuePanel({
           <p className="text-sm text-muted-foreground">{MULTI_DOWNLOAD_HELP}</p>
           <div className="flex flex-wrap gap-2">
             <Button size="sm" onClick={onConfirmSaved}>
-              Yes, it saved — continue
+              {YES_LABEL}
             </Button>
             <Button size="sm" variant="secondary" onClick={onRetryChecked}>
-              No — try it again
+              {NO_LABEL}
             </Button>
           </div>
         </div>
@@ -367,6 +491,10 @@ export function DownloadQueueSheet(props: Omit<PanelProps, "showHeading">) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const { summary, state } = props;
+  // The check arrives as its own dialog; two modals must not stack.
+  useEffect(() => {
+    if (state.check) setOpen(false);
+  }, [state.check]);
   return (
     <>
       <div className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card px-4 py-3 lg:hidden">

@@ -66,6 +66,10 @@ export function queueReducer(state: QueueState, action: QueueAction): QueueState
     case "load":
       return action.state;
     case "enqueue": {
+      // A check is answered, not restarted around: replacing the queue here
+      // used to drop it, so a browser that never answered stopped at two
+      // files on every run. `start` refuses for the same reason.
+      if (state.check) return state;
       // A new source replaces the queue; the same track is never queued twice.
       const seen = new Set<number>();
       const items: QueueItem[] = [];

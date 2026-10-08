@@ -159,8 +159,9 @@ test("on a phone the queue is a bar that opens a sheet — axe-clean, no overflo
   expect(overflow).toBeLessThanOrEqual(0);
 });
 
-test("first time in a browser: after the second file the queue stops and asks whether it saved", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop", "flow test");
+const checkDialog = (page: Page, title = "Direct 2") => page.getByRole("dialog", { name: `Did “${title}” save?` });
+
+test("first time in a browser: after the second file the queue stops and asks whether it saved — as a dialog, on every width", async ({ page }, testInfo) => {
   const seen = await open(page, { multiOk: false });
   const popupPromise = page.waitForEvent("popup");
   await page.getByRole("button", { name: "Download all (3)" }).click();
@@ -168,18 +169,76 @@ test("first time in a browser: after the second file the queue stops and asks wh
   const downloads: string[] = [];
   helper.on("download", (d) => downloads.push(d.url()));
 
-  const check = panel(page).getByText("Did “Direct 2” save?");
+  // The question is a modal, not a card inside a panel the user may never
+  // open: live, it sat behind a grey "check needed" bar below `lg` and was
+  // never answered.
+  const check = checkDialog(page);
   await expect(check).toBeVisible();
-  await expect(panel(page).getByText(/This site is trying to download multiple files/)).toBeVisible();
+  await expect(check.getByText(/This site is trying to download multiple files/)).toBeVisible();
   // Only two links were asked for — the third is not fetched (or logged as
   // downloaded) while Chrome may be holding the second.
   expect(seen).toEqual([[1, 2].map((n) => `https://api.soundcloud.com/tracks/soundcloud:tracks:${n}/download`)]);
   await expect(page.locator("#app-live-region-assertive")).toHaveText(/did Direct 2 save\?/);
 
-  await panel(page).getByRole("button", { name: "Yes, it saved — continue" }).click();
+  await check.getByRole("button", { name: "Yes, it saved — continue" }).click();
+  await expect(check).toHaveCount(0);
+  // The side panel is desktop-only; on a phone the queue bar says it finished.
+  const finished =
+    testInfo.project.name === "desktop"
+      ? panel(page).getByText("3 started · 0 not available · 0 failed")
+      : page.getByRole("button", { name: "Download queue · finished" });
+  await expect(finished).toBeVisible();
+  await expect.poll(() => downloads.length).toBe(3);
+  expect(await page.evaluate(() => localStorage.getItem("track-toolkit-multi-download-ok"))).toBe("1");
+});
+
+test("Download all while the check is waiting re-asks the question instead of starting over", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "flow test");
+  const seen = await open(page, { multiOk: false });
+  const popupPromise = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Download all (3)" }).click();
+  await popupPromise;
+  const check = checkDialog(page);
+  await expect(check).toBeVisible();
+
+  // Dismissed (Escape) the queue stays put: still two started, nothing fetched.
+  await page.keyboard.press("Escape");
+  await expect(check).toHaveCount(0);
+  await expect(panel(page).getByText("2 started · 0 not available · 0 failed")).toBeVisible();
+  await expect(panel(page).getByRole("button", { name: /^Resume/ })).toHaveCount(0);
+
+  // The big button brings the question back; it does not replace the queue.
+  await page.getByRole("button", { name: "Download all (3)" }).click();
+  await expect(check).toBeVisible();
+  expect(seen).toHaveLength(1);
+  await expect(panel(page).getByText("2 started · 0 not available · 0 failed")).toBeVisible();
+
+  await check.getByRole("button", { name: "Yes, it saved — continue" }).click();
+  await expect(panel(page).getByText("3 started · 0 not available · 0 failed")).toBeVisible();
+  expect(seen).toHaveLength(2);
+});
+
+test("the helper tab — where Chrome's prompt appears — asks the same question, and answering there continues the queue", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "flow test");
+  await open(page, { multiOk: false });
+  const popupPromise = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Download all (3)" }).click();
+  const helper = await popupPromise;
+  const downloads: string[] = [];
+  helper.on("download", (d) => downloads.push(d.url()));
+
+  await expect(checkDialog(page)).toBeVisible();
+  await expect(helper.getByText("Did “Direct 2” save?")).toBeVisible();
+  await helper.getByRole("button", { name: "Yes, it saved — continue" }).click();
+
+  await expect(checkDialog(page)).toHaveCount(0);
   await expect(panel(page).getByText("3 started · 0 not available · 0 failed")).toBeVisible();
   await expect.poll(() => downloads.length).toBe(3);
   expect(await page.evaluate(() => localStorage.getItem("track-toolkit-multi-download-ok"))).toBe("1");
+  // The question is gone from the helper tab; with three files it is already
+  // on its "Done" note (the running note comes between, too briefly to pin).
+  await expect(helper.getByText("Did “Direct 2” save?")).toHaveCount(0);
+  await expect(helper.getByText(/Done — every file has been handed to the browser/)).toBeVisible();
 });
 
 test("“No — try it again” hands the same file to the browser again", async ({ page }, testInfo) => {
@@ -191,9 +250,9 @@ test("“No — try it again” hands the same file to the browser again", async
   const downloads: string[] = [];
   helper.on("download", (d) => downloads.push(d.url()));
 
-  await expect(panel(page).getByText("Did “Direct 2” save?")).toBeVisible();
-  await panel(page).getByRole("button", { name: "No — try it again" }).click();
-  await expect(panel(page).getByText("Did “Direct 2” save?")).toBeVisible();
+  await expect(checkDialog(page)).toBeVisible();
+  await checkDialog(page).getByRole("button", { name: "No — try it again" }).click();
+  await expect(checkDialog(page)).toBeVisible();
   expect(seen[1]).toEqual(["https://api.soundcloud.com/tracks/soundcloud:tracks:2/download"]);
   await expect.poll(() => downloads.filter((u) => u === CDN(2)).length).toBe(2);
 });
