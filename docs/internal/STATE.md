@@ -9,6 +9,23 @@ decides**. **Still unproven live:** the SoundCloud `access` default behind #60
 (see Next 1, 2026-10-07).
 
 ## Just done
+- `42718c0` + `a398c23` — #93 and #94 merged and live: **Work through gates
+  (N)** on `/rekordbox-gaps`. Every free gate (any site) for a track not in
+  Rekordbox, one at a time: Open gate (new tab), Done — next, Skip, Undo, and
+  a progress bar. Progress is per browser (`track-toolkit-gate-progress`). It
+  only opens links. This is the manual route now that the runner is
+  bot-blocked. Live, signed in, with a synthetic XML: 643 gates, matching the
+  Downloads page; a toggle takes 7–12 ms with no long tasks. (Scripts that
+  wait on `requestAnimationFrame` hang in the Claude tab group, because its
+  window is a hidden tab.)
+- `2642fa0` — #91: `7d8a86b` (the #90 docs commit) was made with
+  `git commit -a` in the shared checkout. It swept in another session's
+  uncommitted edit to `tests/security-headers.test.js` (a `connectSrc`
+  assertion for `*.sndcdn.com` / `*.cloudfront.net`, without its
+  `security.js` change). `main` failed and the `fc652a7` deploy stopped
+  (production stayed on `783f997`). #91 restored the file. That session's
+  edit is still in `7d8a86b` if it wants it back. **In a checkout another
+  session may be using, use a worktree and stage files by name.**
 - `783f997` — #87 merged and live: `/rekordbox-gaps` gets **Export Hypeddit
   queue**, with Hypeddit gates only for tracks missing or in a different
   version, in the local runner's format (`hypeddit-queue-not-in-rekordbox.json`).
