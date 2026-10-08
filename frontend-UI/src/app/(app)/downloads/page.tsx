@@ -3,19 +3,18 @@
 import { useState, useEffect, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { ArrowLeft, Download, ExternalLink, Heart, ListMusic, Trash2, X, CheckSquare, Search, Zap } from "lucide-react";
+import { ArrowLeft, Download, Heart, ListMusic, Trash2, X, CheckSquare, Search, Zap } from "lucide-react";
 import { apiFetch, readApiErrorMessage } from "@/lib/api";
 import { startSoundCloudDownload } from "@/lib/download";
 import { downloadedLabel, downloadedMap } from "@/lib/download-history";
 import { DownloadQueuePanel, DownloadQueueSheet, useDownloadQueue } from "@/components/downloads/DownloadQueue";
+import { DownloadLinkAction, DownloadStatusLine, downloadTone } from "@/components/downloads/DownloadStatus";
 import {
   type DownloadFilter,
-  type DownloadKind,
   type DownloadStatus,
   downloadStatus,
   isFreeDownload,
   matchesFilter,
-  storeSearchLinks,
 } from "@/lib/download-status";
 import { useAuth } from "@/contexts/AuthContext";
 import {
@@ -93,21 +92,6 @@ const FILTER_LABELS: Record<DownloadFilter, string> = {
   buy: "To buy or pre-order",
   unavailable: "Not available",
   all: "Everything",
-};
-
-/**
- * Status chips: a word, coloured by token. The colour is decoration — the
- * word is the status — and every text token here is gated on `--card` by
- * `npm run contrast`, which is why the chip carries its own card surface.
- */
-const CHIP_TONE: Record<DownloadKind, string> = {
-  direct: "text-success-text",
-  gate: "text-primary-text",
-  store: "text-muted-foreground",
-  preorder: "text-warning-text",
-  link: "text-muted-foreground",
-  blocked: "text-destructive-text",
-  none: "text-muted-foreground",
 };
 
 // Rows rendered per step. A large library is hundreds of rows (one real
@@ -479,19 +463,6 @@ export default function DownloadsPage() {
     return `${minutes}:${seconds.toString().padStart(2, "0")}`;
   };
 
-  /**
-   * The download button's surface, as HSL tokens rather than raw palette
-   * classes. The hue is decoration — the accessible name (from
-   * lib/download-status) says which route a button takes — but it still has
-   * to carry its glyph at 3:1, which is why each branch names its foreground.
-   * `hover:text-*` is repeated because `IconButton`'s ghost variant sets
-   * `hover:text-accent-foreground`.
-   */
-  const getDownloadTone = (status: DownloadStatus) =>
-    status.kind === "direct"
-      ? "bg-tone-download text-tone-foreground hover:bg-tone-download/90 hover:text-tone-foreground"
-      : "bg-tone-purchase text-tone-foreground hover:bg-tone-purchase/90 hover:text-tone-foreground";
-
   const handleDownload = async (track: Track) => {
     setDownloadError(null);
     const status = statusOf(track);
@@ -529,7 +500,7 @@ export default function DownloadsPage() {
             if (stopPropagation) e.stopPropagation();
             handleDownload(track);
           }}
-          className={getDownloadTone(status)}
+          className={downloadTone(status)}
         >
           {downloadingTrackId === track.id ? (
             <LoadingSpinner className="h-5 w-5 text-current" />
@@ -539,63 +510,16 @@ export default function DownloadsPage() {
         </IconButton>
       );
     }
-    // Store, pre-order or other link: an outbound link that says so — never
-    // the download glyph, which is what made a Beatport pre-order read as a
-    // download.
-    const verb = status.kind === "store" ? "Buy" : status.kind === "preorder" ? "Pre-order" : "Open";
-    return (
-      <a
-        href={status.href}
-        target="_blank"
-        rel="noopener noreferrer"
-        aria-label={status.actionLabel}
-        onClick={stopPropagation ? (e) => e.stopPropagation() : undefined}
-        className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-md border border-input bg-card px-3 text-sm font-semibold text-foreground hover:bg-accent hover:text-accent-foreground"
-      >
-        <ExternalLink className="h-4 w-4" aria-hidden="true" />
-        {verb}
-      </a>
-    );
+    return <DownloadLinkAction status={status} stopPropagation={stopPropagation} />;
   };
 
-  /** Status chip + the reason in words; for "nothing offered", where to look. */
-  const renderStatusLine = (track: Track) => {
-    const status = statusOf(track);
-    const search = status.kind === "none" ? storeSearchLinks(track) : [];
-    const downloaded = downloadedAt.get(track.id);
-    return (
-      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-        {downloaded && (
-          <span className="rounded-md border border-border bg-card px-1.5 py-0.5 font-medium text-success-text">
-            {downloadedLabel(downloaded)}
-          </span>
-        )}
-        <span className={`rounded-md border border-border bg-card px-1.5 py-0.5 font-medium ${CHIP_TONE[status.kind]}`}>
-          {status.label}
-        </span>
-        <span className="min-w-0 text-muted-foreground">{status.reason}</span>
-        {search.length > 0 && (
-          <span className="text-muted-foreground">
-            Search:{" "}
-            {search.map((link, i) => (
-              <span key={link.site}>
-                {i > 0 && " · "}
-                <a
-                  href={link.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  aria-label={`Search ${link.site} for ${track.title}`}
-                  className="font-medium text-primary-text underline underline-offset-2"
-                >
-                  {link.site}
-                </a>
-              </span>
-            ))}
-          </span>
-        )}
-      </div>
-    );
-  };
+  const renderStatusLine = (track: Track) => (
+    <DownloadStatusLine
+      track={track}
+      status={statusOf(track)}
+      downloadedAt={downloadedAt.get(track.id)}
+    />
+  );
 
   const hdActive = hypedditProgress?.active ?? false;
   const hdTotal = hypedditProgress?.total ?? 0;
@@ -622,6 +546,15 @@ export default function DownloadsPage() {
           title="Downloads"
           description="Find downloadable tracks in your library."
         />
+        {isOwner && (
+          <p className="-mt-2 mb-6 text-sm text-muted-foreground">
+            DJing from Rekordbox?{" "}
+            <Link href="/rekordbox-gaps/" className="font-medium text-primary-text underline underline-offset-2">
+              See which of these you don&rsquo;t have yet
+            </Link>
+            .
+          </p>
+        )}
 
         <div className={hasQueue ? "pb-24 lg:grid lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6 lg:pb-0" : undefined}>
         <div className="min-w-0">

@@ -50,6 +50,9 @@ const PAGES: PageCase[] = [
   // content to wait for.
   { path: "/genre-search/", needsMock: true },
   { path: "/downloads/", needsMock: true },
+  // The e2e user is not on the download allowlist, so this audits the
+  // "not available" state; the owner view is covered by rekordbox-gaps.spec.ts.
+  { path: "/rekordbox-gaps/", needsMock: true },
   { path: "/playlist-keyword-search/", needsMock: true },
   { path: "/playlist-health-check/", needsMock: true },
   // No `ready` in the shared map: /export/ is a static hub of links.

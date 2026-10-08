@@ -13,6 +13,7 @@ const TOOL_SLUGS: Record<string, string> = {
   "/combine": "combine",
   "/library-audit": "library-audit",
   "/downloads": "downloads",
+  "/rekordbox-gaps": "rekordbox-gaps",
   "/export": "export",
   "/export/likes": "export",
   "/export/playlists": "export",
