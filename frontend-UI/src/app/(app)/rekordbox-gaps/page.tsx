@@ -312,13 +312,31 @@ export default function RekordboxGapsPage() {
         {hasQueue && (
           <aside className="hidden lg:block">
             <div className="sticky top-6 rounded-xl border border-border bg-card p-4">
-              <DownloadQueuePanel state={queue.state} summary={queue.summary} onPause={queue.pause} onResume={queue.resume} onClear={queue.clear} />
+              <DownloadQueuePanel
+                state={queue.state}
+                summary={queue.summary}
+                onPause={queue.pause}
+                onResume={queue.resume}
+                onClear={queue.clear}
+                onConfirmSaved={queue.confirmSaved}
+                onRetryChecked={queue.retryChecked}
+                multiOk={queue.multiOk}
+              />
             </div>
           </aside>
         )}
       </div>
       {hasQueue && (
-        <DownloadQueueSheet state={queue.state} summary={queue.summary} onPause={queue.pause} onResume={queue.resume} onClear={queue.clear} />
+        <DownloadQueueSheet
+          state={queue.state}
+          summary={queue.summary}
+          onPause={queue.pause}
+          onResume={queue.resume}
+          onClear={queue.clear}
+          onConfirmSaved={queue.confirmSaved}
+          onRetryChecked={queue.retryChecked}
+          multiOk={queue.multiOk}
+        />
       )}
     </PageContainer>
   );
