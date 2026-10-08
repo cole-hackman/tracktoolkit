@@ -1,13 +1,53 @@
 # STATE
 
 ## Now
-Nothing is in flight. All of the 2026-10-07 work is merged and deployed:
-#58, #60, #61, #59 and #70 (SoundCloud error mapping). Each deploy was verified by reading the
-deployed files on App Service, the served bundle and the restart log, with no
-5xx after restart. **Still unproven live:** the SoundCloud `access` default
-behind #60 — see Next 1.
+Nothing is in flight. On 2026-10-08 every open PR was reconciled: #76, #78,
+#80, #74, #67 and #66 merged and verified live; #82 and #77 (docs) merged;
+#28 and #68 closed as superseded. Branches that hold commits found nowhere
+on `main` are listed under Next, 2026-10-08, and are **kept until Cole
+decides**. **Still unproven live:** the SoundCloud `access` default behind #60
+(see Next 1, 2026-10-07).
 
 ## Just done
+- 2026-10-08 reconciliation (plan: the session's pasted brief; no plan file).
+  Each code PR got the full check on a tree merged with the then-current
+  `main` before it merged. "Live" means the deploy run succeeded, the App
+  Service restarted after it (`Server running` in the docker log), and the
+  check below passed against tracktoolkit.com.
+  - `ac4b6ff` — #76: a page navigation to `<route>/index.txt` 302s to
+    `<route>/`. Live: `Sec-Fetch-Dest: document` → 302 `/dashboard/`, and
+    `RSC: 1` → 200 `no-cache`. Signed in (Cole's browser), "Get started" →
+    `/dashboard/`, no console errors, no `index.txt` navigation. **Why it sat
+    unmerged:** nothing blocked it. Auto-merge is disabled on the repo, there
+    is no branch protection, and CodeRabbit (the only status) was green.
+    Nobody pressed merge.
+  - `685ad48` — #78 (SEO P1, now including #9): per-page canonical/og:url,
+    robots.txt down to `/api/` + `/admin`, no `SearchAction`, legacy hosts
+    one hop, `/404.html` and `/404/` → 404, `<route>/index.html` → 301. Every
+    redirect built from the request path now goes through `sameSitePath()`.
+    #76's redirect turned `//evil.example/index.txt` into
+    `Location: //evil.example/` on bare Express. It did **not** reproduce live
+    (Azure's front end collapses `//` and `\`), so this is defence in depth.
+    The server half took about a minute longer than the files to go live:
+    zip deploy swaps the files before the process restarts.
+  - `3dcc4cc` — #80: a partly created followed-user clone is shown, not
+    hidden. Live: the new copy is in the served `following-library` chunk,
+    `api.js` on App Service carries "Nothing was changed", and there were no
+    errors after the restart. A real clone was not run (it writes playlists).
+  - `39c5175` — #74, rebuilt: its server half had shipped as #72, and its
+    downloads half (stop after the 2nd file until Chrome's multiple-downloads
+    prompt is answered) had only ever been committed on a local `main`. The PR
+    now carries that commit alone. Live: `track-toolkit-multi-download-ok` is
+    in the served Downloads chunk, and the page renders signed in. No queue was
+    run (it downloads files).
+  - `7bc45c0` — #67 (security, rebased): a pagination cursor can only
+    continue its own request; `userUrn` is validated. Live, signed in:
+    `/api/likes/paged` with a genuine `next_href` → 200; with a
+    `/me/followings` cursor → 400 "Invalid next cursor";
+    `/api/users/me%3Fx%3D1/related` → 400.
+  - `b3fdba5` — #66 (rebased twice, retargeted from the merged
+    `feat/download-queue`): `/rekordbox-gaps`. Its live result is under Next.
+  - `fa531a8` #82, `94c4e78` #77: docs only, no deploy.
 - `f03bbdf` + `c9c3b21` — #75 and #81 merged and live: README usage figures
   are now shields.io badges reading the unauthenticated
   `GET /api/stats/public` (`server/routes/stats.js`), with a note that they
@@ -38,6 +78,51 @@ behind #60 — see Next 1.
 - Plan: `~/.claude/plans/pasted-content-id-9479-two-pieces-streamed-abelson.md`.
 
 ## Next
+### 2026-10-08
+1. **Recorded, not fixed (Cole's instruction):**
+   - **Flaky e2e:** the downloads "Download all" queue test fails about 3 in
+     10 runs when the suite runs in parallel, and can fail an otherwise good
+     run (reported by the #80 session). #74 changed those tests (the queue
+     tests now start as an "already allowed" browser, with a 400 ms file gap),
+     so re-measure on current `main` before deciding a fix. In this session's
+     five full e2e runs it did not fail.
+   - **Followed-clone follow-ups from #80:**
+     (a) a create response with no playlist id still triggers a save;
+     (b) a rate-limited (429) save during a clone answers 500;
+     (c) the title prefix is HTML-escaped, so "A & B" becomes "A &amp; B".
+2. **Branches with commits on no `main` — kept until Cole decides:**
+   - `codex-branding` (local + remote): the archived Codex brand candidate.
+     It is referenced by the logo decision below, so it is probably keep-forever.
+   - `feat/hypeddit-runner` (local only, `8592d96`): never push. The repo is
+     public (memory: extension-and-runner-location).
+   - `origin/claude/rekordbox-soundcloud-sync-75ej4r`: #28, closed as
+     superseded by #66.
+   - `origin/claude/track-toolkit-planning-a5wq94`: #27 (closed), the
+     2026-08-10 planning docs.
+   - `origin/feature/ai-library-chat`: #11 (closed). Its 23 commits are on
+     no `main`; the schema still declares its tables.
+3. **Carried from #68 (closed), still open:**
+   - The extension repair (`~/Developer/tracktoolkit-extension-work`, branch
+     `fix/extension-domain`) and the Hypeddit runner are unpushed because the
+     repo is public. Make the repo private, or move both to a private repo.
+   - Add the sideloaded extension's ID to `CHROME_EXTENSION_IDS` (App
+     Service). Until then the API refuses the extension.
+   - First real Hypeddit run:
+     `cd tools/hypeddit-runner && npm install && npm run run-queue -- --queue <file> --limit 5 --headed`
+     (queue from Downloads → Auto-Download → Export queue). No live gate has
+     been run, and the signed-in selectors were only checked logged out. The
+     runner follows for real on Instagram/SoundCloud, where the old extension
+     only clicked through.
+   - `/rekordbox-gaps` was built against a synthetic XML fixture. The first
+     real Rekordbox export is the real test.
+   - The follow-gate on the followed-library routes stays. It was deliberate
+     (15a074e) and protects scope: it stops the OAuth app being used to crawl
+     any account. To lift it, remove `assertFollowedUser` and update
+     `tests/routes/followed-library-authz.test.js`.
+4. `csvEscape` in `frontend-UI/src/lib/csv.ts` does not treat a leading `\r`
+   as dangerous, which the admin feedback CSV does. Low risk; noted while
+   reviewing #66.
+
 ### This session (2026-10-07)
 0. **README badges follow-ups (Cole):** the users badge says 3,119 (people
    who have run an operation), but the landing page says "3,500+ SoundCloud
