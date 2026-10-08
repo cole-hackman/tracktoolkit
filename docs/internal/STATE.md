@@ -8,6 +8,15 @@ deployed files on App Service, the served bundle and the restart log, with no
 behind #60 — see Next 1.
 
 ## Just done
+- `f03bbdf` + `c9c3b21` — #75 and #81 merged and live: README usage figures
+  are now shields.io badges reading the unauthenticated
+  `GET /api/stats/public` (`server/routes/stats.js`), with a note that they
+  update daily. Users = `lifetime_distinct_users` (3,119); tracks = the new
+  running total `lifetime_tracks_processed` (2,746,090 on its first run,
+  14:51 UTC), advanced by a cursor key, `lifetime_tracks_processed_through`.
+  Verified: endpoint 200, the retention log line, and both badges rendering on
+  the GitHub README (screenshot). #81 changed the badges' cache key — see
+  Landmines.
 - `6b08284` — #70 merged and live: SoundCloud errors now carry `status`
   (messages unchanged); GET is retried once on 502/503/504; merge answers 409
   `PLAYLIST_NOT_FOUND` / 502 `SOUNDCLOUD_UNAVAILABLE` instead of 500, and
@@ -30,6 +39,13 @@ behind #60 — see Next 1.
 
 ## Next
 ### This session (2026-10-07)
+0. **README badges follow-ups (Cole):** the users badge says 3,119 (people
+   who have run an operation), but the landing page says "3,500+ SoundCloud
+   users" (registered). That breaks the "never round up past the
+   measurement" decision, so the landing copy needs a decision. Separately,
+   `lifetime_distinct_users` is a high-water mark and will stop rising from
+   about 2027-03-19, when the 365-day oplog purge starts. It needs a
+   cursor-style fix like the tracks total, plus a "seen before" check.
 1. **On Cole's own account only:** open a playlist that has a blocked track
    in the health check. The Blocked row should show; remove it, and SoundCloud
    should lose exactly that track. This is the first live confirmation of the
@@ -298,6 +314,13 @@ behind #60 — see Next 1.
   focus; no focus = identical calls to before — decided by Cole, 2026-10-07.
 
 ## Landmines
+- **README badges cache whatever shields.io first sees.** GitHub renders the
+  README at merge time, before the deploy is up, so a badge pointing at a new
+  endpoint gets a 404, and shields kept serving "resource not found" to
+  GitHub's image proxy for 2.5 h+, past `cacheSeconds`, without re-fetching
+  us. Purging camo (`curl -X PURGE <camo url>`) does not help. Ship the
+  endpoint before the README points at it, or change the badge URL afterwards
+  (#81).
 - **The retention job deletes users by `disconnectedAt` and `lastLoginAt`.**
   `server/lib/retention.js` step 2 deletes every user still stamped
   `disconnectedAt` after 6 days, and step 3 deletes users whose `lastLoginAt`
