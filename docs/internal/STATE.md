@@ -113,8 +113,16 @@ decides**. **Still unproven live:** the SoundCloud `access` default behind #60
    - The extension repair (`~/Developer/tracktoolkit-extension-work`, branch
      `fix/extension-domain`) and the Hypeddit runner are unpushed because the
      repo is public. Make the repo private, or move both to a private repo.
-   - Add the sideloaded extension's ID to `CHROME_EXTENSION_IDS` (App
-     Service). Until then the API refuses the extension.
+   - ~~Add the sideloaded extension's ID to `CHROME_EXTENSION_IDS`~~ Done
+     2026-10-08: `ckjliacjcpfmjdefabdhicmhmpdckccb`, the unpacked load of
+     `~/Developer/tracktoolkit-extension-work` (v1.5.0). Verified: a CORS
+     preflight from that origin gets 204 with credentials, and a POST passes
+     the origin guard (401, no cookie). The ID comes from the folder path, since
+     the manifest has no `key`, so moving the folder changes it. The setting is
+     not in Bicep, so **`infra/deploy.sh` removes it**; re-add it afterwards.
+   - The extension's own Hypeddit stepper no longer matches live gates; the
+     runner is the way to do gates. Its `comment-cleanup.js` does not check
+     which page it is on (see the extension repo's README).
    - First real Hypeddit run:
      `cd tools/hypeddit-runner && npm install && npm run run-queue -- --queue <file> --limit 5 --headed`
      (queue from Downloads → Auto-Download → Export queue). No live gate has
