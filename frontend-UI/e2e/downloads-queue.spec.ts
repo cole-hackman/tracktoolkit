@@ -18,10 +18,19 @@ const CDN = (n: number) => `https://cf-media.sndcdn.com/e2e-${n}.mp3?Policy=test
 
 type LinksAnswer = (urls: string[]) => { status: number; body: unknown };
 
-async function open(page: Page, { owner = true, links }: { owner?: boolean; links?: LinksAnswer } = {}) {
-  await page.addInitScript(() => {
-    (window as unknown as { __TT_QUEUE_GAP_MS: number }).__TT_QUEUE_GAP_MS = 50;
-  });
+async function open(
+  page: Page,
+  { owner = true, links, multiOk = true }: { owner?: boolean; links?: LinksAnswer; multiOk?: boolean } = {},
+) {
+  await page.addInitScript((ok) => {
+    // Short, but not so short that the helper tab's next navigation cancels
+    // the previous file before its response starts (50 ms was flaky; the
+    // real gap is 3 s).
+    (window as unknown as { __TT_QUEUE_GAP_MS: number }).__TT_QUEUE_GAP_MS = 400;
+    // Most tests are about other things: start as a browser that has
+    // already allowed multiple downloads. The check has its own tests.
+    if (ok) localStorage.setItem("track-toolkit-multi-download-ok", "1");
+  }, multiOk);
   await mockApi(page);
   await page.route((url) => url.pathname === "/api/playlists/1", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...FAKE_PLAYLIST_DETAIL, track_count: TRACKS.length, tracks: TRACKS }) }),
@@ -148,4 +157,43 @@ test("on a phone the queue is a bar that opens a sheet — axe-clean, no overflo
   expect(serious(await axe().include('[role="dialog"]').analyze())).toEqual([]);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
+});
+
+test("first time in a browser: after the second file the queue stops and asks whether it saved", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "flow test");
+  const seen = await open(page, { multiOk: false });
+  const popupPromise = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Download all (3)" }).click();
+  const helper = await popupPromise;
+  const downloads: string[] = [];
+  helper.on("download", (d) => downloads.push(d.url()));
+
+  const check = panel(page).getByText("Did “Direct 2” save?");
+  await expect(check).toBeVisible();
+  await expect(panel(page).getByText(/This site is trying to download multiple files/)).toBeVisible();
+  // Only two links were asked for — the third is not fetched (or logged as
+  // downloaded) while Chrome may be holding the second.
+  expect(seen).toEqual([[1, 2].map((n) => `https://api.soundcloud.com/tracks/soundcloud:tracks:${n}/download`)]);
+  await expect(page.locator("#app-live-region-assertive")).toHaveText(/did Direct 2 save\?/);
+
+  await panel(page).getByRole("button", { name: "Yes, it saved — continue" }).click();
+  await expect(panel(page).getByText("3 started · 0 not available · 0 failed")).toBeVisible();
+  await expect.poll(() => downloads.length).toBe(3);
+  expect(await page.evaluate(() => localStorage.getItem("track-toolkit-multi-download-ok"))).toBe("1");
+});
+
+test("“No — try it again” hands the same file to the browser again", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "flow test");
+  const seen = await open(page, { multiOk: false });
+  const popupPromise = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Download all (3)" }).click();
+  const helper = await popupPromise;
+  const downloads: string[] = [];
+  helper.on("download", (d) => downloads.push(d.url()));
+
+  await expect(panel(page).getByText("Did “Direct 2” save?")).toBeVisible();
+  await panel(page).getByRole("button", { name: "No — try it again" }).click();
+  await expect(panel(page).getByText("Did “Direct 2” save?")).toBeVisible();
+  expect(seen[1]).toEqual(["https://api.soundcloud.com/tracks/soundcloud:tracks:2/download"]);
+  await expect.poll(() => downloads.filter((u) => u === CDN(2)).length).toBe(2);
 });

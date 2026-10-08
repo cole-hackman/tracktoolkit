@@ -32,6 +32,14 @@ export interface QueueState {
   running: boolean;
   /** Why the queue stopped, in words, when it stopped before finishing. */
   pausedReason?: string;
+  /**
+   * Waiting for the user to say whether this file saved. Chrome lets a page
+   * start ONE download by itself and asks ("This site is trying to download
+   * multiple files") before the next — a prompt this page cannot see. So,
+   * until the user has confirmed once, the queue stops after the second
+   * file and asks.
+   */
+  check?: { trackId: number; title: string };
 }
 
 export type QueueAction =
@@ -41,7 +49,10 @@ export type QueueAction =
   | { type: "pause"; reason?: string }
   | { type: "clear" }
   | { type: "fetching"; trackIds: number[] }
-  | { type: "result"; trackId: number; status: Exclude<QueueItemStatus, "pending" | "fetching">; reason?: string };
+  | { type: "result"; trackId: number; status: Exclude<QueueItemStatus, "pending" | "fetching">; reason?: string }
+  | { type: "check"; trackId: number; title: string }
+  | { type: "confirmSaved" }
+  | { type: "retryChecked" };
 
 export const EMPTY_QUEUE: QueueState = { version: 1, sourceTitle: "", items: [], running: false };
 export const QUEUE_STORAGE_KEY = "track-toolkit-download-queue";
@@ -66,9 +77,28 @@ export function queueReducer(state: QueueState, action: QueueAction): QueueState
       return { version: 1, sourceTitle: action.sourceTitle, items, running: false };
     }
     case "start":
+      if (state.check) return state; // answer the check first
       return state.items.some((i) => OPEN.includes(i.status))
         ? { ...state, running: true, pausedReason: undefined }
         : { ...state, running: false };
+    case "check":
+      return {
+        ...state,
+        running: false,
+        pausedReason: undefined,
+        check: { trackId: action.trackId, title: action.title },
+        items: state.items.map((i) => (i.status === "fetching" ? { ...i, status: "pending" } : i)),
+      };
+    case "confirmSaved":
+      return { ...state, check: undefined };
+    case "retryChecked": {
+      const id = state.check?.trackId;
+      return {
+        ...state,
+        check: undefined,
+        items: state.items.map((i) => (i.trackId === id ? { ...i, status: "pending", reason: undefined } : i)),
+      };
+    }
     case "pause":
       return {
         ...state,
@@ -136,4 +166,39 @@ export function saveQueue(storage: Pick<Storage, "setItem" | "removeItem"> | nul
   } catch {
     /* storage blocked: the queue still works, it just won't survive a reload */
   }
+}
+
+/**
+ * Whether this browser has already been through Chrome's "download multiple
+ * files" prompt with this site (the user said a second file saved). Per
+ * browser, in localStorage, because it mirrors a per-browser Chrome setting.
+ */
+export const MULTI_DOWNLOAD_OK_KEY = "track-toolkit-multi-download-ok";
+
+export function readMultiDownloadOk(storage: Pick<Storage, "getItem"> | null): boolean {
+  try {
+    return storage?.getItem(MULTI_DOWNLOAD_OK_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function saveMultiDownloadOk(storage: Pick<Storage, "setItem"> | null) {
+  try {
+    storage?.setItem(MULTI_DOWNLOAD_OK_KEY, "1");
+  } catch {
+    /* blocked storage: it will just ask again next time */
+  }
+}
+
+/**
+ * Links to ask for next. Before the user has confirmed the multiple-downloads
+ * prompt once, only up to the second file of the queue, so the check lands
+ * exactly there and no link is fetched (and logged as downloaded) for a file
+ * that would then sit behind the prompt.
+ */
+export function nextBatchSize(state: QueueState, multiDownloadOk: boolean): number {
+  if (multiDownloadOk) return BATCH_SIZE;
+  const started = state.items.filter((i) => i.status === "started").length;
+  return started >= 2 ? BATCH_SIZE : 2 - started;
 }

@@ -11,7 +11,10 @@ import {
   type QueueState,
   loadQueue,
   nextBatch,
+  nextBatchSize,
   queueReducer,
+  readMultiDownloadOk,
+  saveMultiDownloadOk,
   saveQueue,
   summarize,
 } from "@/lib/download-queue";
@@ -47,7 +50,14 @@ const STATUS_TONE: Record<QueueItemStatus, string> = {
 };
 
 const HELPER_TAB_TEXT =
-  "Track Toolkit is handing your downloads to the browser from this tab. Keep it open until the queue finishes.";
+  "Track Toolkit is handing your downloads to the browser from this tab. " +
+  "If Chrome asks whether this site may download multiple files, click Allow — otherwise only the first file saves. " +
+  "Keep this tab open until the queue finishes.";
+
+/** What the check and the running note say about Chrome's prompt. */
+const MULTI_DOWNLOAD_HELP =
+  "Chrome lets a page start one download by itself and asks before the next. Look in the download tab for " +
+  "“This site is trying to download multiple files” and click Allow. You only need to do this once per browser.";
 
 type Announce = (message: string, options?: { assertive?: boolean }) => void;
 
@@ -65,9 +75,15 @@ export function useDownloadQueue(announce: Announce) {
   stateRef.current = state;
   const tabRef = useRef<Window | null>(null);
   const busyRef = useRef(false);
+  // Has this browser been through Chrome's multiple-downloads prompt?
+  const [multiOk, setMultiOk] = useState(false);
+  const multiOkRef = useRef(false);
 
   useEffect(() => {
     dispatch({ type: "load", state: loadQueue(typeof window === "undefined" ? null : window.localStorage) });
+    const ok = readMultiDownloadOk(typeof window === "undefined" ? null : window.localStorage);
+    multiOkRef.current = ok;
+    setMultiOk(ok);
     setHydrated(true);
   }, []);
 
@@ -117,6 +133,21 @@ export function useDownloadQueue(announce: Announce) {
 
   const pause = useCallback(() => dispatch({ type: "pause", reason: "Paused." }), []);
 
+  /** "Yes, it saved": remember it for this browser and carry on. From a click. */
+  const confirmSaved = useCallback(() => {
+    saveMultiDownloadOk(window.localStorage);
+    multiOkRef.current = true;
+    setMultiOk(true);
+    dispatch({ type: "confirmSaved" });
+    resume();
+  }, [resume]);
+
+  /** "No": hand that file to the browser again. From a click. */
+  const retryChecked = useCallback(() => {
+    dispatch({ type: "retryChecked" });
+    resume();
+  }, [resume]);
+
   const clear = useCallback(() => {
     dispatch({ type: "clear" });
     try {
@@ -131,7 +162,9 @@ export function useDownloadQueue(announce: Announce) {
   // which brings the effect back for the next one.
   useEffect(() => {
     if (!state.running || busyRef.current) return;
-    const batch = nextBatch(state);
+    const batch = nextBatch(state, nextBatchSize(state, multiOkRef.current));
+    const startedBefore = state.items.filter((i) => i.status === "started").length;
+    let handed = 0;
     if (batch.length === 0) return;
     busyRef.current = true;
     // Set whenever this batch pauses the queue itself, so the cleanup below
@@ -175,6 +208,16 @@ export function useDownloadQueue(announce: Announce) {
           }
           tab.location.href = result.link;
           dispatch({ type: "result", trackId: item.trackId, status: "started" });
+          handed++;
+          // Chrome may now be holding this file behind its "download
+          // multiple files" prompt, which this page cannot see. Until the
+          // user has confirmed once, stop here and ask.
+          if (!multiOkRef.current && startedBefore + handed >= 2) {
+            stopped = true;
+            dispatch({ type: "check", trackId: item.trackId, title: item.title });
+            announce(`Check the download tab: did ${item.title} save?`, { assertive: true });
+            return;
+          }
           await new Promise((r) => setTimeout(r, fileGapMs()));
         } else if (result?.status === "unavailable") {
           dispatch({ type: "result", trackId: item.trackId, status: "unavailable", reason: result.reason });
@@ -193,7 +236,7 @@ export function useDownloadQueue(announce: Announce) {
       // while busy, so nothing else would bring it back.
       if (!stopped && stateRef.current.running) dispatch({ type: "start" });
     });
-  }, [state]);
+  }, [state, announce]);
 
   // Say when it finishes, once.
   const finishedRef = useRef(false);
@@ -217,7 +260,7 @@ export function useDownloadQueue(announce: Announce) {
     if (!done) finishedRef.current = false;
   }, [summary.total, summary.waiting, summary.started, summary.unavailable, summary.failed, state.running, announce]);
 
-  return { state, summary, begin, resume, pause, clear, hydrated };
+  return { state, summary, begin, resume, pause, clear, confirmSaved, retryChecked, multiOk, hydrated };
 }
 
 interface PanelProps {
@@ -226,11 +269,25 @@ interface PanelProps {
   onPause: () => void;
   onResume: () => void;
   onClear: () => void;
+  onConfirmSaved: () => void;
+  onRetryChecked: () => void;
+  /** This browser already allowed multiple downloads (no running note). */
+  multiOk: boolean;
   /** The panel's own heading; omitted inside the Dialog, which has its title. */
   showHeading?: boolean;
 }
 
-export function DownloadQueuePanel({ state, summary, onPause, onResume, onClear, showHeading = true }: PanelProps) {
+export function DownloadQueuePanel({
+  state,
+  summary,
+  onPause,
+  onResume,
+  onClear,
+  onConfirmSaved,
+  onRetryChecked,
+  multiOk,
+  showHeading = true,
+}: PanelProps) {
   const headingId = useId();
   return (
     <section aria-labelledby={showHeading ? headingId : undefined} aria-label={showHeading ? undefined : "Download queue"} className="space-y-3">
@@ -248,6 +305,23 @@ export function DownloadQueuePanel({ state, summary, onPause, onResume, onClear,
         max={Math.max(summary.total, 1)}
         detail={`${summary.started} started · ${summary.unavailable} not available · ${summary.failed} failed`}
       />
+      {state.check && (
+        <div className="space-y-2 rounded-md border border-border bg-card p-3" role="status">
+          <p className="text-sm font-semibold text-foreground">Did “{state.check.title}” save?</p>
+          <p className="text-sm text-muted-foreground">{MULTI_DOWNLOAD_HELP}</p>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={onConfirmSaved}>
+              Yes, it saved — continue
+            </Button>
+            <Button size="sm" variant="secondary" onClick={onRetryChecked}>
+              No — try it again
+            </Button>
+          </div>
+        </div>
+      )}
+      {state.running && !multiOk && summary.total > 1 && (
+        <p className="text-sm text-muted-foreground">{MULTI_DOWNLOAD_HELP}</p>
+      )}
       {state.pausedReason && !state.running && (
         <p className="text-sm text-warning-text" role="status">
           {state.pausedReason}
@@ -259,7 +333,7 @@ export function DownloadQueuePanel({ state, summary, onPause, onResume, onClear,
             <Pause className="h-4 w-4" aria-hidden="true" />
             Pause
           </Button>
-        ) : summary.waiting > 0 ? (
+        ) : summary.waiting > 0 && !state.check ? (
           <Button size="sm" onClick={onResume}>
             <Play className="h-4 w-4" aria-hidden="true" />
             Resume ({summary.waiting} left)
@@ -297,7 +371,14 @@ export function DownloadQueueSheet(props: Omit<PanelProps, "showHeading">) {
     <>
       <div className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card px-4 py-3 lg:hidden">
         <Button ref={triggerRef} className="w-full" variant="secondary" onClick={() => setOpen(true)}>
-          Download queue · {state.running ? `${summary.waiting} left` : summary.waiting > 0 ? `paused, ${summary.waiting} left` : "finished"}
+          Download queue ·{" "}
+          {state.check
+            ? "check needed"
+            : state.running
+              ? `${summary.waiting} left`
+              : summary.waiting > 0
+                ? `paused, ${summary.waiting} left`
+                : "finished"}
         </Button>
       </div>
       <Dialog open={open} onClose={() => setOpen(false)} title="Download queue" variant="sheet" size="md" returnFocusRef={triggerRef}>
