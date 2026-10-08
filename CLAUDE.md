@@ -910,7 +910,20 @@ None of the three is in the serving path.
 - `www.tracktoolkit.com`, `soundcloudtoolkit.com`, `www.soundcloudtoolkit.com`
   and `api.soundcloudtoolkit.com` are bound to the same app and 301/308 to the
   apex via `server/middleware/legacy-redirect.js` (`LEGACY_REDIRECT_HOSTS`).
-  301 for `GET`/`HEAD`, 308 otherwise, path and query preserved.
+  301 for `GET`/`HEAD`, 308 otherwise, path and query preserved — except
+  that a `GET`/`HEAD` page path gains its trailing slash in the same hop
+  (`/faq` → `https://tracktoolkit.com/faq/`), so an old link reaches the page
+  in one redirect rather than two. Files, `/api/` and `/health` are untouched.
+- `robots.txt` disallows only `/api/` and `/admin`. The signed-in tool pages,
+  `/login`, `/account`, `/feedback` and `/extension/` are kept out of the index
+  by `<meta name="robots" content="noindex">` alone — a `Disallow` would stop
+  crawlers reading that tag. `frontend-UI/e2e/seo.spec.ts` pins this, plus a
+  per-page `og:url`/canonical and no `SearchAction` in the JSON-LD.
+- One URL per page (`server/lib/static-site.js`): `<route>/index.html` 301s to
+  `<route>/`, and a direct request for the 404 page (`/404.html`, `/404/`)
+  answers 404. Every redirect target built from the request path goes through
+  `sameSitePath()`, so `//host/...` can never become an off-site `Location`.
+  `tests/routes/static-404.test.js` pins all three.
 - Session cookie is host-only and `SameSite=Lax` (`SESSION_COOKIE_SAMESITE=lax`);
   the OAuth redirect URI is `https://tracktoolkit.com/api/auth/callback`.
 - Each of the five hostnames has an App Service managed certificate.

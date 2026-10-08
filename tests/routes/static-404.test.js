@@ -21,13 +21,13 @@ let app;
  * way a client that doesn't normalize dot segments (curl --path-as-is,
  * a hand-rolled socket, plenty of libraries) would.
  */
-function rawGet(server, path) {
+function rawGet(server, path, headers = {}) {
   return new Promise((resolve, reject) => {
     const { port } = server.address();
-    const req = http.request({ host: '127.0.0.1', port, path, method: 'GET' }, (res) => {
+    const req = http.request({ host: '127.0.0.1', port, path, method: 'GET', headers }, (res) => {
       let body = '';
       res.on('data', (chunk) => { body += chunk; });
-      res.on('end', () => resolve({ status: res.statusCode, body }));
+      res.on('end', () => resolve({ status: res.statusCode, body, location: res.headers.location }));
     });
     req.on('error', reject);
     req.end();
@@ -46,6 +46,8 @@ beforeAll(async () => {
   mkdirSync(join(buildPath, 'about'));
   writeFileSync(join(buildPath, 'about', 'index.html'), '<html><body>about page</body></html>');
   writeFileSync(join(buildPath, '404.html'), '<html><body>not found</body></html>');
+  mkdirSync(join(buildPath, '404'));
+  writeFileSync(join(buildPath, '404', 'index.html'), '<html><body>not found</body></html>');
 
   outsideFile = join(dirname(buildPath), 'package.json');
   writeFileSync(outsideFile, 'SENTINEL_SHOULD_NEVER_BE_SERVED');
@@ -137,5 +139,52 @@ describe('mountStaticSite directory traversal guard', () => {
   test('malformed percent-encoding is a 400, not a 404 or a crash', async () => {
     const res = await rawGet(server, '/%');
     expect(res.status).toBe(400);
+  });
+});
+
+describe('mountStaticSite gives each page one URL', () => {
+  test.each(['/404.html', '/404', '/404/', '/404/index.html'])(
+    'a direct request for the 404 page (%s) is itself a 404',
+    async (path) => {
+      const res = await request(app).get(path);
+      expect(res.status).toBe(404);
+      expect(res.text).toContain('not found');
+      expect(res.headers['cache-control']).toBe('no-cache');
+    }
+  );
+
+  test.each([
+    ['/index.html', '/'],
+    ['/about/index.html', '/about/'],
+    ['/about/index.html?ref=x', '/about/?ref=x'],
+  ])('%s 301s to %s', async (path, location) => {
+    const res = await request(app).get(path);
+    expect(res.status).toBe(301);
+    expect(res.headers.location).toBe(location);
+  });
+
+  test('the route itself is still served', async () => {
+    const res = await request(app).get('/about/');
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('mountStaticSite never redirects off-site', () => {
+  // A Location of `//evil.example/` is protocol-relative, and browsers read
+  // `/\\evil.example/` the same way. Raw requests, because supertest would
+  // normalize the path before sending it.
+  test.each(['//evil.example/index.html', '/\\evil.example/index.html'])(
+    '%s stays on this site',
+    async (path) => {
+      const res = await rawGet(server, path);
+      expect(res.status).toBe(301);
+      expect(res.location).toBe('/evil.example/');
+    }
+  );
+
+  test('an RSC payload navigation stays on this site', async () => {
+    const res = await rawGet(server, '//evil.example/index.txt', { 'Sec-Fetch-Dest': 'document' });
+    expect(res.status).toBe(302);
+    expect(res.location).toBe('/evil.example/');
   });
 });

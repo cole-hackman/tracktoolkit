@@ -61,13 +61,35 @@ function isPageNavigation(req) {
   return (req.get('accept') || '').includes('text/html');
 }
 
+// `//evil.example/index.txt` is a valid request path, and a Location of
+// `//evil.example/` is protocol-relative: the browser would leave the site.
+// Every redirect built from the request path goes through this.
+function sameSitePath(path) {
+  return '/' + path.replace(/^[/\\]+/, '');
+}
+
 function routeForPayloadNavigation(req) {
   const match = RSC_PAYLOAD.exec(req.path);
   if (!match || !isPageNavigation(req)) return null;
   const query = new URLSearchParams(req.originalUrl.split('?')[1] || '');
   query.delete('_rsc');
   const search = query.toString();
-  return match[1] + (search ? `?${search}` : '');
+  return sameSitePath(match[1]) + (search ? `?${search}` : '');
+}
+
+// The 404 page is only ever a response, never a page of its own: requested
+// directly (`/404.html`, or the `/404/` route the export also writes) it
+// answered 200, so a crawler could index "Page not found" as a real page.
+const NOT_FOUND_PAGE = /^\/404(?:\.html|\/(?:index\.html)?)?$/;
+
+// `<route>/index.html` is the same page as `<route>/` under a second URL.
+const INDEX_HTML = /^(.*\/)index\.html$/;
+
+function routeForIndexHtml(req) {
+  const match = INDEX_HTML.exec(req.path);
+  if (!match) return null;
+  const queryAt = req.originalUrl.indexOf('?');
+  return sameSitePath(match[1]) + (queryAt === -1 ? '' : req.originalUrl.slice(queryAt));
 }
 
 /**
@@ -80,6 +102,9 @@ function routeForPayloadNavigation(req) {
  *      useful instead of soft-404ing. Then a page navigation (not an RSC
  *      fetch) to `<route>/index.txt` -> 302 to `<route>/`, so the App
  *      Router's hard-navigation fallback lands on the page, not raw payload.
+ *      A direct request for the 404 page (`/404.html`, `/404/`) -> 404, and
+ *      `<route>/index.html` -> 301 to `<route>/`, so neither is a second,
+ *      indexable URL. Redirect targets never start with `//`.
  *   2. `express.static` — real files (JS/CSS/images/etc.) served as-is.
  *      (`serve-static`/`send` already confine this to `buildPath`.)
  *   3. `<path>/index.html` — a Next.js static-export route.
@@ -97,6 +122,17 @@ function routeForPayloadNavigation(req) {
  * @param {{ aliases?: Record<string, string> }} [options]
  */
 export function mountStaticSite(app, buildPath, { aliases = {} } = {}) {
+  // `cacheControl: false` stops `send` overwriting the header set here.
+  const htmlOptions = { headers: { 'Cache-Control': REVALIDATE }, cacheControl: false };
+
+  function sendNotFound(res, next) {
+    const notFoundFile = join(buildPath, '404.html');
+    if (existsSync(notFoundFile)) {
+      return res.status(404).sendFile(notFoundFile, htmlOptions);
+    }
+    return next();
+  }
+
   // 1. Redirect aliases (checked before anything else so a stale link never
   // has to depend on there being no real file at that path).
   app.use((req, res, next) => {
@@ -114,6 +150,15 @@ export function mountStaticSite(app, buildPath, { aliases = {} } = {}) {
     const route = routeForPayloadNavigation(req);
     if (route) {
       return res.redirect(302, route);
+    }
+
+    if (NOT_FOUND_PAGE.test(req.path)) {
+      return sendNotFound(res, next);
+    }
+
+    const page = routeForIndexHtml(req);
+    if (page) {
+      return res.redirect(301, page);
     }
     next();
   });
@@ -152,9 +197,6 @@ export function mountStaticSite(app, buildPath, { aliases = {} } = {}) {
       return res.status(400).send('Bad request');
     }
 
-    // `cacheControl: false` stops `send` overwriting the header set here.
-    const htmlOptions = { headers: { 'Cache-Control': REVALIDATE }, cacheControl: false };
-
     if (htmlFile && existsSync(htmlFile)) {
       return res.sendFile(htmlFile, htmlOptions);
     }
@@ -165,12 +207,7 @@ export function mountStaticSite(app, buildPath, { aliases = {} } = {}) {
 
     // Unknown path (including anything resolveWithin rejected as outside
     // buildPath): serve the branded 404 page with a real 404 status.
-    const notFoundFile = join(buildPath, '404.html');
-    if (existsSync(notFoundFile)) {
-      return res.status(404).sendFile(notFoundFile, htmlOptions);
-    }
-
-    next();
+    return sendNotFound(res, next);
   });
 }
 

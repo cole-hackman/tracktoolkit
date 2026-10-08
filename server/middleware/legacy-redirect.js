@@ -42,8 +42,32 @@ export function resolveLegacyRedirect(req, env = process.env) {
   if (!host || host === canonical.hostname.toLowerCase() || !hosts.has(host)) return null;
 
   const method = String(req.method || 'GET').toUpperCase();
-  const status = method === 'GET' || method === 'HEAD' ? 301 : 308;
-  return { status, location: `${canonical.origin}${req.originalUrl || '/'}` };
+  const isRead = method === 'GET' || method === 'HEAD';
+  const target = isRead ? withPageSlash(req.originalUrl || '/') : req.originalUrl || '/';
+  return { status: isRead ? 301 : 308, location: `${canonical.origin}${target}` };
+}
+
+/**
+ * Every page in the static export lives at a trailing-slash URL, so an old
+ * `/faq` would otherwise take a second 301 (`/faq` -> `/faq/`) on the new
+ * host. Files (a dot in the last segment), `/api/` and `/health` are left
+ * exactly as requested.
+ */
+function withPageSlash(url) {
+  const q = url.indexOf('?');
+  const path = q === -1 ? url : url.slice(0, q);
+  const query = q === -1 ? '' : url.slice(q);
+  const lastSegment = path.slice(path.lastIndexOf('/') + 1);
+  if (
+    path.endsWith('/') ||
+    lastSegment.includes('.') ||
+    path.startsWith('/api/') ||
+    path === '/api' ||
+    path === '/health'
+  ) {
+    return url;
+  }
+  return `${path}/${query}`;
 }
 
 export function legacyHostRedirect(req, res, next) {

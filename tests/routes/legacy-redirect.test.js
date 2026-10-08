@@ -44,6 +44,30 @@ describe('legacyHostRedirect', () => {
     expect((await request(app).get('/health').set('Host', 'tracktoolkit.azurewebsites.net')).status).toBe(200);
   });
 
+  // Every page in the static export lives at a trailing-slash URL. Sending
+  // `/faq` to `https://tracktoolkit.com/faq` cost a second 301 to `/faq/`, so
+  // an old link took two hops to reach the page Search Console should credit.
+  test.each([
+    ['/faq', 'https://tracktoolkit.com/faq/'],
+    ['/faq?ref=x', 'https://tracktoolkit.com/faq/?ref=x'],
+    ['/privacy/', 'https://tracktoolkit.com/privacy/'],
+    ['/', 'https://tracktoolkit.com/'],
+    ['/sitemap.xml', 'https://tracktoolkit.com/sitemap.xml'],
+    ['/brand/icon-192.png', 'https://tracktoolkit.com/brand/icon-192.png'],
+    ['/api/auth/me', 'https://tracktoolkit.com/api/auth/me'],
+    ['/health', 'https://tracktoolkit.com/health'],
+  ])('GET %s goes to %s in one hop', async (path, location) => {
+    const res = await request(app).get(path).set('Host', 'soundcloudtoolkit.com');
+    expect(res.status).toBe(301);
+    expect(res.headers.location).toBe(location);
+  });
+
+  test('a non-GET keeps its path exactly, slash or not', async () => {
+    const res = await request(app).post('/api/x').set('Host', 'soundcloudtoolkit.com');
+    expect(res.status).toBe(308);
+    expect(res.headers.location).toBe('https://tracktoolkit.com/api/x');
+  });
+
   test('matches hosts case-insensitively', async () => {
     const res = await request(app).get('/').set('Host', 'WWW.TrackToolkit.com');
     expect(res.status).toBe(301);

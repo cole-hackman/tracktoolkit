@@ -7,32 +7,11 @@ Allow: /
 # Sitemap location
 Sitemap: https://tracktoolkit.com/sitemap.xml
 
-# Disallow authenticated/admin/internal routes from indexing
-Disallow: /admin
+# The API and the admin console are never crawled.
 Disallow: /api/
-Disallow: /login
-Disallow: /extension/
-Disallow: /activity-to-playlist
-Disallow: /batch-link-resolver
-Disallow: /combine
-Disallow: /dashboard
-Disallow: /downloads
-Disallow: /export
-Disallow: /following-library
-Disallow: /following-manager
-Disallow: /genre-search
-Disallow: /growth
-Disallow: /library-audit
-Disallow: /like-manager
-Disallow: /likes-to-playlist
-Disallow: /link-resolver
-Disallow: /playlist-cloner
-Disallow: /playlist-compare
-Disallow: /playlist-health-check
-Disallow: /playlist-keyword-search
-Disallow: /playlist-modifier
-Disallow: /playlist-to-likes
-Disallow: /recently-played
-Disallow: /repost-manager
-Disallow: /account
-Disallow: /feedback
+Disallow: /admin
+
+# The signed-in tool pages, /login, /account, /feedback and /extension/ are
+# deliberately NOT disallowed: each serves <meta name="robots" content="noindex">.
+# A Disallow would stop crawlers reading that tag, so a linked tool page could
+# still be indexed as a bare URL. noindex is the one mechanism for them.

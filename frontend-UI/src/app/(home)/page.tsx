@@ -275,7 +275,7 @@ export default function Home() {
             <div className="mt-8 flex flex-wrap items-center justify-center gap-4 [animation-delay:220ms]">
               <ShimmerButton
                 as="a"
-                href="/login"
+                href="/login/"
                 shimmerColor="#ffb347"
                 background="rgba(255, 85, 0, 1)"
                 borderRadius="8px"
@@ -525,7 +525,7 @@ export default function Home() {
             <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
               <ShimmerButton
                 as="a"
-                href="/login"
+                href="/login/"
                 shimmerColor="#ffb347"
                 background="rgba(255, 85, 0, 1)"
                 borderRadius="8px"
