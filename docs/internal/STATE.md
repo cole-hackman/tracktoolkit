@@ -2,17 +2,17 @@
 
 ## Now
 **Two PRs open, not merged.** #89 (`fix/download-check-unmissable`): the
-multiple-downloads check as an unmissable dialog. #91 (`feat/download-to-folder`,
+multiple-downloads check as an unmissable dialog. #92 (`feat/download-to-folder`,
 stacked on #89, worktree `.worktrees/download-to-folder`): folder mode — the
 Downloads page fetches each file and writes it as "Artist - Title.ext" into a
 folder picked once, so the Chrome prompt and the check never come up. Cole
 chose this over proxying through the server after the CDN proved CORS-open.
-Merging #89 then #91 deploys both. **Still unproven live:** the SoundCloud
+Merging #89 then #92 deploys both. **Still unproven live:** the SoundCloud
 `access` default behind #60 (see Next 1, 2026-10-07), the check dialog, and
 folder mode itself (Next 2026-10-08 item 0).
 
 ## Just done
-- PR #91 — folder mode for the Downloads queue (Cole's filename report).
+- PR #92 — folder mode for the Downloads queue (Cole's filename report).
   **Evidence that decided it:** from the signed-in page, an `<img
   crossorigin="anonymous">` request to a real CDN link exposed
   `responseStatus: 200` in Resource Timing while the no-CORS control exposed
@@ -117,7 +117,7 @@ folder mode itself (Next 2026-10-08 item 0).
 
 ## Next
 ### 2026-10-08
-0. **After #89 and #91 merge (in that order):** on Chrome, Downloads → a
+0. **After #89 and #92 merge (in that order):** on Chrome, Downloads → a
    source with 3+ direct downloads → "Download all" with the box ticked. Expect
    a folder picker, then files landing as "Artist - Title.wav/.mp3" with no
    Chrome prompt and no check; the panel reads "N saved". Then untick the box
@@ -127,7 +127,7 @@ folder mode itself (Next 2026-10-08 item 0).
    Watch for: a wav whose first bytes are not RIFF (named .mp3 by the
    fallback), and link expiry inside a batch of five large wavs (a `failed`
    row saying the link expired — Resume re-asks).
-0b. **Download filenames — decided 2026-10-08: option (b), shipped as #91.**
+0b. **Download filenames — decided 2026-10-08: option (b), shipped as #92.**
    Kept for the record: Two real options:
    (a) stream the file through the server with our own
    `Content-Disposition: "Artist - Title.ext"` (`original_format` is on the
