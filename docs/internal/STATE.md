@@ -1,17 +1,34 @@
 # STATE
 
 ## Now
-**Merging #92 to `main` (it carries #89's commits; #89 itself conflicted with
-`main` on STATE.md and is closed as superseded).** #89: the multiple-downloads
-check as an unmissable dialog. #92 (`feat/download-to-folder`, worktree
-`.worktrees/download-to-folder`): folder mode — the Downloads page fetches
-each file and writes it as "Artist - Title.ext" into a folder picked once, so
-the Chrome prompt and the check never come up. Cole chose this over proxying
-through the server after the CDN proved CORS-open. Live verification is in
-progress (Next 2026-10-08 item 0). **Still unproven live:** the SoundCloud
-`access` default behind #60 (see Next 1, 2026-10-07).
+Nothing is in flight. #92 (folder mode for Downloads, carrying #89's check
+dialog) merged to `main` as `3d062cc` and is **verified live** (see Just
+done). **Still unproven live:** the SoundCloud `access` default behind #60
+(see Next 1, 2026-10-07), and the helper-tab copy of the check question
+(e2e only — the helper tab is `about:blank`, which the Claude tab group
+cannot screenshot).
 
 ## Just done
+- `3d062cc` — #92 merged and **live** (deploy run 37814525234, success
+  17:13 UTC; the CSP half arrived ~1 min after the chunk, as usual). #89 was
+  carried in by #92 (it conflicted with `main` on STATE.md; GitHub marks it
+  merged). Verified on tracktoolkit.com, signed in as Cole, Chrome 1374 px:
+  - **Folder mode:** with `showDirectoryPicker` stubbed to an in-memory
+    handle (the native picker cannot be driven from the tab group), "Download
+    all (1)" on *Franky Type Mix* fetched the real CDN file in-page through
+    the new `connect-src` and CORS — 12,600,423 bytes — and wrote it as
+    `SIÔN - SION - FADE (FREE DOWNLOAD).mp3`; panel "1 saved", row shows the
+    name. **Side effect:** that track is now in Cole's download history
+    (a link was fetched) but is **not on disk** — it still needs a real run.
+  - **Tab flow + check:** box unticked, "Download all (2)" on *crate*: both
+    wavs landed in ~/Downloads under the CDN's names (`A&VJ - Turn Off The
+    Lights (Master).wav`, `LMFAO - … MV1.wav`; Chrome had already allowed
+    multiple downloads for the site), and "Did “Chris Lake - Turn Off The
+    Lights (AEOLUS & Versace James Remix)” save?" appeared as a modal dialog
+    (screenshot). "Yes" set `track-toolkit-multi-download-ok=1` and finished
+    the queue. Cole's browser was left with folder mode on and the queue
+    cleared; the page's helper tab ("Track Toolkit — downloads") is still
+    open in his window.
 - PR #92 — folder mode for the Downloads queue (Cole's filename report).
   **Evidence that decided it:** from the signed-in page, an `<img
   crossorigin="anonymous">` request to a real CDN link exposed
@@ -134,7 +151,10 @@ progress (Next 2026-10-08 item 0). **Still unproven live:** the SoundCloud
 
 ## Next
 ### 2026-10-08
-0. **After #89 and #92 merge (in that order):** on Chrome, Downloads → a
+0. ~~After #89 and #92 merge~~ **Done 2026-10-08 (see Just done).** What
+   remains is a real folder-mode run by Cole: pick a folder in the native
+   dialog, confirm the names land on disk, and re-download *SION - FADE*
+   (its history row exists without a file). Original steps, still valid: on Chrome, Downloads → a
    source with 3+ direct downloads → "Download all" with the box ticked. Expect
    a folder picker, then files landing as "Artist - Title.wav/.mp3" with no
    Chrome prompt and no check; the panel reads "N saved". Then untick the box
