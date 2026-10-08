@@ -9,6 +9,13 @@ decides**. **Still unproven live:** the SoundCloud `access` default behind #60
 (see Next 1, 2026-10-07).
 
 ## Just done
+- `783f997` — #87 merged and live: `/rekordbox-gaps` gets **Export Hypeddit
+  queue**, with Hypeddit gates only for tracks missing or in a different
+  version, in the local runner's format (`hypeddit-queue-not-in-rekordbox.json`).
+  "Download missing" became **Download direct** and now covers a different
+  version too. Live: the served page chunk carries both buttons and the
+  filename. Why: the Downloads export queued all 518 Hypeddit likes, about a
+  third of them already in Cole's Rekordbox.
 - 2026-10-08 reconciliation (plan: the session's pasted brief; no plan file).
   Each code PR got the full check on a tree merged with the then-current
   `main` before it merged. "Live" means the deploy run succeeded, the App
@@ -86,6 +93,12 @@ decides**. **Still unproven live:** the SoundCloud `access` default behind #60
      tests now start as an "already allowed" browser, with a 400 ms file gap),
      so re-measure on current `main` before deciding a fix. In this session's
      five full e2e runs it did not fail.
+   - **Second flaky e2e (seen 2026-10-08 on #87):**
+     `growth-genre.spec.ts:35` failed in two full runs (m430, then m390).
+     axe `color-contrast` fired on a `.text-primary-foreground` button
+     mid-transition (fg #333a4a on bg #ff6b2f, `transition-all duration-200`).
+     It passes 160/160 alone with `--repeat-each=5`. The likely fix is to wait
+     for the transition, or to move the mouse away, before the axe scan.
    - **Followed-clone follow-ups from #80:**
      (a) a create response with no playlist id still triggers a save;
      (b) a rate-limited (429) save during a clone answers 500;
