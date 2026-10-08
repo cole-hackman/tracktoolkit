@@ -1,13 +1,30 @@
 # STATE
 
 ## Now
-**PR #89 open, not merged:** `fix/download-check-unmissable` (19ba9a9). Cole
-reported "Download all" saving two files per run; root cause found live and
-fixed (see Just done). Merging deploys it. **Still unproven live:** the
-SoundCloud `access` default behind #60 (see Next 1, 2026-10-07), and now the
-check dialog itself (verify after merge, Next 2026-10-08 item 0).
+**Two PRs open, not merged.** #89 (`fix/download-check-unmissable`): the
+multiple-downloads check as an unmissable dialog. #91 (`feat/download-to-folder`,
+stacked on #89, worktree `.worktrees/download-to-folder`): folder mode — the
+Downloads page fetches each file and writes it as "Artist - Title.ext" into a
+folder picked once, so the Chrome prompt and the check never come up. Cole
+chose this over proxying through the server after the CDN proved CORS-open.
+Merging #89 then #91 deploys both. **Still unproven live:** the SoundCloud
+`access` default behind #60 (see Next 1, 2026-10-07), the check dialog, and
+folder mode itself (Next 2026-10-08 item 0).
 
 ## Just done
+- PR #91 — folder mode for the Downloads queue (Cole's filename report).
+  **Evidence that decided it:** from the signed-in page, an `<img
+  crossorigin="anonymous">` request to a real CDN link exposed
+  `responseStatus: 200` in Resource Timing while the no-CORS control exposed
+  0, which only happens when the CDN sends `Access-Control-Allow-Origin`; a
+  page `fetch` was blocked only by our own `connect-src`. The CDN link itself
+  is a signed CloudFront URL with an opaque path; the name came from
+  `Content-Disposition`, i.e. the artist's upload filename. New:
+  `lib/download-folder.ts`, `lib/download-file-name.ts`, statuses
+  `saving`/`saved`, `QueueState.mode`, `FOLDER_BATCH_SIZE` 5, the "Save into
+  a folder" box (default on where supported), CSP `connect-src` +
+  `*.sndcdn.com` + `*.cloudfront.net`. Full check in the worktree: 1030 Jest,
+  lint/build/contrast, targeted e2e green; the full-suite result is in the PR.
 - 19ba9a9 — PR #89: the downloads queue's "Did X save?" check is a `Dialog`
   on every width, is painted into the helper tab with working buttons, and
   blocks a restart (`enqueue` while `check` is set is a no-op; "Download all"
@@ -100,11 +117,18 @@ check dialog itself (verify after merge, Next 2026-10-08 item 0).
 
 ## Next
 ### 2026-10-08
-0. **After #89 merges:** in a browser without `track-toolkit-multi-download-ok`,
-   queue 3+ direct downloads. Expect: file 1, Chrome's prompt in the helper
-   tab, file 2, then "Did X save?" both as a dialog on the page and in the
-   helper tab; Yes continues through the rest. Then decide 0b.
-0b. **Download filenames — needs Cole's call.** Two real options:
+0. **After #89 and #91 merge (in that order):** on Chrome, Downloads → a
+   source with 3+ direct downloads → "Download all" with the box ticked. Expect
+   a folder picker, then files landing as "Artist - Title.wav/.mp3" with no
+   Chrome prompt and no check; the panel reads "N saved". Then untick the box
+   and run again in a browser without `track-toolkit-multi-download-ok`:
+   file 1, Chrome's prompt in the helper tab, file 2, "Did X save?" as a
+   dialog on the page and in the helper tab; Yes continues the rest.
+   Watch for: a wav whose first bytes are not RIFF (named .mp3 by the
+   fallback), and link expiry inside a batch of five large wavs (a `failed`
+   row saying the link expired — Resume re-asks).
+0b. **Download filenames — decided 2026-10-08: option (b), shipped as #91.**
+   Kept for the record: Two real options:
    (a) stream the file through the server with our own
    `Content-Disposition: "Artist - Title.ext"` (`original_format` is on the
    track object) — kills the posture "the server never touches the file",
@@ -468,6 +492,14 @@ check dialog itself (verify after merge, Next 2026-10-08 item 0).
   is pending. Do not turn it back into a panel card, and do not let
   "Download all" replace a queue with a pending check.
 
+- **Downloads save through the page, not the server** (2026-10-08). Folder
+  mode fetches the CDN file in the browser and writes it with the File System
+  Access API; the server still only exchanges `download_url` for a link. Do
+  not add a streaming proxy for filenames — the CDN is CORS-open and this
+  keeps "the server never touches the file" true. The helper-tab flow stays
+  as the fallback for browsers without the API and for anyone who unticks
+  the box.
+
 ## Landmines
 - **README badges cache whatever shields.io first sees.** GitHub renders the
   README at merge time, before the deploy is up, so a badge pointing at a new
@@ -656,3 +688,9 @@ check dialog itself (verify after merge, Next 2026-10-08 item 0).
   2026-10-08: hamburger header, queue as the bottom bar). Anything that lives
   only in a `lg:` side column is invisible to him. Verify UI live at his
   width, not just at 1280.
+- **This checkout is shared by concurrent sessions.** On 2026-10-08 another
+  session switched the main checkout to `main` and pulled while this one was
+  editing on a branch; one edited file was lost and the rest landed on the
+  wrong base. Work in a worktree (`.worktrees/<branch>`, node_modules
+  symlinked from the main checkout, `E2E_PORT` of your own) and leave the main
+  checkout alone.

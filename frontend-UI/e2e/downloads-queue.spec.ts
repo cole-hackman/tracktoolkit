@@ -18,19 +18,74 @@ const CDN = (n: number) => `https://cf-media.sndcdn.com/e2e-${n}.mp3?Policy=test
 
 type LinksAnswer = (urls: string[]) => { status: number; body: unknown };
 
+/**
+ * `window.showDirectoryPicker` for the test: "none" removes it (the browser
+ * downloads flow — Chromium has the real one, which would open a native
+ * dialog), "fake" grants an in-memory folder that records every file written
+ * under `window.__ttFolder`, "cancel" is the user closing the picker.
+ */
+type Picker = "none" | "fake" | "cancel";
+type FolderRecord = { picks: number; files: Record<string, string> };
+
 async function open(
   page: Page,
-  { owner = true, links, multiOk = true }: { owner?: boolean; links?: LinksAnswer; multiOk?: boolean } = {},
+  { owner = true, links, multiOk = true, picker = "none" }: { owner?: boolean; links?: LinksAnswer; multiOk?: boolean; picker?: Picker } = {},
 ) {
-  await page.addInitScript((ok) => {
-    // Short, but not so short that the helper tab's next navigation cancels
-    // the previous file before its response starts (50 ms was flaky; the
-    // real gap is 3 s).
-    (window as unknown as { __TT_QUEUE_GAP_MS: number }).__TT_QUEUE_GAP_MS = 400;
-    // Most tests are about other things: start as a browser that has
-    // already allowed multiple downloads. The check has its own tests.
-    if (ok) localStorage.setItem("track-toolkit-multi-download-ok", "1");
-  }, multiOk);
+  await page.addInitScript(
+    ({ ok, picker }) => {
+      // Short, but not so short that the helper tab's next navigation cancels
+      // the previous file before its response starts (50 ms was flaky; the
+      // real gap is 3 s).
+      (window as unknown as { __TT_QUEUE_GAP_MS: number }).__TT_QUEUE_GAP_MS = 400;
+      // Most tests are about other things: start as a browser that has
+      // already allowed multiple downloads. The check has its own tests.
+      if (ok) localStorage.setItem("track-toolkit-multi-download-ok", "1");
+
+      const record: FolderRecord = { picks: 0, files: {} };
+      (window as unknown as { __ttFolder: FolderRecord }).__ttFolder = record;
+      const w = window as unknown as { showDirectoryPicker?: () => Promise<unknown> };
+      if (picker === "none") {
+        Object.defineProperty(w, "showDirectoryPicker", { value: undefined, configurable: true });
+        return;
+      }
+      const decoder = new TextDecoder();
+      const fileHandle = (name: string) => ({
+        kind: "file",
+        name,
+        async createWritable() {
+          let buffer = "";
+          return new WritableStream<Uint8Array>({
+            write(chunk) {
+              buffer += decoder.decode(chunk, { stream: true });
+            },
+            close() {
+              record.files[name] = buffer;
+            },
+          });
+        },
+      });
+      const directory = {
+        kind: "directory",
+        name: "Fake",
+        async getFileHandle(name: string, options?: { create?: boolean }) {
+          if (!(name in record.files)) {
+            if (!options?.create) throw new DOMException("not found", "NotFoundError");
+            record.files[name] = "";
+          }
+          return fileHandle(name);
+        },
+      };
+      Object.defineProperty(w, "showDirectoryPicker", {
+        configurable: true,
+        value: async () => {
+          record.picks++;
+          if (picker === "cancel") throw new DOMException("The user aborted a request.", "AbortError");
+          return directory;
+        },
+      });
+    },
+    { ok: multiOk, picker },
+  );
   await mockApi(page);
   await page.route((url) => url.pathname === "/api/playlists/1", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...FAKE_PLAYLIST_DETAIL, track_count: TRACKS.length, tracks: TRACKS }) }),
@@ -59,7 +114,14 @@ async function open(
     return route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
   });
   await page.context().route("https://cf-media.sndcdn.com/**", (route) =>
-    route.fulfill({ status: 200, contentType: "audio/mpeg", headers: { "content-disposition": 'attachment; filename="track.mp3"' }, body: "ID3" }),
+    route.fulfill({
+      status: 200,
+      contentType: "audio/mpeg",
+      // What SoundCloud's CDN sends: an attachment, and CORS open (verified
+      // live 2026-10-08), which is what lets the page fetch the file itself.
+      headers: { "content-disposition": 'attachment; filename="track.mp3"', "access-control-allow-origin": "*" },
+      body: "ID3",
+    }),
   );
   await page.goto("/downloads/");
   await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
@@ -255,4 +317,86 @@ test("“No — try it again” hands the same file to the browser again", async
   await expect(checkDialog(page)).toBeVisible();
   expect(seen[1]).toEqual(["https://api.soundcloud.com/tracks/soundcloud:tracks:2/download"]);
   await expect.poll(() => downloads.filter((u) => u === CDN(2)).length).toBe(2);
+});
+
+const folderRecord = (page: Page) => page.evaluate(() => (window as unknown as { __ttFolder: FolderRecord }).__ttFolder);
+
+test("Save into a folder: files are fetched by the page and written as “Artist - Title.ext”, with no helper tab and no check", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "flow test");
+  const seen = await open(page, { multiOk: false, picker: "fake" });
+  const folderBox = page.getByRole("checkbox", { name: /Save into a folder/ });
+  await expect(folderBox).toBeChecked();
+  let popups = 0;
+  page.on("popup", () => popups++);
+
+  await page.getByRole("button", { name: "Download all (3)" }).click();
+  await expect(panel(page).getByText("3 saved · 0 not available · 0 failed")).toBeVisible();
+  await expect(page.locator("#app-live-region-assertive")).toHaveText(/Download queue finished: 3 saved/);
+
+  const record = await folderRecord(page);
+  expect(record.picks).toBe(1);
+  expect(Object.keys(record.files)).toEqual(["testartist - Direct 1.mp3", "testartist - Direct 2.mp3", "testartist - Direct 3.mp3"]);
+  expect(Object.values(record.files)).toEqual(["ID3", "ID3", "ID3"]);
+  // Writes are not downloads: Chrome never asks about multiple files, so the
+  // queue never stops to ask either, and no tab was opened.
+  expect(popups).toBe(0);
+  await expect(checkDialog(page)).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.getItem("track-toolkit-multi-download-ok"))).toBeNull();
+  expect(seen).toEqual([[1, 2, 3].map((n) => `https://api.soundcloud.com/tracks/soundcloud:tracks:${n}/download`)]);
+});
+
+test("closing the folder picker queues nothing", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "flow test");
+  const seen = await open(page, { picker: "cancel" });
+  await page.getByRole("button", { name: "Download all (3)" }).click();
+  await expect(page.locator("#app-live-region-assertive")).toHaveText(/No folder chosen/);
+  await expect(panel(page)).toHaveCount(0);
+  expect(seen).toEqual([]);
+  await expect(page.getByRole("button", { name: "Download all (3)" })).toBeEnabled();
+});
+
+test("unticking Save into a folder keeps the browser-download flow, check included", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "flow test");
+  await open(page, { multiOk: false, picker: "fake" });
+  await page.getByRole("checkbox", { name: /Save into a folder/ }).uncheck();
+  const popupPromise = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Download all (3)" }).click();
+  await popupPromise;
+  await expect(checkDialog(page)).toBeVisible();
+  expect((await folderRecord(page)).picks).toBe(0);
+  // The choice is remembered for next time. (The reload brings the pending
+  // check back as a dialog, as it should; dismiss it to reach the page.)
+  await page.reload();
+  await expect(checkDialog(page)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await expect(page.getByRole("checkbox", { name: /Save into a folder/ })).not.toBeChecked();
+});
+
+test("a folder queue that stops (rate limit, reload) asks for the folder again on Resume and carries on", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "flow test");
+  let limited = true;
+  await open(page, {
+    picker: "fake",
+    links: (urls) => ({
+      status: 200,
+      body: limited
+        ? { rateLimited: true, results: urls.map((u, i) => (i === 0 ? { url: u, status: "ok", link: CDN(1) } : { url: u, status: "rate_limited" })) }
+        : { rateLimited: false, results: urls.map((u) => ({ url: u, status: "ok", link: CDN(Number(u.match(/(\d+)\/download/)![1])) })) },
+    }),
+  });
+  await page.getByRole("button", { name: "Download all (3)" }).click();
+  await expect(panel(page).getByText(/SoundCloud asked us to slow down/)).toBeVisible();
+  await expect(panel(page).getByText("1 saved · 0 not available · 0 failed")).toBeVisible();
+
+  await page.reload();
+  limited = false;
+  await expect(panel(page).getByRole("button", { name: "Resume (2 left)" })).toBeVisible();
+  await panel(page).getByRole("button", { name: "Resume (2 left)" }).click();
+  await expect(panel(page).getByText("3 saved · 0 not available · 0 failed")).toBeVisible();
+  // The folder handle does not survive a reload, so Resume picked again; the
+  // in-memory folder does not either, so only the two files after it are there.
+  const record = await folderRecord(page);
+  expect(record.picks).toBe(1);
+  expect(Object.keys(record.files)).toEqual(["testartist - Direct 2.mp3", "testartist - Direct 3.mp3"]);
 });

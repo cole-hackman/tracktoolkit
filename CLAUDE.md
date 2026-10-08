@@ -35,8 +35,10 @@ dependency list. What they do not tell you:
 - **No third-party scripts and no analytics.** No Google Analytics, no Vercel
   Analytics or Speed Insights, no tag manager, no widget CDN, no external font
   host. The CSP in `server/middleware/security.js` names no third-party script,
-  style or font source (only SoundCloud, in `connectSrc`), and
-  `tests/security-headers.test.js` fails if one is added back
+  style or font source (only SoundCloud and its two download CDNs,
+  `*.sndcdn.com` and `*.cloudfront.net`, in `connectSrc` — the Downloads
+  page fetches files from them to save under the track's name), and
+  `tests/security-headers.test.js` fails if anything else is added
 
 ---
 
@@ -216,6 +218,26 @@ only up to the second file and stops on "Did X save?" (`check` in
 reported them all as started (found verifying #65 live). It also depends on
 `download-links` logging **only the tracks that got a link** — log a failed
 track there and it shows up as downloaded.
+
+**Folder mode (the default in Chromium) sidesteps all of the above.** With
+`window.showDirectoryPicker` present and the "Save into a folder" box ticked
+(`track-toolkit-download-folder`, `"0"` = off), "Download all" asks for a
+folder once and the page then `fetch`es each CDN link itself and writes it
+through the File System Access API (`lib/download-folder.ts`) as
+`Artist - Title.ext` (`lib/download-file-name.ts`: the extension is sniffed
+from the first bytes — RIFF/WAVE, ID3 or an MPEG frame sync, fLaC, FORM/AIFF,
+ftyp, OggS — before the headers are trusted, because the CDN says
+`octet-stream` and names the file after the artist's upload). Writes are
+not downloads, so Chrome never shows its multiple-files prompt and the
+check never fires; the queue reports `saved`, not `started`, and shows the
+name used. SoundCloud's CDN is CORS-open (verified live 2026-10-08, which is
+what makes this possible) and the CSP `connectSrc` lists both CDN hosts.
+The directory handle lives in memory only, so after a reload Resume asks for
+the folder again; links are fetched five at a time (`FOLDER_BATCH_SIZE`) so a
+signed link does not expire behind a batch of wavs. The history still records
+"a link was fetched", not "the file is on disk" — a failed save is still
+"downloaded" there. Without the API (Firefox, Safari) or with the box
+unticked, the helper-tab flow below is unchanged.
 
 **The check has to be where the user is looking, and it blocks a restart.**
 Its first version was a card inside the queue panel — the side column on

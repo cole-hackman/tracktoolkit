@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useReducer, useRef, useState } from "rea
 import { Pause, Play, Trash2 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { Button, Dialog, ProgressBar } from "@/components/ui";
+import { pickDownloadFolder, saveToFolder } from "@/lib/download-folder";
 import {
   EMPTY_QUEUE,
   type QueueItem,
@@ -35,6 +36,8 @@ const STATUS_WORDS: Record<QueueItemStatus, string> = {
   pending: "Waiting",
   fetching: "Asking SoundCloud",
   started: "Downloading",
+  saving: "Saving…",
+  saved: "Saved",
   unavailable: "Not available",
   failed: "Failed",
   rate_limited: "Held — rate limit",
@@ -44,6 +47,8 @@ const STATUS_TONE: Record<QueueItemStatus, string> = {
   pending: "text-muted-foreground",
   fetching: "text-muted-foreground",
   started: "text-success-text",
+  saving: "text-muted-foreground",
+  saved: "text-success-text",
   unavailable: "text-muted-foreground",
   failed: "text-destructive-text",
   rate_limited: "text-warning-text",
@@ -173,29 +178,64 @@ export function useDownloadQueue(announce: Announce) {
   const retryCheckedRef = useRef<() => void>(() => {});
 
   const popupBlocked = "Your browser blocked the download tab. Allow pop-ups for this site, then Resume.";
+  const noFolder = "Choose a folder to continue, or clear the queue.";
 
-  /** Call from a click handler: it opens the helper tab. */
+  // Folder mode: the picked directory (memory only — a reload forgets it)
+  // and the save in progress, so Pause can abandon a half-written file.
+  const dirRef = useRef<FileSystemDirectoryHandle | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  /**
+   * Call from a click handler: it opens the helper tab, or — with `folder` —
+   * the directory picker (both need the user's gesture). With the picker
+   * closed, nothing is queued.
+   */
   const begin = useCallback(
-    (sourceTitle: string, items: Array<Omit<QueueItem, "status" | "reason">>) => {
+    async (sourceTitle: string, items: Array<Omit<QueueItem, "status" | "reason" | "fileName">>, options: { folder?: boolean } = {}) => {
       if (stateRef.current.check) {
         // Nothing is replaced until the question is answered — bring it back.
         setCheckOpen(true);
         announce(`Answer first: did ${stateRef.current.check.title} save?`, { assertive: true });
         return;
       }
-      dispatch({ type: "enqueue", sourceTitle, items });
+      const plural = `${items.length} track${items.length === 1 ? "" : "s"}`;
+      if (options.folder) {
+        const dir = await pickDownloadFolder();
+        if (!dir) {
+          announce("No folder chosen — nothing was queued.", { assertive: true });
+          return;
+        }
+        dirRef.current = dir;
+        dispatch({ type: "enqueue", sourceTitle, items, mode: "folder" });
+        dispatch({ type: "start" });
+        announce(`Saving ${plural} from ${sourceTitle} into ${dir.name}`);
+        return;
+      }
+      dispatch({ type: "enqueue", sourceTitle, items, mode: "tab" });
       if (!openHelperTab()) {
         dispatch({ type: "pause", reason: popupBlocked });
         return;
       }
       dispatch({ type: "start" });
-      announce(`Downloading ${items.length} track${items.length === 1 ? "" : "s"} from ${sourceTitle}`);
+      announce(`Downloading ${plural} from ${sourceTitle}`);
     },
     [announce, openHelperTab],
   );
 
-  /** Call from a click handler: it may reopen the helper tab. */
-  const resume = useCallback(() => {
+  /** Call from a click handler: it may reopen the helper tab, or re-ask for the folder. */
+  const resume = useCallback(async () => {
+    if (stateRef.current.mode === "folder") {
+      if (!dirRef.current) {
+        const dir = await pickDownloadFolder();
+        if (!dir) {
+          dispatch({ type: "pause", reason: noFolder });
+          return;
+        }
+        dirRef.current = dir;
+      }
+      dispatch({ type: "start" });
+      return;
+    }
     if (!openHelperTab()) {
       dispatch({ type: "pause", reason: popupBlocked });
       return;
@@ -203,7 +243,10 @@ export function useDownloadQueue(announce: Announce) {
     dispatch({ type: "start" });
   }, [openHelperTab]);
 
-  const pause = useCallback(() => dispatch({ type: "pause", reason: "Paused." }), []);
+  const pause = useCallback(() => {
+    abortRef.current?.abort();
+    dispatch({ type: "pause", reason: "Paused." });
+  }, []);
 
   /** "Yes, it saved": remember it for this browser and carry on. From a click. */
   const confirmSaved = useCallback(() => {
@@ -230,6 +273,8 @@ export function useDownloadQueue(announce: Announce) {
   const dismissCheck = useCallback(() => setCheckOpen(false), []);
 
   const clear = useCallback(() => {
+    abortRef.current?.abort();
+    dirRef.current = null;
     dispatch({ type: "clear" });
     try {
       tabRef.current?.close();
@@ -281,7 +326,27 @@ export function useDownloadQueue(announce: Announce) {
         if (!stateRef.current.running) return; // paused mid-batch; pause put the rest back
         const item = batch[i];
         const result = results[i];
-        if (result?.status === "ok" && typeof result.link === "string") {
+        if (result?.status === "ok" && typeof result.link === "string" && state.mode === "folder") {
+          const dir = dirRef.current;
+          if (!dir) {
+            stop(noFolder);
+            return;
+          }
+          dispatch({ type: "saving", trackId: item.trackId });
+          const controller = new AbortController();
+          abortRef.current = controller;
+          try {
+            const { fileName } = await saveToFolder(dir, item, result.link, controller.signal);
+            dispatch({ type: "result", trackId: item.trackId, status: "saved", fileName });
+          } catch (error) {
+            if (controller.signal.aborted) return; // paused: the pause put it back to waiting
+            const reason = error instanceof Error && error.message ? error.message : "Could not save the file.";
+            dispatch({ type: "result", trackId: item.trackId, status: "failed", reason });
+          } finally {
+            abortRef.current = null;
+          }
+          await new Promise((r) => setTimeout(r, fileGapMs()));
+        } else if (result?.status === "ok" && typeof result.link === "string") {
           const tab = tabRef.current;
           if (!tab || tab.closed) {
             stop("The download tab was closed. Resume to reopen it.");
@@ -331,14 +396,12 @@ export function useDownloadQueue(announce: Announce) {
     const done = summary.total > 0 && summary.waiting === 0 && !state.running;
     if (done && !finishedRef.current) {
       finishedRef.current = true;
-      announce(
-        `Download queue finished: ${summary.started} started, ${summary.unavailable} not available, ${summary.failed} failed`,
-        { assertive: true },
-      );
+      const handed = state.mode === "folder" ? `${summary.saved} saved` : `${summary.started} started`;
+      announce(`Download queue finished: ${handed}, ${summary.unavailable} not available, ${summary.failed} failed`, { assertive: true });
       paintHelperTab(tabRef.current, "Done — every file has been handed to the browser. You can close this tab.");
     }
     if (!done) finishedRef.current = false;
-  }, [summary.total, summary.waiting, summary.started, summary.unavailable, summary.failed, state.running, announce]);
+  }, [summary.total, summary.waiting, summary.started, summary.saved, summary.unavailable, summary.failed, state.running, state.mode, announce]);
 
   return { state, summary, begin, resume, pause, clear, confirmSaved, retryChecked, checkOpen, dismissCheck, multiOk, hydrated };
 }
@@ -422,12 +485,13 @@ export function DownloadQueuePanel({
       )}
       <p className="text-sm text-muted-foreground">
         SoundCloud downloads from <span className="font-medium text-foreground">{state.sourceTitle}</span>
+        {state.mode === "folder" && <> — saved into your folder as “Artist - Title”</>}
       </p>
       <ProgressBar
-        label={state.running ? "Downloading" : summary.waiting > 0 ? "Paused" : "Finished"}
+        label={state.running ? (state.mode === "folder" ? "Saving" : "Downloading") : summary.waiting > 0 ? "Paused" : "Finished"}
         value={summary.finished}
         max={Math.max(summary.total, 1)}
-        detail={`${summary.started} started · ${summary.unavailable} not available · ${summary.failed} failed`}
+        detail={`${state.mode === "folder" ? `${summary.saved} saved` : `${summary.started} started`} · ${summary.unavailable} not available · ${summary.failed} failed`}
       />
       {state.check && (
         <div className="space-y-2 rounded-md border border-border bg-card p-3" role="status">
@@ -443,7 +507,7 @@ export function DownloadQueuePanel({
           </div>
         </div>
       )}
-      {state.running && !multiOk && summary.total > 1 && (
+      {state.running && !multiOk && state.mode !== "folder" && summary.total > 1 && (
         <p className="text-sm text-muted-foreground">{MULTI_DOWNLOAD_HELP}</p>
       )}
       {state.pausedReason && !state.running && (
@@ -471,9 +535,12 @@ export function DownloadQueuePanel({
       <ul className="max-h-80 space-y-1 overflow-y-auto pr-1 text-sm" aria-label="Queued tracks">
         {state.items.map((item) => (
           <li key={item.trackId} className="flex min-w-0 items-baseline justify-between gap-2 border-b border-border py-1.5 last:border-0">
-            <span className="min-w-0 truncate text-foreground">
-              {item.title}
-              <span className="text-muted-foreground"> — {item.artist}</span>
+            <span className="min-w-0 text-foreground">
+              <span className="block truncate">
+                {item.title}
+                <span className="text-muted-foreground"> — {item.artist}</span>
+              </span>
+              {item.fileName && <span className="block truncate text-xs text-muted-foreground">{item.fileName}</span>}
             </span>
             <span className={`shrink-0 text-xs font-medium ${STATUS_TONE[item.status]}`}>
               {STATUS_WORDS[item.status]}

@@ -7,6 +7,7 @@ import { ArrowLeft, Download, Heart, ListMusic, Trash2, X, CheckSquare, Search, 
 import { apiFetch, readApiErrorMessage } from "@/lib/api";
 import { startSoundCloudDownload } from "@/lib/download";
 import { downloadedLabel, downloadedMap } from "@/lib/download-history";
+import { supportsFolderSave } from "@/lib/download-folder";
 import { DownloadCheckDialog, DownloadQueuePanel, DownloadQueueSheet, useDownloadQueue } from "@/components/downloads/DownloadQueue";
 import { DownloadLinkAction, DownloadStatusLine, downloadTone } from "@/components/downloads/DownloadStatus";
 import {
@@ -80,6 +81,8 @@ interface HypedditProgress {
 }
 
 const LIKED_TRACKS_ID = -1;
+/** "0" when the user turned folder mode off; anything else is on. */
+const FOLDER_MODE_KEY = "track-toolkit-download-folder";
 
 const FILTER_LABELS: Record<DownloadFilter, string> = {
   downloadable: "Downloadable",
@@ -413,9 +416,31 @@ export default function DownloadsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queueRunning]);
 
+  // Folder mode (Chromium only): save into a picked folder as "Artist -
+  // Title.ext" instead of handing CDN links to the browser. On by default
+  // where supported; the choice is remembered per browser.
+  const [folderSupported, setFolderSupported] = useState(false);
+  const [folderMode, setFolderMode] = useState(true);
+  useEffect(() => {
+    setFolderSupported(supportsFolderSave());
+    try {
+      setFolderMode(window.localStorage.getItem(FOLDER_MODE_KEY) !== "0");
+    } catch {
+      /* storage blocked: default on */
+    }
+  }, []);
+  const chooseFolderMode = (on: boolean) => {
+    setFolderMode(on);
+    try {
+      window.localStorage.setItem(FOLDER_MODE_KEY, on ? "1" : "0");
+    } catch {
+      /* storage blocked: it will just default on next time */
+    }
+  };
+
   const startQueue = () => {
     if (!selectedSource) return;
-    queue.begin(
+    void queue.begin(
       selectedSource.title,
       directTracks.map((t) => ({
         trackId: t.id,
@@ -423,6 +448,7 @@ export default function DownloadsPage() {
         artist: t.user?.username ?? "",
         downloadUrl: t.download_url!,
       })),
+      { folder: folderSupported && folderMode },
     );
   };
 
@@ -771,6 +797,18 @@ export default function DownloadsPage() {
                     <Download className="w-4 h-4" aria-hidden="true" />
                     {directDownloaded > 0 ? `Download all new (${directTracks.length})` : `Download all (${directTracks.length})`}
                   </Button>
+                )}
+                {isOwner && directTracks.length > 0 && folderSupported && !selectionMode && !hypedditMode && (
+                  <label className="touch-44 flex cursor-pointer items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={folderMode}
+                      onChange={(e) => chooseFolderMode(e.target.checked)}
+                      disabled={queue.state.running}
+                      className="h-6 w-6 shrink-0 cursor-pointer accent-primary"
+                    />
+                    <span className="text-sm text-foreground">Save into a folder I choose, named &ldquo;Artist - Title&rdquo;</span>
+                  </label>
                 )}
                 {isOwner && directTracks.length === 0 && directDownloaded > 0 && !selectionMode && !hypedditMode && (
                   <p className="text-sm text-muted-foreground">
