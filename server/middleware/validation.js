@@ -2,6 +2,7 @@ import { body, param, query, validationResult } from 'express-validator';
 import { parseKeywords } from '../lib/playlist-search.js';
 import { isAllowedDownloadUrl } from '../lib/download-utils.js';
 import { GENRE_FOCUS_SLUGS } from '../lib/genres.js';
+import { isSoundCloudApiUrl } from '../lib/sc-cursor.js';
 
 function validateSoundCloudUrl(value) {
   if (!value) return true;
@@ -332,12 +333,10 @@ export const validateLikesPagination = [
     .withMessage('Next cursor must be a valid URL')
     .custom((value) => {
       if (!value) return true;
-      try {
-        new URL(value);
-        return true;
-      } catch {
-        throw new Error('Next cursor must be a valid URL');
-      }
+      // A SoundCloud API next_href and nothing else; the route also checks it
+      // continues the same request (lib/sc-cursor.js).
+      if (!isSoundCloudApiUrl(value)) throw new Error('Next cursor must be a SoundCloud API URL');
+      return true;
     }),
   handleValidationErrors
 ];
@@ -366,12 +365,10 @@ export const validateFollowedUserLibraryPagination = [
     .withMessage('Next cursor must be a valid URL')
     .custom((value) => {
       if (!value) return true;
-      try {
-        new URL(value);
-        return true;
-      } catch {
-        throw new Error('Next cursor must be a valid URL');
-      }
+      // A SoundCloud API next_href and nothing else; the route also checks it
+      // continues the same request (lib/sc-cursor.js).
+      if (!isSoundCloudApiUrl(value)) throw new Error('Next cursor must be a SoundCloud API URL');
+      return true;
     }),
   handleValidationErrors
 ];
@@ -518,6 +515,17 @@ export const validateDownloadLinks = [
     .bail()
     .custom((value) => isAllowedDownloadUrl(value))
     .withMessage('Each url must be a SoundCloud track download URL'),
+  handleValidationErrors
+];
+
+/**
+ * GET /api/users/:userUrn/related — the segment is interpolated into a
+ * SoundCloud path, so only a numeric id or soundcloud:users:N gets through.
+ */
+export const validateUserUrnParam = [
+  param('userUrn')
+    .matches(/^(?:soundcloud:users:)?\d{1,20}$/)
+    .withMessage('userUrn must be a SoundCloud user id'),
   handleValidationErrors
 ];
 

@@ -33,6 +33,7 @@ import {
 } from '../lib/social-cache.js';
 import { safeError } from '../lib/safe-error.js';
 import { downloadTrackIdFromUrl, isAllowedDownloadRedirectTarget, isAllowedDownloadUrl } from '../lib/download-utils.js';
+import { cursorEndpoint, InvalidCursorError } from '../lib/sc-cursor.js';
 import { buildDashboardSummary } from '../lib/dashboard-summary.js';
 import { summarizeLibraryAudit } from '../lib/library-audit.js';
 import { pagePlaylistsWithTracks } from '../lib/playlist-pages.js';
@@ -70,6 +71,7 @@ import {
   validateBulkUnlike,
   validateBulkLike,
   validateDownloadLinks,
+  validateUserUrnParam,
   validateBulkUnfollow,
   validateBulkUnrepost,
   validateClonePlaylist,
@@ -1152,8 +1154,8 @@ router.get('/likes', authenticateUser, instrumentRead('likes'), async (req, res)
  *
  * These exist so a browse tool can paint its first rows after ONE round trip
  * instead of waiting out a full crawl. `next` is the opaque next_href from the
- * previous page; only its path and query are used, so a caller cannot redirect
- * the request at another host.
+ * previous page, and it may only continue this same collection — host, path
+ * and parameters are checked by cursorEndpoint (lib/sc-cursor.js).
  */
 const PAGED_COLLECTIONS = {
   likes: { endpoint: '/me/likes/tracks', harvest: true },
@@ -1169,9 +1171,7 @@ function pagedCollectionHandler(name) {
       let endpoint;
       if (next) {
         try {
-          const u = new URL(String(next));
-          // Path + query only: never follow the cursor's host.
-          endpoint = `${u.pathname}${u.search}`;
+          endpoint = cursorEndpoint(next, baseEndpoint);
         } catch {
           return res.status(400).json({ error: 'Invalid next cursor' });
         }
@@ -2168,9 +2168,13 @@ async function createOrAppendTrackIds({ accessToken, refreshToken, trackIds, tit
 /** The three followed-user library pages differ only in which client method
  * fetches the page, which normalizer shapes the items, and their log/error
  * wording. Response shape and status mapping are identical across all three. */
-function followedLibraryPageHandler({ fetchPage, normalizeItem, logLabel, forbiddenMessage, failureMessage }) {
+function followedLibraryPageHandler({ fetchPage, cursorPath, normalizeItem, logLabel, forbiddenMessage, failureMessage }) {
   return async (req, res) => {
     try {
+      // A cursor may only continue THIS user's collection — checked before
+      // the follow check and before any SoundCloud call, so a cursor naming
+      // somebody else's likes can't ride on an authorised userId.
+      if (req.query.next) cursorEndpoint(req.query.next, cursorPath(req));
       const targetUser = await assertFollowedUser(req, req.params.userId);
       const page = await fetchPage(req);
       const collection = (Array.isArray(page.collection) ? page.collection : [])
@@ -2189,6 +2193,7 @@ function followedLibraryPageHandler({ fetchPage, normalizeItem, logLabel, forbid
       });
     } catch (error) {
       logger.error(logLabel, safeError(error));
+      if (error instanceof InvalidCursorError) return res.status(400).json({ error: error.message });
       // An upstream SoundCloud 403 also carries status 403; only our own
       // authorization check sets NOT_FOLLOWED.
       const status = error?.code === 'NOT_FOLLOWED' ? 403 : 500;
@@ -2217,6 +2222,7 @@ router.get(
         req.params.userId,
         followedLibraryPageParams(req)
       ),
+    cursorPath: (req) => `/users/${req.params.userId}/likes/tracks`,
     normalizeItem: normalizeTrackForLibraryBrowser,
     logLabel: 'Get followed user liked tracks error:',
     forbiddenMessage: 'Choose a user you follow to browse their public likes.',
@@ -2237,6 +2243,7 @@ router.get(
         req.params.userId,
         followedLibraryPageParams(req)
       ),
+    cursorPath: (req) => `/users/${req.params.userId}/playlists`,
     normalizeItem: normalizePlaylistForLibraryBrowser,
     logLabel: 'Get followed user playlists error:',
     forbiddenMessage: 'Choose a user you follow to browse their public playlists.',
@@ -2257,6 +2264,7 @@ router.get(
         req.params.userId,
         followedLibraryPageParams(req)
       ),
+    cursorPath: (req) => `/users/${req.params.userId}/likes/playlists`,
     normalizeItem: normalizePlaylistForLibraryBrowser,
     logLabel: 'Get followed user liked playlists error:',
     forbiddenMessage: 'Choose a user you follow to browse their public liked playlists.',
@@ -3255,11 +3263,12 @@ router.get('/recently-played', authenticateUser, instrumentRead('recently-played
  * GET /api/users/:userUrn/related
  * Get related artists for a user.
  */
-router.get('/users/:userUrn/related', authenticateUser, async (req, res) => {
+router.get('/users/:userUrn/related', authenticateUser, validateUserUrnParam, async (req, res) => {
   try {
     const { userUrn } = req.params;
-    // userUrn can be a numeric ID or a soundcloud:users:123 format.
-    // We trust soundcloudClient to handle either.
+    // A numeric id or soundcloud:users:N — validateUserUrnParam refuses
+    // anything else, because this segment goes straight into the SoundCloud
+    // path (`../tracks/N/streams?` used to reach another endpoint).
     const payload = await getCachedUserPayload(
       'related-artists',
       req.user.id,

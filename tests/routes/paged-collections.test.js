@@ -69,14 +69,14 @@ describe.each([
     expect(res.status).toBe(400);
   });
 
-  test('a next cursor is followed by path and query only, never by host', async () => {
-    // The cursor is opaque to the client, so it must not be able to point the
-    // authenticated request at somewhere else.
-    await request(app).get(`${route}?next=${encodeURIComponent('https://evil.example.com/steal?token=1')}`);
-    expect(scRequest).toHaveBeenCalledTimes(1);
-    const called = scRequest.mock.calls[0][0];
-    expect(called).not.toContain('evil.example.com');
-    expect(called).toBe('/steal?token=1');
+  test('a next cursor from anywhere but this collection is refused, and SoundCloud is never called', async () => {
+    // This used to assert the cursor's path and query were still sent
+    // (`/steal?token=1`) — i.e. that any SoundCloud path was reachable with
+    // the user's token. A cursor may now only continue this same collection
+    // (lib/sc-cursor.js; tests/routes/cursor-injection.test.js).
+    const res = await request(app).get(`${route}?next=${encodeURIComponent('https://evil.example.com/steal?token=1')}`);
+    expect(res.status).toBe(400);
+    expect(scRequest).not.toHaveBeenCalled();
   });
 
   test('a malformed next cursor is rejected', async () => {
