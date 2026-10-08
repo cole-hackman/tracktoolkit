@@ -1,14 +1,28 @@
 # STATE
 
 ## Now
-Nothing is in flight. On 2026-10-08 every open PR was reconciled: #76, #78,
-#80, #74, #67 and #66 merged and verified live; #82 and #77 (docs) merged;
-#28 and #68 closed as superseded. Branches that hold commits found nowhere
-on `main` are listed under Next, 2026-10-08, and are **kept until Cole
-decides**. **Still unproven live:** the SoundCloud `access` default behind #60
-(see Next 1, 2026-10-07).
+**PR #89 open, not merged:** `fix/download-check-unmissable` (19ba9a9). Cole
+reported "Download all" saving two files per run; root cause found live and
+fixed (see Just done). Merging deploys it. **Still unproven live:** the
+SoundCloud `access` default behind #60 (see Next 1, 2026-10-07), and now the
+check dialog itself (verify after merge, Next 2026-10-08 item 0).
 
 ## Just done
+- 19ba9a9 — PR #89: the downloads queue's "Did X save?" check is a `Dialog`
+  on every width, is painted into the helper tab with working buttons, and
+  blocks a restart (`enqueue` while `check` is set is a no-op; "Download all"
+  re-opens the question). **Evidence:** Cole's saved queue was sitting on the
+  check with `track-toolkit-multi-download-ok` unset; `/api/downloads/history`
+  showed three two-file runs (13:19, 13:31, 13:32 UTC); his window is below
+  `lg`, so the check was behind the grey "check needed" bar. Full check: 1030
+  Jest, lint/build/contrast, e2e 755 passed / 0 failed. Not live.
+- **Filenames (Cole's second report), diagnosed, not changed:** the queue's
+  CDN links are signed CloudFront URLs with an opaque path
+  (`/cmoXVDN1hWhb?Policy=…&Signature=…&Key-Pair-Id=…`); the saved name comes
+  from SoundCloud's `Content-Disposition`, i.e. the artist's original upload
+  filename (`drakeMASTERED_.wav`, `final styler mashup.wav`). A cross-origin
+  navigation cannot be renamed by the page. Options and the open question
+  are under Next, 2026-10-08 item 0b.
 - `783f997` — #87 merged and live: `/rekordbox-gaps` gets **Export Hypeddit
   queue**, with Hypeddit gates only for tracks missing or in a different
   version, in the local runner's format (`hypeddit-queue-not-in-rekordbox.json`).
@@ -86,6 +100,24 @@ decides**. **Still unproven live:** the SoundCloud `access` default behind #60
 
 ## Next
 ### 2026-10-08
+0. **After #89 merges:** in a browser without `track-toolkit-multi-download-ok`,
+   queue 3+ direct downloads. Expect: file 1, Chrome's prompt in the helper
+   tab, file 2, then "Did X save?" both as a dialog on the page and in the
+   helper tab; Yes continues through the rest. Then decide 0b.
+0b. **Download filenames — needs Cole's call.** Two real options:
+   (a) stream the file through the server with our own
+   `Content-Disposition: "Artist - Title.ext"` (`original_format` is on the
+   track object) — kills the posture "the server never touches the file",
+   costs App Service egress (~3 GB per 46 wavs), only for the allow-listed
+   queue; (b) the page fetches each file and writes it with the File System
+   Access API into a folder the user picks once — fixes the name **and**
+   removes Chrome's multiple-downloads prompt (so the check goes away), but
+   Chrome-only and needs two unknowns: CSP `connect-src` for
+   `*.cloudfront.net`/`*.sndcdn.com` (ours) and CORS headers on the CDN
+   (SoundCloud's; untested — the page could not fetch it under the current
+   CSP). Test first: `curl -sI "<cdn link>" | grep -i access-control`. A
+   rename-after script is not viable as-is: the page never learns the saved
+   name (it would need a server-side HEAD per link to capture it).
 1. **Recorded, not fixed (Cole's instruction):**
    - **Flaky e2e:** the downloads "Download all" queue test fails about 3 in
      10 runs when the suite runs in parallel, and can fail an otherwise good
@@ -427,6 +459,15 @@ decides**. **Still unproven live:** the SoundCloud `access` default behind #60
   genre; candidates' genre comes from their tracks). Up to 150 lookups with a
   focus; no focus = identical calls to before — decided by Cole, 2026-10-07.
 
+
+### From the 2026-10-08 downloads session
+- **The multiple-downloads check stays, and it blocks a restart** (2026-10-08).
+  It is the only thing stopping a run from reporting files as "started"
+  that Chrome silently held (#65). It is now a modal on every width plus the
+  same question in the helper tab; `enqueue` and `start` both refuse while it
+  is pending. Do not turn it back into a panel card, and do not let
+  "Download all" replace a queue with a pending check.
+
 ## Landmines
 - **README badges cache whatever shields.io first sees.** GitHub renders the
   README at merge time, before the deploy is up, so a badge pointing at a new
@@ -611,3 +652,7 @@ decides**. **Still unproven live:** the SoundCloud `access` default behind #60
   `code: 'NOT_FOLLOWED'`; check the code, never the status. Any new
   `err.status`-based branch must assume the status may be SoundCloud's.
   `DELETE /api/playlists/:id` deliberately passes it through (#70).
+- **Cole's own browser window is below `lg` on tracktoolkit.com** (seen
+  2026-10-08: hamburger header, queue as the bottom bar). Anything that lives
+  only in a `lg:` side column is invisible to him. Verify UI live at his
+  width, not just at 1280.
