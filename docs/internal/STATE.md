@@ -104,9 +104,10 @@ decides**. **Still unproven live:** the SoundCloud `access` default behind #60
    - `docs/state-2026-10-08` (local + remote): #68 (closed), the stale
      overnight handoff. What was still open in it is item 3 below.
 
-   Everything else was deleted on 2026-10-08: 56 local branches (including
-   ~25 `worktree-agent-*`) and 26 remote branches, each checked to add
-   nothing to `main` (`git merge-tree --write-tree origin/main <branch>` gives
+   Everything else was deleted on 2026-10-08: 50 pre-existing local branches
+   (24 of them `worktree-agent-*`) and 25 pre-existing remote branches, plus
+   the branches this session created. Each was checked to add nothing to
+   `main` (`git merge-tree --write-tree origin/main <branch>` gives
    main's own tree), plus 17 clean worktrees.
 3. **Carried from #68 (closed), still open:**
    - The extension repair (`~/Developer/tracktoolkit-extension-work`, branch
