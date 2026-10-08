@@ -919,6 +919,11 @@ None of the three is in the serving path.
   by `<meta name="robots" content="noindex">` alone — a `Disallow` would stop
   crawlers reading that tag. `frontend-UI/e2e/seo.spec.ts` pins this, plus a
   per-page `og:url`/canonical and no `SearchAction` in the JSON-LD.
+- One URL per page (`server/lib/static-site.js`): `<route>/index.html` 301s to
+  `<route>/`, and a direct request for the 404 page (`/404.html`, `/404/`)
+  answers 404. Every redirect target built from the request path goes through
+  `sameSitePath()`, so `//host/...` can never become an off-site `Location`.
+  `tests/routes/static-404.test.js` pins all three.
 - Session cookie is host-only and `SameSite=Lax` (`SESSION_COOKIE_SAMESITE=lax`);
   the OAuth redirect URI is `https://tracktoolkit.com/api/auth/callback`.
 - Each of the five hostnames has an App Service managed certificate.
