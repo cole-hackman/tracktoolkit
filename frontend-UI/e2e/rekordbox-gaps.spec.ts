@@ -111,6 +111,63 @@ test("the Hypeddit queue has only gates for tracks you don't have, in the runner
   });
 });
 
+test("work through gates: opens each gate in a new tab, remembers done and skipped across a reload", async ({ page, context }) => {
+  // The gates themselves are other sites; stand them in so nothing leaves the test.
+  await context.route(/^https:\/\/(hypeddit|droploud)\.com\//, (route) =>
+    route.fulfill({ status: 200, contentType: "text/html", body: "<title>gate</title>" }),
+  );
+  const likes = [
+    ...LIKES,
+    { ...base, id: 6, title: "John Summit - Lights Go Out (Gate Remix)", user: { username: "Gate Remixer" }, permalink_url: "https://soundcloud.com/g/6", purchase_url: "https://hypeddit.com/g/six" },
+    { ...base, id: 7, title: "RÜFUS DU SOL - INNERBLOOM (MACHAKI REMIX)", user: { username: "MACHAKI" }, permalink_url: "https://soundcloud.com/m/7", purchase_url: "https://hypeddit.com/g/seven" },
+    { ...base, id: 8, title: "Droploud One", user: { username: "Drop Artist" }, permalink_url: "https://soundcloud.com/d/8", purchase_url: "https://droploud.com/x/8" },
+  ];
+  await open(page, { likes });
+  await page.getByLabel("Rekordbox collection (XML)").setInputFiles(XML);
+
+  // Gates for tracks you don't have, any site: 4 and 8 missing, 6 another version. 7 is owned.
+  await page.getByRole("button", { name: "Work through gates (3)" }).click();
+  const panel = page.getByRole("region", { name: "Work through gates" });
+  await expect(panel.getByText("0 of 3 gates")).toBeVisible();
+  await expect(panel.getByText("Gated One", { exact: true })).toBeVisible();
+
+  const popupPromise = page.waitForEvent("popup");
+  await panel.getByRole("button", { name: "Open Hypeddit gate" }).click();
+  const popup = await popupPromise;
+  expect(popup.url()).toBe("https://hypeddit.com/g/four");
+  await popup.close();
+  await expect(panel.getByRole("button", { name: "Open Hypeddit gate again" })).toBeVisible();
+
+  await panel.getByRole("button", { name: "Done — next" }).click();
+  await expect(panel.getByText("John Summit - Lights Go Out (Gate Remix)")).toBeVisible();
+  await panel.getByRole("button", { name: "Skip" }).click();
+  await expect(panel.getByText("Droploud One")).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Open Droploud gate" })).toBeVisible();
+  await expect(panel.getByText("1 done · 1 skipped")).toBeVisible();
+
+  // Progress lives in this browser: a reload (and re-reading the XML) picks up at the same gate.
+  await page.reload();
+  await page.getByLabel("Rekordbox collection (XML)").setInputFiles(XML);
+  await page.getByRole("button", { name: "Work through gates (3)" }).click();
+  await expect(panel.getByText("Droploud One")).toBeVisible();
+  await expect(panel.getByText("2 of 3 gates")).toBeVisible();
+
+  await panel.getByRole("button", { name: "Undo" }).click();
+  await expect(panel.getByText("John Summit - Lights Go Out (Gate Remix)")).toBeVisible();
+  await panel.getByRole("button", { name: "Skip" }).click();
+  await panel.getByRole("button", { name: "Done — next" }).click();
+  await expect(panel.getByText("Every gate is marked. 1 skipped.")).toBeVisible();
+  await panel.getByRole("button", { name: "Go through the skipped ones again" }).click();
+  await expect(panel.getByText("John Summit - Lights Go Out (Gate Remix)")).toBeVisible();
+  await panel.getByRole("button", { name: "Done — next" }).click();
+  await expect(panel.getByText("All 3 gates done.")).toBeVisible();
+
+  const results = await new AxeBuilder({ page }).include("main").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
+  expect(results.violations.filter((v) => v.impact === "serious" || v.impact === "critical")).toEqual([]);
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});
+
 test("a file that isn't a Rekordbox collection export says so", async ({ page }) => {
   await open(page);
   await page.getByLabel("Rekordbox collection (XML)").setInputFiles({ name: "itunes.xml", mimeType: "text/xml", buffer: Buffer.from('<?xml version="1.0"?><plist><dict/></plist>') });

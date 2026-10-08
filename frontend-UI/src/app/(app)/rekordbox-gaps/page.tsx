@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Download, FileDown, Zap } from "lucide-react";
+import { Download, FileDown, ListChecks, Zap } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   Button,
@@ -20,6 +20,7 @@ import {
 } from "@/components/ui";
 import { DownloadQueuePanel, DownloadQueueSheet, useDownloadQueue } from "@/components/downloads/DownloadQueue";
 import { DownloadLinkAction, DownloadStatusLine, downloadTone } from "@/components/downloads/DownloadStatus";
+import { GateWalkthrough, type WalkthroughGate } from "@/components/downloads/GateWalkthrough";
 import { useLikesQuery, usePlaylistDetailQuery, usePlaylistsQuery } from "@/lib/queries";
 import { asArray } from "@/lib/api-shape";
 import { downloadCsv } from "@/lib/csv";
@@ -67,6 +68,7 @@ export default function RekordboxGapsPage() {
   const [visible, setVisible] = useState(ROW_STEP);
   const [rowError, setRowError] = useState<{ id: number; message: string } | null>(null);
   const [downloadingId, setDownloadingId] = useState<number | null>(null);
+  const [walking, setWalking] = useState(false);
 
   const playlistsQuery = usePlaylistsQuery();
   const playlists = useMemo(
@@ -102,6 +104,21 @@ export default function RekordboxGapsPage() {
     () => wanted.filter((r) => r.status.kind === "direct" && r.track.download_url),
     [wanted],
   );
+  // Every free gate (any site) for a track you don't have, for doing by hand.
+  const wantedGates = useMemo<WalkthroughGate[]>(
+    () =>
+      wanted
+        .filter((r) => r.status.kind === "gate" && r.status.href)
+        .map((r) => ({
+          id: r.track.id,
+          title: r.track.title,
+          artist: r.track.user?.username ?? "",
+          site: r.status.site ?? "Free",
+          href: r.status.href!,
+          artworkUrl: r.track.artwork_url,
+        })),
+    [wanted],
+  );
   const wantedHypeddit = useMemo(
     () => wanted.filter((r) => r.status.kind === "gate" && r.status.site === "Hypeddit" && r.track.purchase_url),
     [wanted],
@@ -118,6 +135,7 @@ export default function RekordboxGapsPage() {
       setFileName(file.name);
       setShow("missing");
       setVisible(ROW_STEP);
+      setWalking(false);
       announce(`Read ${parsed.tracks.length.toLocaleString()} tracks from ${file.name}`);
     } catch (error) {
       setCollection(null);
@@ -282,6 +300,12 @@ export default function RekordboxGapsPage() {
                       Download direct ({wantedDirect.length})
                     </Button>
                   )}
+                  {wantedGates.length > 0 && (
+                    <Button variant="secondary" onClick={() => setWalking((w) => !w)} aria-expanded={walking}>
+                      <ListChecks className="h-4 w-4" aria-hidden="true" />
+                      Work through gates ({wantedGates.length})
+                    </Button>
+                  )}
                   {wantedHypeddit.length > 0 && (
                     <Button variant="secondary" onClick={exportHypedditQueue}>
                       <Zap className="h-4 w-4" aria-hidden="true" />
@@ -300,6 +324,9 @@ export default function RekordboxGapsPage() {
                   {counts.missing.toLocaleString()} missing and the {counts["other-version"].toLocaleString()} in a
                   different version. The Hypeddit queue is a file for the local Hypeddit runner.
                 </p>
+              )}
+              {walking && wantedGates.length > 0 && (
+                <GateWalkthrough gates={wantedGates} onClose={() => setWalking(false)} />
               )}
 
               <Card className="p-4 sm:p-6">
