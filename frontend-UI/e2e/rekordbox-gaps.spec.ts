@@ -26,10 +26,10 @@ const LIKES = [
   { ...base, id: 5, title: "Store One", user: { username: "Store Artist" }, permalink_url: "https://soundcloud.com/st/5", purchase_url: "https://www.beatport.com/track/one/5", purchase_title: "Buy" },
 ];
 
-async function open(page: Page, { owner = true } = {}) {
+async function open(page: Page, { owner = true, likes = LIKES } = {}) {
   await mockApi(page);
   await page.route((url) => url.pathname === "/api/likes", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ collection: LIKES, total: LIKES.length }) }),
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ collection: likes, total: likes.length }) }),
   );
   await page.route((url) => url.pathname === "/api/auth/me", (route) =>
     route.fulfill({
@@ -59,7 +59,8 @@ test("reads the export in the browser — nothing is uploaded — and sorts the 
   await expect(page.getByRole("button", { name: "Download Fresh One (free download)" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Download Gated One via Hypeddit" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Buy Store One on Beatport" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Download missing (1)" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download direct (1)" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Export Hypeddit queue (1)" })).toBeVisible();
 
   await page.getByLabel("Show").selectOption("other-version");
   await expect(main.getByText("You have: John Summit - Lights Go Out (Dennett Remix)")).toBeVisible();
@@ -81,6 +82,33 @@ test("the shopping list CSV has every track you don't have, with where to get it
   expect(csv).toContain('"Gate Artist","Gated One","missing","Free gate · Hypeddit","https://hypeddit.com/g/four"');
   expect(csv).toContain('"Store Artist","Store One","missing","Buy · Beatport","https://www.beatport.com/track/one/5"');
   expect(csv).not.toContain("INNERBLOOM");
+});
+
+test("the Hypeddit queue has only gates for tracks you don't have, in the runner's format", async ({ page }) => {
+  const likes = [
+    ...LIKES,
+    // Different version behind a Hypeddit gate: wanted.
+    { ...base, id: 6, title: "John Summit - Lights Go Out (Gate Remix)", user: { username: "Gate Remixer" }, permalink_url: "https://soundcloud.com/g/6", purchase_url: "https://hypeddit.com/g/six" },
+    // Already in Rekordbox, also behind a gate: must not be queued.
+    { ...base, id: 7, title: "RÜFUS DU SOL - INNERBLOOM (MACHAKI REMIX)", user: { username: "MACHAKI" }, permalink_url: "https://soundcloud.com/m/7", purchase_url: "https://hypeddit.com/g/seven" },
+    // Missing, but a Droploud gate: the runner only does Hypeddit.
+    { ...base, id: 8, title: "Droploud One", user: { username: "Drop Artist" }, permalink_url: "https://soundcloud.com/d/8", purchase_url: "https://droploud.com/x/8" },
+  ];
+  await open(page, { likes });
+  await page.getByLabel("Rekordbox collection (XML)").setInputFiles(XML);
+  await expect(page.locator("main").getByText(/Of 8 tracks/)).toBeVisible();
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export Hypeddit queue (2)" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe("hypeddit-queue-not-in-rekordbox.json");
+  const file = JSON.parse(fs.readFileSync(await download.path(), "utf8"));
+  expect(file).toEqual({
+    queue: [
+      { id: 4, title: "Gated One", artist: "Gate Artist", hypedditUrl: "https://hypeddit.com/g/four" },
+      { id: 6, title: "John Summit - Lights Go Out (Gate Remix)", artist: "Gate Remixer", hypedditUrl: "https://hypeddit.com/g/six" },
+    ],
+  });
 });
 
 test("a file that isn't a Rekordbox collection export says so", async ({ page }) => {

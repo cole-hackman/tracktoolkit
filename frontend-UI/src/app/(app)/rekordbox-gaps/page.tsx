@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Download, FileDown } from "lucide-react";
+import { Download, FileDown, Zap } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   Button,
@@ -23,6 +23,7 @@ import { DownloadLinkAction, DownloadStatusLine, downloadTone } from "@/componen
 import { useLikesQuery, usePlaylistDetailQuery, usePlaylistsQuery } from "@/lib/queries";
 import { asArray } from "@/lib/api-shape";
 import { downloadCsv } from "@/lib/csv";
+import { downloadHypedditQueue } from "@/lib/hypeddit-queue";
 import { startSoundCloudDownload } from "@/lib/download";
 import { type DownloadStatus, downloadStatus } from "@/lib/download-status";
 import { type RekordboxCollection, RekordboxParseError, parseRekordboxCollection } from "@/lib/rekordbox-xml";
@@ -94,9 +95,16 @@ export default function RekordboxGapsPage() {
     return c;
   }, [results]);
   const shown = useMemo(() => results.filter((r) => r.match.kind === show), [results, show]);
-  const missingDirect = useMemo(
-    () => results.filter((r) => r.match.kind === "missing" && r.status.kind === "direct" && r.track.download_url),
-    [results],
+  // "Not in Rekordbox" is missing plus a different version: a different remix
+  // is a track you don't have. The same set the shopping list exports.
+  const wanted = useMemo(() => results.filter((r) => r.match.kind !== "owned"), [results]);
+  const wantedDirect = useMemo(
+    () => wanted.filter((r) => r.status.kind === "direct" && r.track.download_url),
+    [wanted],
+  );
+  const wantedHypeddit = useMemo(
+    () => wanted.filter((r) => r.status.kind === "gate" && r.status.site === "Hypeddit" && r.track.purchase_url),
+    [wanted],
   );
 
   const readFile = async (file: File | undefined) => {
@@ -132,9 +140,23 @@ export default function RekordboxGapsPage() {
     if (!result.ok) setRowError({ id: track.id, message: result.error });
   };
 
+  // For the local runner: only gates for tracks you don't have, so it never
+  // follows, likes or emails for a track already in your collection.
+  const exportHypedditQueue = () => {
+    downloadHypedditQueue(
+      wantedHypeddit.map((r) => ({
+        id: r.track.id,
+        title: r.track.title,
+        artist: r.track.user?.username ?? "",
+        hypedditUrl: r.track.purchase_url!,
+      })),
+      "hypeddit-queue-not-in-rekordbox.json",
+    );
+    announce(`Saved a Hypeddit queue of ${wantedHypeddit.length.toLocaleString()} tracks`);
+  };
+
   const exportShoppingList = () => {
-    const rows = results
-      .filter((r) => r.match.kind !== "owned")
+    const rows = wanted
       .map((r) => [
         r.track.user?.username ?? "",
         r.track.title,
@@ -241,12 +263,12 @@ export default function RekordboxGapsPage() {
                   </Select>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {missingDirect.length > 0 && (
+                  {wantedDirect.length > 0 && (
                     <Button
                       onClick={() =>
                         queue.begin(
-                          `${sourceTitle} (missing from Rekordbox)`,
-                          missingDirect.map((r) => ({
+                          `${sourceTitle} (not in Rekordbox)`,
+                          wantedDirect.map((r) => ({
                             trackId: r.track.id,
                             title: r.track.title,
                             artist: r.track.user?.username ?? "",
@@ -257,7 +279,13 @@ export default function RekordboxGapsPage() {
                       disabled={queue.state.running}
                     >
                       <Download className="h-4 w-4" aria-hidden="true" />
-                      Download missing ({missingDirect.length})
+                      Download direct ({wantedDirect.length})
+                    </Button>
+                  )}
+                  {wantedHypeddit.length > 0 && (
+                    <Button variant="secondary" onClick={exportHypedditQueue}>
+                      <Zap className="h-4 w-4" aria-hidden="true" />
+                      Export Hypeddit queue ({wantedHypeddit.length})
                     </Button>
                   )}
                   <Button variant="secondary" onClick={exportShoppingList} disabled={counts.missing + counts["other-version"] === 0}>
@@ -266,6 +294,13 @@ export default function RekordboxGapsPage() {
                   </Button>
                 </div>
               </div>
+              {wanted.length > 0 && (
+                <p className="text-sm text-muted-foreground">
+                  Download, Hypeddit queue and shopping list cover everything not in Rekordbox: the{" "}
+                  {counts.missing.toLocaleString()} missing and the {counts["other-version"].toLocaleString()} in a
+                  different version. The Hypeddit queue is a file for the local Hypeddit runner.
+                </p>
+              )}
 
               <Card className="p-4 sm:p-6">
                 {shown.length === 0 ? (
