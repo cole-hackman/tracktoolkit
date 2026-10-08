@@ -136,7 +136,14 @@ decides**. **Still unproven live:** the SoundCloud `access` default behind #60
    - The extension's own Hypeddit stepper no longer matches live gates; the
      runner is the way to do gates. Its `comment-cleanup.js` does not check
      which page it is on (see the extension repo's README).
-   - First real Hypeddit run:
+   - **2026-10-08: the runner's logins are bot-blocked.** SoundCloud,
+     Instagram and Spotify all refused sign-in in the runner's Playwright
+     Chromium, and SoundCloud blocked the network IP ("We detected unusual
+     activity…"). The runner cannot work without evading bot detection, which
+     is out of scope, so don't add stealth or session-copying workarounds.
+     Gates go manual in Cole's normal browser. A "work through gates"
+     checklist on `/rekordbox-gaps` was offered (it opens links only).
+   - First real Hypeddit run (superseded by the line above):
      `cd tools/hypeddit-runner && npm install && npm run run-queue -- --queue <file> --limit 5 --headed`
      (queue from Downloads → Auto-Download → Export queue). No live gate has
      been run, and the signed-in selectors were only checked logged out. The
