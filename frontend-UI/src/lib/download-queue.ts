@@ -11,7 +11,9 @@
 export type QueueItemStatus =
   | "pending" // waiting
   | "fetching" // its link is being asked for
-  | "started" // the browser was handed the file
+  | "started" // the browser was handed the file (tab mode)
+  | "saving" // the page is writing it into the chosen folder (folder mode)
+  | "saved" // written in full, under `fileName` (folder mode)
   | "unavailable" // SoundCloud says no download (artist turned it off, track gone)
   | "failed" // something else went wrong; reason says what
   | "rate_limited"; // SoundCloud asked to slow down; retried on Resume
@@ -23,13 +25,25 @@ export interface QueueItem {
   downloadUrl: string;
   status: QueueItemStatus;
   reason?: string;
+  /** What the file was saved as, once `saved`. */
+  fileName?: string;
 }
+
+/**
+ * "tab": each CDN link is handed to a helper tab and the browser downloads
+ * it under the CDN's name. "folder": the page fetches the file and writes
+ * it, as "Artist - Title.ext", into a folder picked with the File System
+ * Access API (see lib/download-folder.ts). Absent on queues saved before
+ * the mode existed, which were all tab queues.
+ */
+export type QueueMode = "tab" | "folder";
 
 export interface QueueState {
   version: 1;
   sourceTitle: string;
   items: QueueItem[];
   running: boolean;
+  mode?: QueueMode;
   /** Why the queue stopped, in words, when it stopped before finishing. */
   pausedReason?: string;
   /**
@@ -44,12 +58,13 @@ export interface QueueState {
 
 export type QueueAction =
   | { type: "load"; state: QueueState }
-  | { type: "enqueue"; sourceTitle: string; items: Array<Omit<QueueItem, "status" | "reason">> }
+  | { type: "enqueue"; sourceTitle: string; items: Array<Omit<QueueItem, "status" | "reason" | "fileName">>; mode?: QueueMode }
   | { type: "start" }
   | { type: "pause"; reason?: string }
   | { type: "clear" }
   | { type: "fetching"; trackIds: number[] }
-  | { type: "result"; trackId: number; status: Exclude<QueueItemStatus, "pending" | "fetching">; reason?: string }
+  | { type: "saving"; trackId: number }
+  | { type: "result"; trackId: number; status: Exclude<QueueItemStatus, "pending" | "fetching" | "saving">; reason?: string; fileName?: string }
   | { type: "check"; trackId: number; title: string }
   | { type: "confirmSaved" }
   | { type: "retryChecked" };
@@ -58,14 +73,28 @@ export const EMPTY_QUEUE: QueueState = { version: 1, sourceTitle: "", items: [],
 export const QUEUE_STORAGE_KEY = "track-toolkit-download-queue";
 /** Links asked for per server call — the route accepts at most 10. */
 export const BATCH_SIZE = 10;
+/**
+ * Fewer per call in folder mode: the links are signed and short-lived, and a
+ * batch of wavs is written one after another, so the last link of ten could
+ * expire while the first nine are still being saved.
+ */
+export const FOLDER_BATCH_SIZE = 5;
 
 const OPEN: QueueItemStatus[] = ["pending", "rate_limited"];
+/** Mid-request: put back to waiting by a pause or a reload. */
+const IN_FLIGHT: QueueItemStatus[] = ["fetching", "saving"];
+const backToPending = (items: QueueItem[]) =>
+  items.map((i) => (IN_FLIGHT.includes(i.status) ? { ...i, status: "pending" as const } : i));
 
 export function queueReducer(state: QueueState, action: QueueAction): QueueState {
   switch (action.type) {
     case "load":
       return action.state;
     case "enqueue": {
+      // A check is answered, not restarted around: replacing the queue here
+      // used to drop it, so a browser that never answered stopped at two
+      // files on every run. `start` refuses for the same reason.
+      if (state.check) return state;
       // A new source replaces the queue; the same track is never queued twice.
       const seen = new Set<number>();
       const items: QueueItem[] = [];
@@ -74,7 +103,7 @@ export function queueReducer(state: QueueState, action: QueueAction): QueueState
         seen.add(item.trackId);
         items.push({ ...item, status: "pending" });
       }
-      return { version: 1, sourceTitle: action.sourceTitle, items, running: false };
+      return { version: 1, sourceTitle: action.sourceTitle, items, running: false, mode: action.mode ?? "tab" };
     }
     case "start":
       if (state.check) return state; // answer the check first
@@ -87,7 +116,7 @@ export function queueReducer(state: QueueState, action: QueueAction): QueueState
         running: false,
         pausedReason: undefined,
         check: { trackId: action.trackId, title: action.title },
-        items: state.items.map((i) => (i.status === "fetching" ? { ...i, status: "pending" } : i)),
+        items: backToPending(state.items),
       };
     case "confirmSaved":
       return { ...state, check: undefined };
@@ -105,7 +134,7 @@ export function queueReducer(state: QueueState, action: QueueAction): QueueState
         running: false,
         pausedReason: action.reason,
         // Anything mid-request goes back to waiting, so Resume asks again.
-        items: state.items.map((i) => (i.status === "fetching" ? { ...i, status: "pending" } : i)),
+        items: backToPending(state.items),
       };
     case "clear":
       return EMPTY_QUEUE;
@@ -113,11 +142,13 @@ export function queueReducer(state: QueueState, action: QueueAction): QueueState
       const ids = new Set(action.trackIds);
       return { ...state, items: state.items.map((i) => (ids.has(i.trackId) ? { ...i, status: "fetching", reason: undefined } : i)) };
     }
+    case "saving":
+      return { ...state, items: state.items.map((i) => (i.trackId === action.trackId ? { ...i, status: "saving", reason: undefined } : i)) };
     case "result": {
       const items = state.items.map((i) =>
-        i.trackId === action.trackId ? { ...i, status: action.status, reason: action.reason } : i,
+        i.trackId === action.trackId ? { ...i, status: action.status, reason: action.reason, fileName: action.fileName } : i,
       );
-      const done = !items.some((i) => OPEN.includes(i.status) || i.status === "fetching");
+      const done = !items.some((i) => OPEN.includes(i.status) || IN_FLIGHT.includes(i.status));
       return { ...state, items, running: done ? false : state.running };
     }
   }
@@ -131,10 +162,11 @@ export function nextBatch(state: QueueState, size = BATCH_SIZE): QueueItem[] {
 export function summarize(state: QueueState) {
   const count = (s: QueueItemStatus) => state.items.filter((i) => i.status === s).length;
   const started = count("started");
+  const saved = count("saved");
   const unavailable = count("unavailable");
   const failed = count("failed");
-  const waiting = count("pending") + count("rate_limited") + count("fetching");
-  return { total: state.items.length, started, unavailable, failed, waiting, finished: started + unavailable + failed };
+  const waiting = count("pending") + count("rate_limited") + count("fetching") + count("saving");
+  return { total: state.items.length, started, saved, unavailable, failed, waiting, finished: started + saved + unavailable + failed };
 }
 
 /** Reads the saved queue, tolerating storage that is blocked or corrupt. */
@@ -149,10 +181,10 @@ export function loadQueue(storage: Pick<Storage, "getItem"> | null): QueueState 
     return {
       ...parsed,
       running: false,
-      pausedReason: parsed.items.some((i) => OPEN.includes(i.status) || i.status === "fetching")
+      pausedReason: parsed.items.some((i) => OPEN.includes(i.status) || IN_FLIGHT.includes(i.status))
         ? parsed.pausedReason || "The page was reloaded. Resume to carry on."
         : parsed.pausedReason,
-      items: parsed.items.map((i) => (i.status === "fetching" ? { ...i, status: "pending" } : i)),
+      items: backToPending(parsed.items),
     };
   } catch {
     return EMPTY_QUEUE;
@@ -198,6 +230,8 @@ export function saveMultiDownloadOk(storage: Pick<Storage, "setItem"> | null) {
  * that would then sit behind the prompt.
  */
 export function nextBatchSize(state: QueueState, multiDownloadOk: boolean): number {
+  // Folder mode writes files; it never triggers Chrome's prompt, so no check.
+  if (state.mode === "folder") return FOLDER_BATCH_SIZE;
   if (multiDownloadOk) return BATCH_SIZE;
   const started = state.items.filter((i) => i.status === "started").length;
   return started >= 2 ? BATCH_SIZE : 2 - started;

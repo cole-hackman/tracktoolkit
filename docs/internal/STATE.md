@@ -1,14 +1,45 @@
 # STATE
 
 ## Now
-Nothing is in flight. On 2026-10-08 every open PR was reconciled: #76, #78,
-#80, #74, #67 and #66 merged and verified live; #82 and #77 (docs) merged;
-#28 and #68 closed as superseded. Branches that hold commits found nowhere
-on `main` are listed under Next, 2026-10-08, and are **kept until Cole
-decides**. **Still unproven live:** the SoundCloud `access` default behind #60
-(see Next 1, 2026-10-07).
+**Merging #92 to `main` (it carries #89's commits; #89 itself conflicted with
+`main` on STATE.md and is closed as superseded).** #89: the multiple-downloads
+check as an unmissable dialog. #92 (`feat/download-to-folder`, worktree
+`.worktrees/download-to-folder`): folder mode — the Downloads page fetches
+each file and writes it as "Artist - Title.ext" into a folder picked once, so
+the Chrome prompt and the check never come up. Cole chose this over proxying
+through the server after the CDN proved CORS-open. Live verification is in
+progress (Next 2026-10-08 item 0). **Still unproven live:** the SoundCloud
+`access` default behind #60 (see Next 1, 2026-10-07).
 
 ## Just done
+- PR #92 — folder mode for the Downloads queue (Cole's filename report).
+  **Evidence that decided it:** from the signed-in page, an `<img
+  crossorigin="anonymous">` request to a real CDN link exposed
+  `responseStatus: 200` in Resource Timing while the no-CORS control exposed
+  0, which only happens when the CDN sends `Access-Control-Allow-Origin`; a
+  page `fetch` was blocked only by our own `connect-src`. The CDN link itself
+  is a signed CloudFront URL with an opaque path; the name came from
+  `Content-Disposition`, i.e. the artist's upload filename. New:
+  `lib/download-folder.ts`, `lib/download-file-name.ts`, statuses
+  `saving`/`saved`, `QueueState.mode`, `FOLDER_BATCH_SIZE` 5, the "Save into
+  a folder" box (default on where supported), CSP `connect-src` +
+  `*.sndcdn.com` + `*.cloudfront.net`. Full check in the worktree: 1030 Jest,
+  lint/build/contrast, targeted e2e green; the full-suite result is in the PR.
+- 19ba9a9 — PR #89: the downloads queue's "Did X save?" check is a `Dialog`
+  on every width, is painted into the helper tab with working buttons, and
+  blocks a restart (`enqueue` while `check` is set is a no-op; "Download all"
+  re-opens the question). **Evidence:** Cole's saved queue was sitting on the
+  check with `track-toolkit-multi-download-ok` unset; `/api/downloads/history`
+  showed three two-file runs (13:19, 13:31, 13:32 UTC); his window is below
+  `lg`, so the check was behind the grey "check needed" bar. Full check: 1030
+  Jest, lint/build/contrast, e2e 755 passed / 0 failed. Not live.
+- **Filenames (Cole's second report), diagnosed, not changed:** the queue's
+  CDN links are signed CloudFront URLs with an opaque path
+  (`/cmoXVDN1hWhb?Policy=…&Signature=…&Key-Pair-Id=…`); the saved name comes
+  from SoundCloud's `Content-Disposition`, i.e. the artist's original upload
+  filename (`drakeMASTERED_.wav`, `final styler mashup.wav`). A cross-origin
+  navigation cannot be renamed by the page. Options and the open question
+  are under Next, 2026-10-08 item 0b.
 - `42718c0` + `a398c23` — #93 and #94 merged and live: **Work through gates
   (N)** on `/rekordbox-gaps`. Every free gate (any site) for a track not in
   Rekordbox, one at a time: Open gate (new tab), Done — next, Skip, Undo, and
@@ -103,6 +134,31 @@ decides**. **Still unproven live:** the SoundCloud `access` default behind #60
 
 ## Next
 ### 2026-10-08
+0. **After #89 and #92 merge (in that order):** on Chrome, Downloads → a
+   source with 3+ direct downloads → "Download all" with the box ticked. Expect
+   a folder picker, then files landing as "Artist - Title.wav/.mp3" with no
+   Chrome prompt and no check; the panel reads "N saved". Then untick the box
+   and run again in a browser without `track-toolkit-multi-download-ok`:
+   file 1, Chrome's prompt in the helper tab, file 2, "Did X save?" as a
+   dialog on the page and in the helper tab; Yes continues the rest.
+   Watch for: a wav whose first bytes are not RIFF (named .mp3 by the
+   fallback), and link expiry inside a batch of five large wavs (a `failed`
+   row saying the link expired — Resume re-asks).
+0b. **Download filenames — decided 2026-10-08: option (b), shipped as #92.**
+   Kept for the record: Two real options:
+   (a) stream the file through the server with our own
+   `Content-Disposition: "Artist - Title.ext"` (`original_format` is on the
+   track object) — kills the posture "the server never touches the file",
+   costs App Service egress (~3 GB per 46 wavs), only for the allow-listed
+   queue; (b) the page fetches each file and writes it with the File System
+   Access API into a folder the user picks once — fixes the name **and**
+   removes Chrome's multiple-downloads prompt (so the check goes away), but
+   Chrome-only and needs two unknowns: CSP `connect-src` for
+   `*.cloudfront.net`/`*.sndcdn.com` (ours) and CORS headers on the CDN
+   (SoundCloud's; untested — the page could not fetch it under the current
+   CSP). Test first: `curl -sI "<cdn link>" | grep -i access-control`. A
+   rename-after script is not viable as-is: the page never learns the saved
+   name (it would need a server-side HEAD per link to capture it).
 1. **Recorded, not fixed (Cole's instruction):**
    - **Flaky e2e:** the downloads "Download all" queue test fails about 3 in
      10 runs when the suite runs in parallel, and can fail an otherwise good
@@ -451,6 +507,23 @@ decides**. **Still unproven live:** the SoundCloud `access` default behind #60
   genre; candidates' genre comes from their tracks). Up to 150 lookups with a
   focus; no focus = identical calls to before — decided by Cole, 2026-10-07.
 
+
+### From the 2026-10-08 downloads session
+- **The multiple-downloads check stays, and it blocks a restart** (2026-10-08).
+  It is the only thing stopping a run from reporting files as "started"
+  that Chrome silently held (#65). It is now a modal on every width plus the
+  same question in the helper tab; `enqueue` and `start` both refuse while it
+  is pending. Do not turn it back into a panel card, and do not let
+  "Download all" replace a queue with a pending check.
+
+- **Downloads save through the page, not the server** (2026-10-08). Folder
+  mode fetches the CDN file in the browser and writes it with the File System
+  Access API; the server still only exchanges `download_url` for a link. Do
+  not add a streaming proxy for filenames — the CDN is CORS-open and this
+  keeps "the server never touches the file" true. The helper-tab flow stays
+  as the fallback for browsers without the API and for anyone who unticks
+  the box.
+
 ## Landmines
 - **README badges cache whatever shields.io first sees.** GitHub renders the
   README at merge time, before the deploy is up, so a badge pointing at a new
@@ -635,3 +708,13 @@ decides**. **Still unproven live:** the SoundCloud `access` default behind #60
   `code: 'NOT_FOLLOWED'`; check the code, never the status. Any new
   `err.status`-based branch must assume the status may be SoundCloud's.
   `DELETE /api/playlists/:id` deliberately passes it through (#70).
+- **Cole's own browser window is below `lg` on tracktoolkit.com** (seen
+  2026-10-08: hamburger header, queue as the bottom bar). Anything that lives
+  only in a `lg:` side column is invisible to him. Verify UI live at his
+  width, not just at 1280.
+- **This checkout is shared by concurrent sessions.** On 2026-10-08 another
+  session switched the main checkout to `main` and pulled while this one was
+  editing on a branch; one edited file was lost and the rest landed on the
+  wrong base. Work in a worktree (`.worktrees/<branch>`, node_modules
+  symlinked from the main checkout, `E2E_PORT` of your own) and leave the main
+  checkout alone.

@@ -18,7 +18,19 @@ export const cspDirectives = {
   styleSrc: ["'self'", "'unsafe-inline'"],
   scriptSrc: ["'self'", "'unsafe-inline'"], // unsafe-inline required for Next.js static export bootstrap scripts
   imgSrc: ["'self'", "https:", "data:"], // Allow images from any HTTPS source
-  connectSrc: ["'self'", "https://api.soundcloud.com", "https://secure.soundcloud.com", "https://api-v2.soundcloud.com", "ws://localhost:*", "wss:"],
+  connectSrc: [
+    "'self'",
+    "https://api.soundcloud.com",
+    "https://secure.soundcloud.com",
+    "https://api-v2.soundcloud.com",
+    // The two hosts SoundCloud's download endpoint redirects to (the same
+    // allowlist as isAllowedDownloadRedirectTarget): the Downloads page
+    // fetches the file itself to save it under the track's name.
+    "https://*.sndcdn.com",
+    "https://*.cloudfront.net",
+    "ws://localhost:*",
+    "wss:",
+  ],
   fontSrc: ["'self'", "data:"], // next/font self-hosts the webfonts into the static export
   objectSrc: ["'none'"],
   mediaSrc: ["'self'"],

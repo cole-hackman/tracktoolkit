@@ -64,22 +64,30 @@ describe('Content-Security-Policy directives', () => {
     expect(cspDirectives.fontSrc).toEqual(["'self'", 'data:']);
   });
 
-  test('connectSrc names SoundCloud and localhost as its only hosts', () => {
+  test('connectSrc names SoundCloud, its download CDNs and localhost as its only hosts', () => {
     // Scheme-only sources like `wss:` name no host; everything with a `//`
-    // authority does, and each one has to be SoundCloud or local dev.
+    // authority does, and each one has to be SoundCloud, the two hosts
+    // SoundCloud's download endpoint redirects to (the Downloads page fetches
+    // the file itself to save it under the track's name — the same allowlist
+    // as isAllowedDownloadRedirectTarget), or local dev.
     const hosts = cspDirectives.connectSrc.filter((source) => source.includes('//'));
     expect(hosts.length).toBeGreaterThan(0);
     for (const source of hosts) {
       // Match on the parsed HOSTNAME, not on the source string. An unanchored
       // substring test passes `https://api.soundcloud.com.evil.example`, which
       // is a different site entirely. CSP allows a `:*` port wildcard, which
-      // is not a legal URL port, so drop it before parsing.
-      const { hostname } = new URL(source.replace(/:\*(?=$|\/)/, ''));
+      // is not a legal URL port, and a `*.` host wildcard, which is not a
+      // legal hostname label, so normalise both before parsing.
+      const { hostname } = new URL(source.replace(/:\*(?=$|\/)/, '').replace('//*.', '//wild.'));
       expect({ source, hostname }).toEqual({
         source,
-        hostname: expect.stringMatching(/^(([\w-]+\.)*soundcloud\.com|localhost)$/),
+        hostname: expect.stringMatching(/^(([\w-]+\.)*(soundcloud\.com|sndcdn\.com|cloudfront\.net)|localhost)$/),
       });
     }
+    // Both download CDNs, exactly as the redirect allowlist spells them.
+    expect(cspDirectives.connectSrc).toEqual(
+      expect.arrayContaining(['https://*.sndcdn.com', 'https://*.cloudfront.net']),
+    );
   });
 
   test('securityHeaders is still wired up as middleware', () => {
