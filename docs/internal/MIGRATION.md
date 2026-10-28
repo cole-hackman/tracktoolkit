@@ -24,6 +24,8 @@ Azure Postgres `tracktoolkit` database. Sequence as run:
    `www`/`api` CNAME, three `asuid` TXT. Hostnames bound, managed
    certificates issued; redirects verified: apex/www 301 with path+query,
    `api` POST 308, HTTP→HTTPS→301, one hop to a 200 on tracktoolkit.com.
+   (Superseded: the domain is now at Spaceship and so is its DNS — see
+   "Incident 2026-10-29" below.)
 
 Rollback (until the old stack is decommissioned): restore DigitalOcean's
 `DATABASE_URL`, point the old DNS back at Vercel/DigitalOcean, set the
@@ -573,6 +575,39 @@ That exact string is the credential now; deploy run 35659806107 passed
 login, deploy and smoke test. It survives future renames. Local remote and README clone URL updated;
 `.do/app.yaml` and the DigitalOcean guides still say the old slug and are
 left as retired history.
+
+## Incident 2026-10-29 — soundcloudtoolkit.com stopped resolving
+
+Symptom: the legacy redirect was down. `soundcloudtoolkit.com`, `www.` and
+`api.` returned no A or CNAME at all; tracktoolkit.com was unaffected.
+
+Cause: the domain is registered at Spaceship (the registry's last update on
+it is 2026-09-26 05:17 UTC, which looks like when it moved), but its
+delegation still named Namecheap's `dns1/dns2.registrar-servers.com`. Those
+servers answer REFUSED for the zone: Namecheap dropped the records that step
+6 of the cutover created there. With no DNS, requests never reached the
+Express middleware. The App Service bindings and certificates were intact
+throughout. The outage start is not established; it was noticed on
+2026-10-29.
+
+Fix (DNS only, no deploy):
+- Spaceship → soundcloudtoolkit.com → Nameservers: Spaceship nameservers
+  (`launch1/launch2.spaceship.net`), no auto-import (the old servers had
+  nothing to import). The `.com` delegation picked it up within minutes.
+- Spaceship Advanced DNS, the same records as before: apex A →
+  20.118.138.138, `www` and `api` CNAME → tracktoolkit.azurewebsites.net,
+  `asuid`, `asuid.www`, `asuid.api` TXT → the app's
+  customDomainVerificationId. TTL 30 min.
+
+Verified the same day over HTTPS: all three hosts 301 to
+`https://tracktoolkit.com/` with the path kept (`/faq` → `/faq/` in one
+hop), `api` POST 308, HTTP 301s to HTTPS, and 8.8.8.8 / 1.1.1.1 resolve
+every record. The managed certificates on all three are valid to
+2027-03-20. They renew only while DNS points at the app, so this would
+have broken them at the next renewal.
+
+Both domains now use Spaceship as registrar and as DNS. None of this app's
+DNS is served from Namecheap any more.
 
 ## Blocked
 
