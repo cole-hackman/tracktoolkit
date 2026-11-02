@@ -23,6 +23,7 @@ import {
   Repeat,
   Activity,
   ListMusic,
+  ListOrdered,
   Star,
   ArrowRightLeft,
   FileUp,
@@ -189,6 +190,14 @@ const FEATURES: FeatureCard[] = [
     category: "Discovery & Links",
   },
   {
+    id: "set-to-playlist",
+    title: "Set → Playlist",
+    description: "Paste a DJ set's tracklist and get it as a SoundCloud playlist",
+    icon: ListOrdered,
+    path: "/set-to-playlist",
+    category: "Playlists",
+  },
+  {
     id: "playlist-cloner",
     title: "Playlist Cloner",
     description: "Clone any public playlist to your account",
@@ -247,6 +256,7 @@ const RECENT_LABELS: Record<string, string> = {
   "playlist-cloner": "Playlist Cloner",
   "playlist-compare": "Playlist Compare",
   "genre-search": "Genre Search",
+  "set-to-playlist": "Set → Playlist",
   "repost-manager": "Repost Manager",
   "activity-to-playlist": "Activity → Playlist",
 };
@@ -268,6 +278,7 @@ const RECENT_PATHS: Record<string, string> = {
   "playlist-cloner": "/playlist-cloner",
   "playlist-compare": "/playlist-compare",
   "genre-search": "/genre-search",
+  "set-to-playlist": "/set-to-playlist",
   "repost-manager": "/repost-manager",
   "activity-to-playlist": "/activity-to-playlist",
 };

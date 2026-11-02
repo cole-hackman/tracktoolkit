@@ -1,6 +1,14 @@
 # STATE
 
 ## Now
+`feat/set-to-playlist` (worktree `.worktrees/set-to-playlist`): the
+**Set → Playlist** tool — paste a DJ tracklist (1001Tracklists copy text or
+"Artist - Title" lines), match on SoundCloud, review, create one playlist
+with the tracklist as its description. Tests and e2e pass locally; not
+merged. Before merging: one real playlist on Cole's account to confirm
+SoundCloud's description limit (assumed 4000, `SC_PLAYLIST_DESCRIPTION_MAX`)
+and to measure match quality against both fixtures.
+
 Nothing is in flight. #92 (folder mode for Downloads, carrying #89's check
 dialog) merged to `main` as `3d062cc` and is **verified live** (see Just
 done). **Still unproven live:** the SoundCloud `access` default behind #60
@@ -545,6 +553,17 @@ cannot screenshot).
   the box.
 
 ## Landmines
+- **Never fetch 1001Tracklists from the server.** A plain request (`curl`,
+  Node `fetch`) gets HTTP 401 `www-authenticate: reCaptcha` and an image
+  captcha on every tracklist page (checked 2026-11-02 on two sets); a real
+  browser does not. Getting past that is circumventing a bot check, so
+  `/set-to-playlist` works on text the user pastes from their own browser,
+  and `sourceUrl` is printed in the description, never requested. The
+  SoundCloud id on a 1001TL row only arrives through
+  `/ajax/get_medialink.php` when its player icon is clicked; calling that in
+  bulk (from an extension, say) is undocumented, unlicensed use and may
+  trip the captcha on the user's own session. There is no terms page
+  (`/info/terms.html` is 404); robots.txt allows `/` with `Crawl-delay: 8`.
 - **README badges cache whatever shields.io first sees.** GitHub renders the
   README at merge time, before the deploy is up, so a badge pointing at a new
   endpoint gets a 404, and shields kept serving "resource not found" to

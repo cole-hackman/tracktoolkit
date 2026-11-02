@@ -63,6 +63,8 @@ export const READY: Record<string, ReadyLocator> = {
   "/rekordbox-gaps/": (page) => page.getByText("Not available on this account"),
   // The "no search yet" empty state is not what this page is: the toolbar,
   // the match rows and their badges only exist after a search, so run one.
+  // A paste form; nothing is fetched until the user asks.
+  "/set-to-playlist/": (page) => page.getByRole("textbox", { name: "Tracklist", exact: true }),
   "/playlist-keyword-search/": async (page) => {
     await page.getByLabel("Keywords").fill("sample");
     await page.getByRole("button", { name: "Search", exact: true }).click();

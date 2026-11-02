@@ -188,6 +188,35 @@ writes total and cursor in one transaction.
 CSRF layer has nothing to act on — `rejectUntrustedOrigin` is the whole guard.
 `tests/routes/account-deletion.test.js` asserts a cross-site POST gets 403.
 
+### Set → Playlist (`/set-to-playlist`)
+
+Paste a DJ set's tracklist, get one SoundCloud playlist in set order with the
+tracklist as its description. **1001Tracklists is never fetched** — it
+captchas server requests (see Landmines in `docs/internal/STATE.md`) — so the
+user pastes what their browser shows. `frontend-UI/src/lib/setlist.ts` parses
+that text (1001TL's select-and-copy output, with labels glued onto titles, or
+plain "Artist - Title" lines, or SoundCloud links) and ranks search results
+with `library-match.ts`; `e2e/setlist.unit.spec.ts` pins it against the copied
+text of two real sets in `e2e/fixtures/setlists/`.
+
+- `POST /api/setlists/match` — `authenticateUser, validateSetlistMatch,
+  libraryReadRateLimiter`: ≤25 lines per call, each a `query` (search, 5
+  candidates) or a `url` (resolve). A failing line carries its own `error`.
+- `POST /api/setlists/playlist` — `authenticateUser, validateSetlistPlaylist,
+  heavyOperationRateLimiter`: `{ title, sourceUrl?, tracks: [{ id, label }] }`.
+  Dedupes by id (first position wins), re-reads every id with
+  `getTracksByIds` (default access, so blocked tracks are reported as
+  `missing`), builds the description from the survivors only
+  (`buildSetlistDescription` in `server/lib/setlist.js`), then
+  `createPlaylistFromTrackIds`. Over `SC_PLAYLIST_DESCRIPTION_MAX` (4000,
+  unverified — SoundCloud's spec documents no limit) the description keeps
+  whole lines and ends "…and N more", and `descriptionOmitted` says so.
+
+Validators run **before** the limiters on both, and labels/titles are plain
+text (`stripControlChars`, never `.escape()`). Only a confident, fully
+playable match is pre-selected; a preview or another version waits for the
+user, and every line that is not added is listed with its reason.
+
 ### Downloads
 
 `GET /api/proxy-download` (one click, any user) and `POST /api/downloads/links`

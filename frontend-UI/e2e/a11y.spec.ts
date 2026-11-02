@@ -53,6 +53,7 @@ const PAGES: PageCase[] = [
   // "not available" state; the owner view is covered by rekordbox-gaps.spec.ts.
   { path: "/rekordbox-gaps/", needsMock: true },
   { path: "/playlist-keyword-search/", needsMock: true },
+  { path: "/set-to-playlist/", needsMock: true },
   { path: "/playlist-health-check/", needsMock: true },
   // No `ready` in the shared map: /export/ is a static hub of links.
   { path: "/export/", needsMock: true },
