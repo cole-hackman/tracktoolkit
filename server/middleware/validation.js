@@ -3,6 +3,7 @@ import { parseKeywords } from '../lib/playlist-search.js';
 import { isAllowedDownloadUrl } from '../lib/download-utils.js';
 import { GENRE_FOCUS_SLUGS } from '../lib/genres.js';
 import { isSoundCloudApiUrl } from '../lib/sc-cursor.js';
+import { isAllowedSourceUrl } from '../lib/setlist.js';
 
 function validateSoundCloudUrl(value) {
   if (!value) return true;
@@ -1116,5 +1117,92 @@ export const validateAdminReResolve = [
   body('trackIds.*')
     .isInt({ min: 1 })
     .withMessage('Each trackId must be a positive integer'),
+  handleValidationErrors
+];
+
+/** Entries per POST /api/setlists/match: one SoundCloud read each. */
+export const SETLIST_MATCH_MAX_ENTRIES = 25;
+
+/**
+ * Validation rules for POST /api/setlists/match.
+ *
+ * Mounted BEFORE the rate limiter, like validateFeedback: a cross-site
+ * form-encoded post parses to an empty body and dies here with a 400 instead
+ * of spending the user's read budget. Each entry carries exactly one of
+ * `query` (search text) or `url` (a SoundCloud link to resolve), and both
+ * lead with `.isString()` — express-validator applies a validator
+ * element-wise to an array, so an array would otherwise pass the length check.
+ */
+export const validateSetlistMatch = [
+  body('entries')
+    .isArray({ min: 1, max: SETLIST_MATCH_MAX_ENTRIES })
+    .withMessage(`entries must be an array with 1-${SETLIST_MATCH_MAX_ENTRIES} items`),
+  body('entries.*.position')
+    .isInt({ min: 1, max: 1000 })
+    .withMessage('Each entry needs a position between 1 and 1000')
+    .toInt(),
+  body('entries.*.query')
+    .optional()
+    .isString()
+    .withMessage('query must be a string')
+    .customSanitizer(stripControlChars)
+    .trim()
+    .isLength({ min: 1, max: 300 })
+    .withMessage('query must be 1-300 characters'),
+  body('entries.*.url')
+    .optional()
+    .isString()
+    .withMessage('url must be a string')
+    .trim()
+    .isLength({ min: 1, max: 2048 })
+    .custom((value) => validateSoundCloudUrl(value)),
+  body('entries.*').custom((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('Each entry must be an object');
+    if ((entry.query == null) === (entry.url == null)) throw new Error('Each entry needs exactly one of query or url');
+    return true;
+  }),
+  handleValidationErrors
+];
+
+/**
+ * Validation rules for POST /api/setlists/playlist.
+ *
+ * `label` is the "Artist - Title" line the description prints; it is plain
+ * text for SoundCloud, so it is stripped of control characters and NOT
+ * HTML-escaped (escaping is what turned "A & B" into "A &amp; B" in the
+ * followed-clone titles). `sourceUrl` is printed in the description and never
+ * fetched; only 1001Tracklists hosts are accepted.
+ */
+export const validateSetlistPlaylist = [
+  body('title')
+    .isString()
+    .withMessage('title must be a string')
+    .customSanitizer(stripControlChars)
+    .trim()
+    .isLength({ min: 1, max: 100 })
+    .withMessage('title must be 1-100 characters'),
+  body('sourceUrl')
+    .optional({ nullable: true, checkFalsy: true })
+    .isString()
+    .withMessage('sourceUrl must be a string')
+    .trim()
+    .custom((value) => {
+      if (!isAllowedSourceUrl(value)) throw new Error('sourceUrl must be an https link on 1001tracklists.com or 1001.tl');
+      return true;
+    }),
+  body('tracks')
+    .isArray({ min: 1, max: 500 })
+    .withMessage('tracks must be an array with 1-500 items'),
+  body('tracks.*.id')
+    .isInt({ min: 1 })
+    .withMessage('Each track id must be a positive integer')
+    .toInt(),
+  body('tracks.*.label')
+    .isString()
+    .withMessage('Each track label must be a string')
+    .customSanitizer(stripControlChars)
+    .trim()
+    .isLength({ min: 1, max: 300 })
+    .withMessage('Each track label must be 1-300 characters'),
   handleValidationErrors
 ];

@@ -32,6 +32,7 @@ const TOOL_SLUGS: Record<string, string> = {
   "/playlist-cloner": "playlist-cloner",
   "/playlist-compare": "playlist-compare",
   "/genre-search": "genre-search",
+  "/set-to-playlist": "set-to-playlist",
   "/repost-manager": "repost-manager",
   "/growth": "growth",
   "/recently-played": "recently-played",

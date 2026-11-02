@@ -27,6 +27,7 @@ import {
   Link as LinkIcon,
   ListChecks,
   ListMusic,
+  ListOrdered,
   ListPlus,
   Music,
   Repeat,
@@ -69,6 +70,7 @@ export const NAV: NavEntry[] = [
       { href: "/playlist-compare", label: "Playlist Compare", icon: ArrowRightLeft },
       { href: "/playlist-health-check", label: "Health Check", icon: Stethoscope },
       { href: "/playlist-keyword-search", label: "Keyword Search", icon: Search },
+      { href: "/set-to-playlist", label: "Set → Playlist", icon: ListOrdered },
     ],
   },
   {

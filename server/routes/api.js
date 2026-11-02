@@ -86,7 +86,10 @@ import {
   validatePlaylistTrackSearch,
   validateBulkRemovePlaylistTracks,
   validateBulkAddPlaylistTracks,
+  validateSetlistMatch,
+  validateSetlistPlaylist,
 } from '../middleware/validation.js';
+import { buildSetlistDescription, dedupeTracks } from '../lib/setlist.js';
 const router = express.Router();
 
 // The domain moves with the Azure cutover (docs/internal/MIGRATION.md work item 4): the
@@ -2802,6 +2805,164 @@ router.get('/tracks/search', authenticateUser, validateTrackSearch, async (req, 
   } catch (error) {
     logger.error('Track search error:', safeError(error));
     res.status(500).json({ error: 'Failed to search tracks' });
+  }
+});
+
+/**
+ * What the set → playlist page needs to know about a SoundCloud track to rank
+ * it against a tracklist line and show it for review. `access` is kept so a
+ * 30-second preview is never pre-selected.
+ */
+function setlistCandidate(track) {
+  const id = extractNumericId(track?.id ?? track?.urn);
+  if (id == null) return null;
+  return {
+    id,
+    title: String(track.title ?? ''),
+    user: { username: String(track.user?.username ?? '') },
+    duration: Number.isFinite(track.duration) ? track.duration : null,
+    access: track.access ?? null,
+    permalink_url: track.permalink_url ?? null,
+    artwork_url: track.artwork_url ?? null,
+  };
+}
+
+/**
+ * POST /api/setlists/match
+ *
+ * One SoundCloud read per tracklist line: a search (`query`) or a resolve
+ * (`url`). The tracklist itself was pasted by the user — 1001Tracklists
+ * answers server fetches with a captcha, so nothing here requests that site
+ * (docs/internal/STATE.md, 2026-11-02). Returns up to five candidates per
+ * line; the client ranks them and the user confirms before anything is
+ * written. ≤25 lines per call keeps it a bounded read on the 60/hour library
+ * budget, like /library/audit. A line that fails reports its own error.
+ */
+router.post('/setlists/match', authenticateUser, instrumentRead('setlist-match'), validateSetlistMatch, libraryReadRateLimiter, async (req, res) => {
+  try {
+    const { entries } = req.body;
+    const harvested = [];
+    const results = await mapWithConcurrency(entries, SC_READ_CONCURRENCY, async (entry) => {
+      try {
+        if (entry.url) {
+          const cleaned = sanitizeUrl(entry.url);
+          if (!cleaned) return { position: entry.position, candidates: [], error: 'Not a SoundCloud link' };
+          const resource = await soundcloudClient.resolveAny(req.accessToken, req.refreshToken, cleaned);
+          if (resource?.kind !== 'track') return { position: entry.position, candidates: [], error: 'That link is not a track' };
+          harvested.push(resource);
+          return { position: entry.position, candidates: [setlistCandidate(resource)].filter(Boolean) };
+        }
+        const data = await soundcloudClient.searchTracks(req.accessToken, req.refreshToken, { q: entry.query, limit: 5 });
+        const tracks = Array.isArray(data?.collection) ? data.collection : [];
+        harvested.push(...tracks);
+        return { position: entry.position, candidates: tracks.map(setlistCandidate).filter(Boolean) };
+      } catch (error) {
+        const kind = classifyScError(error);
+        logger.warn('Setlist match line failed', { kind, ...safeError(error) });
+        const message = kind === 'not_found'
+          ? 'Not found on SoundCloud, or private'
+          : 'SoundCloud did not answer for this line — try matching again';
+        return { position: entry.position, candidates: [], error: message };
+      }
+    });
+    harvestTracks(harvested);
+    res.json({ results });
+  } catch (error) {
+    logger.error('Setlist match error:', safeError(error));
+    res.status(500).json({ error: 'Failed to match the tracklist' });
+  }
+});
+
+/**
+ * POST /api/setlists/playlist
+ *
+ * Creates one playlist from the tracks the user confirmed, in set order, with
+ * the tracklist ("Artist - Title" per line) as its description. The
+ * description lists exactly what went in: duplicates keep their first
+ * position, and every id is re-read first so a track deleted since the review
+ * is reported as missing instead of named in a description it is not in.
+ */
+router.post('/setlists/playlist', authenticateUser, validateSetlistPlaylist, heavyOperationRateLimiter, async (req, res) => {
+  let writeAttempted = false;
+  try {
+    const { title, sourceUrl, tracks } = req.body;
+    const { kept, duplicates } = dedupeTracks(tracks);
+
+    // Default access (playable,preview): a track blocked where the user is
+    // cannot be played from their playlist, so it is reported, not added.
+    const found = new Map();
+    const chunks = splitIntoChunks(kept.map((t) => t.id), 50);
+    await mapWithConcurrency(chunks, SC_READ_CONCURRENCY, async (ids) => {
+      const got = await soundcloudClient.getTracksByIds(req.accessToken, req.refreshToken, ids);
+      for (const track of got) {
+        const id = extractNumericId(track?.id ?? track?.urn);
+        if (id != null && track.access !== 'blocked') found.set(id, track);
+      }
+    });
+    harvestTracks([...found.values()]);
+
+    const added = kept.filter((t) => found.has(t.id));
+    const missing = kept.filter((t) => !found.has(t.id)).map(({ id, label }) => ({ id, label }));
+    if (added.length === 0) {
+      return res.status(409).json({
+        code: 'SETLIST_NOTHING_AVAILABLE',
+        error: 'None of these tracks can be played on SoundCloud any more. Nothing was created.',
+        missing,
+      });
+    }
+
+    const { description, omitted } = buildSetlistDescription(added.map((t) => t.label), {
+      sourceUrl: sourceUrl || null,
+      reserve: TRACK_TOOLKIT_PLAYLIST_FOOTER.length + 2,
+    });
+
+    writeAttempted = true;
+    const playlist = await createPlaylistFromTrackIds(
+      req.accessToken,
+      req.refreshToken,
+      added.map((t) => t.id),
+      title,
+      description,
+    );
+
+    logOperation({
+      userId: req.user.id,
+      action: 'setlist-to-playlist',
+      trackCount: added.length,
+      status: 'success',
+      playlistIds: [playlist.id],
+      trackIds: added.map((t) => t.id),
+      metadata: {
+        source: sourceUrl ? '1001tracklists' : null,
+        requested: tracks.length,
+        missing: missing.length,
+        duplicates: duplicates.length,
+        descriptionOmitted: omitted,
+      },
+    });
+    invalidatePlaylistState(req.user.id);
+
+    res.json({
+      playlist: { id: playlist.id, title, permalink_url: playlist.permalink_url ?? null },
+      added: added.length,
+      missing,
+      duplicates: duplicates.map(({ id, label }) => ({ id, label })),
+      descriptionOmitted: omitted,
+    });
+  } catch (error) {
+    invalidatePlaylistState(req.user.id);
+    logger.error('Setlist playlist error:', safeError(error));
+    const partial = error?.partialPlaylist;
+    if (partial) {
+      return res.status(502).json({
+        code: 'PARTIAL_PLAYLIST',
+        error: `SoundCloud stopped partway through. "${partial.title}" was created with the first ${partial.tracksWritten} tracks — check it before trying again.`,
+        partialPlaylist: partial,
+      });
+    }
+    const mapped = scErrorResponse(error, { writeAttempted });
+    if (mapped) return res.status(mapped.status).json(mapped.body);
+    res.status(500).json({ error: 'Failed to create the playlist' });
   }
 });
 
