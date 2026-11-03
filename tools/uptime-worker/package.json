@@ -1,0 +1,14 @@
+{
+  "name": "tracktoolkit-uptime-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "vitest": "4.1.12",
+    "wrangler": "4.151.2"
+  }
+}
