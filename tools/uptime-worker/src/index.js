@@ -50,7 +50,15 @@ export default {
     if (request.method !== 'GET' || url.pathname !== '/') {
       return new Response('Not found', { status: 404 });
     }
-    const stored = await readStored(env.STATE).catch(() => null);
+    let stored;
+    try {
+      stored = await readStored(env.STATE);
+    } catch {
+      return new Response(JSON.stringify({ error: 'state unavailable' }), {
+        status: 503,
+        headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+      });
+    }
     const lastResults = Array.isArray(stored?.lastResults) ? stored.lastResults : [];
     const body = {
       lastRun: typeof stored?.lastRun === 'string' ? stored.lastRun : null,

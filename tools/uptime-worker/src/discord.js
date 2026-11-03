@@ -1,8 +1,10 @@
 const MAX_CONTENT = 2000;
 const TIMEOUT_MS = 10_000;
 
+const MAX_DETAIL = 200;
+
 const formatLine = (e) =>
-  e.type === 'down' ? `DOWN ${e.id}: ${e.detail} (since ${e.since})` : `UP ${e.id} (down since ${e.since})`;
+  e.type === 'down' ? `DOWN ${e.id}: ${String(e.detail).slice(0, MAX_DETAIL)} (since ${e.since})` : `UP ${e.id} (down since ${e.since})`;
 
 export function formatAlert(events) {
   const lines = events.map(formatLine);
@@ -23,7 +25,7 @@ export async function sendAlert(webhookUrl, events, fetchFn = fetch) {
     const res = await fetchFn(webhookUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ content: formatAlert(events) }),
+      body: JSON.stringify({ content: formatAlert(events), allowed_mentions: { parse: [] } }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     return res.ok;

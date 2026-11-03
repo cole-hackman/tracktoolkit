@@ -150,6 +150,22 @@ describe('fetch', () => {
     expect(await res.json()).toEqual({ lastRun: null, checks: [] });
   });
 
+  it('returns 503 json when the KV read fails', async () => {
+    const kv = makeKv('{}');
+    kv.get.mockRejectedValue(new Error('kv down'));
+    const res = await worker.fetch(req(), envWith(kv));
+    expect(res.status).toBe(503);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(await res.json()).toEqual({ error: 'state unavailable' });
+  });
+
+  it('still returns the empty 200 for unparseable stored state', async () => {
+    const res = await worker.fetch(req(), envWith(makeKv('not json')));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ lastRun: null, checks: [] });
+  });
+
   it.each([['/other', 'GET'], ['/', 'POST'], ['/health', 'GET']])('404s %s %s', async (path, method) => {
     const res = await worker.fetch(req(path, method), envWith(makeKv()));
     expect(res.status).toBe(404);

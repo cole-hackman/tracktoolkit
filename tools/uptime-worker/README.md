@@ -30,7 +30,9 @@ state and sent on the next run, together with any new ones. Without a webhook
 URL they simply accumulate (newest 100 kept).
 
 A `GET /` on the Worker returns the last run as JSON (`lastRun` and each
-check's `id`, `ok` and `detail`). Everything else is a 404.
+check's `id`, `ok` and `detail`). Everything else is a 404. The status page is
+public and costs one KV read per hit, so heavy traffic to it could use up the
+free plan's daily KV-read and Worker-request quotas.
 
 ## Deploy
 
@@ -68,6 +70,10 @@ redeploy without the variable to remove it:
 ```
 npx wrangler deploy
 ```
+
+Removing `DRILL_HOST` drops that check's state, so expect a DOWN and no UP
+message. Also, 1.1.1.1 caches the NXDOMAIN for about 30 minutes, so a repeated
+drill within that window still fails.
 
 `DRILL_HOST` is deliberately not in `wrangler.jsonc`.
 

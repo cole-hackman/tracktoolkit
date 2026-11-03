@@ -32,9 +32,11 @@ export function buildChecks({ drillHost } = {}) {
   ];
 }
 
+const APP_COOKIES = ['session', 'pkce_verifier', 'app_url', 'post_login_path'];
+const MAX_DETAIL = 200;
+
 function setCookieNames(headers) {
-  const lines = headers.getSetCookie?.() ?? [headers.get('set-cookie')].filter(Boolean);
-  return lines.map((line) => line.split('=')[0].trim());
+  return headers.getSetCookie().map((line) => line.split('=')[0].trim());
 }
 
 const fail = (detail) => ({ ok: false, detail });
@@ -52,6 +54,7 @@ async function evaluate(check, fetchFn) {
 
   switch (check.kind) {
     case 'dns': {
+      if (!res.ok) return fail(`DoH HTTP ${res.status}`);
       const body = await res.json();
       if (body.Status === 3) return fail('NXDOMAIN');
       if (body.Status === 5) return fail('REFUSED');
@@ -72,7 +75,7 @@ async function evaluate(check, fetchFn) {
       if (res.status !== 200) return fail(`HTTP ${res.status}`);
       if (!(res.headers.get('content-type') ?? '').includes('text/html')) return fail('not text/html');
       if (!res.headers.get('content-security-policy')) return fail('missing content-security-policy');
-      const cookie = setCookieNames(res.headers).find((n) => n.startsWith('__cf') || n.startsWith('cf_'));
+      const cookie = setCookieNames(res.headers).find((n) => !APP_COOKIES.includes(n));
       if (cookie) return fail(`injected: cookie ${cookie}`);
       const body = await res.text();
       const marker = INJECTION_MARKERS.find((m) => body.includes(m));
@@ -102,7 +105,7 @@ export async function runCheck(check, fetchFn = fetch) {
   } finally {
     clearTimeout(timer);
   }
-  return { id: check.id, ok: outcome.ok, detail: outcome.detail, ms: Date.now() - start };
+  return { id: check.id, ok: outcome.ok, detail: String(outcome.detail).slice(0, MAX_DETAIL), ms: Date.now() - start };
 }
 
 export async function runAll(checks, fetchFn = fetch) {

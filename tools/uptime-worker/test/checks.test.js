@@ -46,6 +46,12 @@ describe('runCheck dns', () => {
     expect(await run({ Status: 0, Answer: [{ type: 5 }] })).toMatchObject({ ok: false, detail: 'no A record' });
     expect(await run({ Status: 0 })).toMatchObject({ ok: false, detail: 'no A record' });
   });
+  it.each([
+    ['503 html', () => new Response('<html>down</html>', { status: 503, headers: { 'content-type': 'text/html' } }), 'DoH HTTP 503'],
+    ['400 json', () => json({ error: 'x' }, { status: 400 }), 'DoH HTTP 400'],
+  ])('fails on a DoH %s response', async (_n, make, detail) => {
+    expect(await runCheck(check, async () => make())).toMatchObject({ ok: false, detail });
+  });
   it('queries DoH with the dns-json accept header', async () => {
     const fn = vi.fn(async () => json({ Status: 0, Answer: [{ type: 1 }] }));
     await runCheck(check, fn);
@@ -93,17 +99,24 @@ describe('runCheck home', () => {
     const res = new Response('<html></html>', { status: 200, headers: { 'content-type': 'text/html' } });
     expect((await runCheck(check, async () => res)).ok).toBe(false);
   });
-  it.each(['__cf_bm=abc; Path=/', 'cf_clearance=abc; Path=/'])('fails on cookie %s', async (cookie) => {
+  const withCookies = (...cookies) => {
     const headers = new Headers({ 'content-type': 'text/html', 'content-security-policy': "default-src 'self'" });
-    headers.append('set-cookie', 'tt_session=1; Path=/');
-    headers.append('set-cookie', cookie);
-    const r = await runCheck(check, async () => new Response('<html></html>', { status: 200, headers }));
-    expect(r.ok).toBe(false);
+    for (const c of cookies) headers.append('set-cookie', c);
+    return new Response('<html></html>', { status: 200, headers });
+  };
+  it.each([
+    ['_cfuvid=x; Path=/', '_cfuvid'],
+    ['__cfruid=x; Path=/', '__cfruid'],
+    ['__cf_bm=x; Path=/', '__cf_bm'],
+  ])('fails on cookie %s', async (cookie, name) => {
+    const r = await runCheck(check, async () => withCookies('session=1; Path=/', cookie));
+    expect(r).toMatchObject({ ok: false, detail: `injected: cookie ${name}` });
   });
   it('passes with only app cookies', async () => {
-    const headers = new Headers({ 'content-type': 'text/html', 'content-security-policy': "default-src 'self'" });
-    headers.append('set-cookie', 'tt_session=1; Path=/');
-    expect((await runCheck(check, async () => new Response('<html></html>', { status: 200, headers }))).ok).toBe(true);
+    expect((await runCheck(check, async () => withCookies('session=x; Path=/', 'pkce_verifier=y'))).ok).toBe(true);
+  });
+  it('passes with no cookie', async () => {
+    expect((await runCheck(check, async () => withCookies())).ok).toBe(true);
   });
 });
 
@@ -152,6 +165,14 @@ describe('runAll', () => {
     const results = await runAll([byId('health'), byId('dns:tracktoolkit.com')], fetchFn);
     expect(results[0]).toMatchObject({ id: 'health', ok: false, detail: 'boom' });
     expect(results[1].ok).toBe(true);
+  });
+
+  it('caps a thrown message at 200 characters', async () => {
+    const r = await runCheck(byId('health'), async () => {
+      throw new Error('x'.repeat(5000));
+    });
+    expect(r.ok).toBe(false);
+    expect(r.detail.length).toBeLessThanOrEqual(200);
   });
 
   it('leaves no pending timer after checks settle', async () => {

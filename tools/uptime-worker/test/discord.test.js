@@ -22,6 +22,14 @@ describe('formatAlert', () => {
     expect(lines.length - 1 + Number(m[1])).toBe(100);
   });
 
+  it('caps a huge detail so the id survives and the line stays short', () => {
+    const e = down('dns:tracktoolkit.com', 'y'.repeat(5000));
+    const text = formatAlert([e]);
+    expect(text).toContain('DOWN dns:tracktoolkit.com:');
+    expect(text.length).toBeLessThan(400);
+    expect(formatAlert([down('a'), e])).toContain('DOWN dns:tracktoolkit.com:');
+  });
+
   it('leaves short output untouched', () => {
     expect(formatAlert([down('a')])).not.toContain('more');
   });
@@ -42,7 +50,8 @@ describe('sendAlert', () => {
     expect(url).toBe('https://hook');
     expect(init.method).toBe('POST');
     expect(init.headers['content-type']).toBe('application/json');
-    expect(JSON.parse(init.body)).toEqual({ content: formatAlert(events) });
+    expect(JSON.parse(init.body)).toEqual({ content: formatAlert(events), allowed_mentions: { parse: [] } });
+    expect(JSON.parse(init.body).allowed_mentions.parse).toEqual([]);
     expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
