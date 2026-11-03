@@ -67,18 +67,23 @@ export type QueueAction =
   | { type: "result"; trackId: number; status: Exclude<QueueItemStatus, "pending" | "fetching" | "saving">; reason?: string; fileName?: string }
   | { type: "check"; trackId: number; title: string }
   | { type: "confirmSaved" }
-  | { type: "retryChecked" };
+  | { type: "retryChecked" }
+  | { type: "retryFailed" };
 
 export const EMPTY_QUEUE: QueueState = { version: 1, sourceTitle: "", items: [], running: false };
 export const QUEUE_STORAGE_KEY = "track-toolkit-download-queue";
 /** Links asked for per server call — the route accepts at most 10. */
 export const BATCH_SIZE = 10;
 /**
- * Fewer per call in folder mode: the links are signed and short-lived, and a
- * batch of wavs is written one after another, so the last link of ten could
- * expire while the first nine are still being saved.
+ * One link per call in folder mode, asked for just before its file. The
+ * links are signed CloudFront URLs that stop working about 90 seconds after
+ * they are issued (measured 2026-11-03), and one wav takes two to three
+ * minutes to arrive — so with five per call only the first of each batch
+ * ever saved and the other four came back 403. A download that has started
+ * finishes after the link expires; it only has to start in time. The cost
+ * is one `/api/downloads/links` call per file against its 60/hour budget.
  */
-export const FOLDER_BATCH_SIZE = 5;
+export const FOLDER_BATCH_SIZE = 1;
 
 const OPEN: QueueItemStatus[] = ["pending", "rate_limited"];
 /** Mid-request: put back to waiting by a pause or a reload. */
@@ -128,6 +133,11 @@ export function queueReducer(state: QueueState, action: QueueAction): QueueState
         items: state.items.map((i) => (i.trackId === id ? { ...i, status: "pending", reason: undefined } : i)),
       };
     }
+    case "retryFailed":
+      // Asked for by the user, never by the runner — `start` cannot do this,
+      // because the runner dispatches `start` after every batch and would
+      // retry a file that always fails forever.
+      return { ...state, items: state.items.map((i) => (i.status === "failed" ? { ...i, status: "pending", reason: undefined } : i)) };
     case "pause":
       return {
         ...state,
