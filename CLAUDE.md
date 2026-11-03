@@ -1023,7 +1023,8 @@ Two consequences worth holding onto:
   has to happen *before* the merge, not after it.
 - Pushes that only touch `**.md`, `docs/**`, `infra/**`,
   `tools/uptime-worker/**`, `.gitignore` or `LICENSE` skip the run.
-  Infrastructure changes go through `infra/deploy.sh` X a non-`main` ref.
+  Infrastructure changes go through `infra/deploy.sh` instead, and manual
+  `workflow_dispatch` stays for redeploys and for deploying a non-`main` ref.
 
 Auth is OIDC through the `azure` GitHub environment: `AZURE_CLIENT_ID`,
 `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` are repository *variables*, not
