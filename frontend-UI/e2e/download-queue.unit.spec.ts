@@ -91,12 +91,14 @@ test("a pending check blocks a new enqueue as well as start — it must be answe
   expect(queueReducer(answered, { type: "enqueue", sourceTitle: "M", items: items(1) }).sourceTitle).toBe("M");
 });
 
-test("folder mode: five links per call, never a check, a save in flight goes back to waiting on pause or reload, and saved counts as finished", () => {
+test("folder mode: one link per call, never a check, a save in flight goes back to waiting on pause or reload, and saved counts as finished", () => {
   let s = queueReducer(queueReducer(EMPTY_QUEUE, { type: "enqueue", sourceTitle: "L", items: items(7), mode: "folder" }), { type: "start" });
   expect(s.mode).toBe("folder");
-  expect(FOLDER_BATCH_SIZE).toBe(5);
-  expect(nextBatchSize(s, false)).toBe(5);
-  expect(nextBatchSize(s, true)).toBe(5);
+  // A signed link dies ~90 s after it is issued and a wav takes minutes, so
+  // a second link in the same call would be dead before its turn.
+  expect(FOLDER_BATCH_SIZE).toBe(1);
+  expect(nextBatchSize(s, false)).toBe(1);
+  expect(nextBatchSize(s, true)).toBe(1);
   s = queueReducer(s, { type: "fetching", trackIds: [1, 2, 3, 4, 5] });
   s = queueReducer(s, { type: "saving", trackId: 1 });
   expect(s.items[0].status).toBe("saving");
@@ -118,4 +120,20 @@ test("folder mode: five links per call, never a check, a save in flight goes bac
   expect(summarize(s)).toMatchObject({ total: 7, saved: 6, started: 0, failed: 1, waiting: 0, finished: 7 });
   // Queues saved before the mode existed were all tab queues.
   expect(queueReducer(EMPTY_QUEUE, { type: "enqueue", sourceTitle: "L", items: items(1) }).mode).toBe("tab");
+});
+
+test("retryFailed puts only failed tracks back in line, and start never does", () => {
+  let s = queueReducer(queueReducer(EMPTY_QUEUE, { type: "enqueue", sourceTitle: "L", items: items(4), mode: "folder" }), { type: "start" });
+  s = queueReducer(s, { type: "result", trackId: 1, status: "saved", fileName: "A - T1.wav" });
+  s = queueReducer(s, { type: "result", trackId: 2, status: "failed", reason: "SoundCloud's download link had expired." });
+  s = queueReducer(s, { type: "result", trackId: 3, status: "unavailable", reason: "Downloads are off." });
+  s = queueReducer(s, { type: "result", trackId: 4, status: "failed", reason: "No link came back." });
+  expect(s.running).toBe(false);
+  // The runner dispatches start after every batch: it must not revive failures.
+  expect(queueReducer(s, { type: "start" }).running).toBe(false);
+
+  const retried = queueReducer(s, { type: "retryFailed" });
+  expect(retried.items.map((i) => i.status)).toEqual(["saved", "pending", "unavailable", "pending"]);
+  expect(retried.items[1].reason).toBeUndefined();
+  expect(queueReducer(retried, { type: "start" }).running).toBe(true);
 });

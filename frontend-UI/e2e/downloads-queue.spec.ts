@@ -29,10 +29,26 @@ type FolderRecord = { picks: number; files: Record<string, string> };
 
 async function open(
   page: Page,
-  { owner = true, links, multiOk = true, picker = "none" }: { owner?: boolean; links?: LinksAnswer; multiOk?: boolean; picker?: Picker } = {},
+  {
+    owner = true,
+    links,
+    multiOk = true,
+    picker = "none",
+    cdnStatus = () => 200,
+    files = {},
+  }: {
+    owner?: boolean;
+    links?: LinksAnswer;
+    multiOk?: boolean;
+    picker?: Picker;
+    /** The CDN's status for file n, per request (an expired link is a 403). */
+    cdnStatus?: (n: number) => number;
+    /** What the fake folder already holds when it is picked. */
+    files?: Record<string, string>;
+  } = {},
 ) {
   await page.addInitScript(
-    ({ ok, picker }) => {
+    ({ ok, picker, files }) => {
       // Short, but not so short that the helper tab's next navigation cancels
       // the previous file before its response starts (50 ms was flaky; the
       // real gap is 3 s).
@@ -41,7 +57,7 @@ async function open(
       // already allowed multiple downloads. The check has its own tests.
       if (ok) localStorage.setItem("track-toolkit-multi-download-ok", "1");
 
-      const record: FolderRecord = { picks: 0, files: {} };
+      const record: FolderRecord = { picks: 0, files: { ...files } };
       (window as unknown as { __ttFolder: FolderRecord }).__ttFolder = record;
       const w = window as unknown as { showDirectoryPicker?: () => Promise<unknown> };
       if (picker === "none") {
@@ -52,6 +68,9 @@ async function open(
       const fileHandle = (name: string) => ({
         kind: "file",
         name,
+        async getFile() {
+          return { size: (record.files[name] ?? "").length };
+        },
         async createWritable() {
           let buffer = "";
           return new WritableStream<Uint8Array>({
@@ -74,6 +93,10 @@ async function open(
           }
           return fileHandle(name);
         },
+        async removeEntry(name: string) {
+          if (!(name in record.files)) throw new DOMException("not found", "NotFoundError");
+          delete record.files[name];
+        },
       };
       Object.defineProperty(w, "showDirectoryPicker", {
         configurable: true,
@@ -84,7 +107,7 @@ async function open(
         },
       });
     },
-    { ok: multiOk, picker },
+    { ok: multiOk, picker, files },
   );
   await mockApi(page);
   await page.route((url) => url.pathname === "/api/playlists/1", (route) =>
@@ -115,7 +138,7 @@ async function open(
   });
   await page.context().route("https://cf-media.sndcdn.com/**", (route) =>
     route.fulfill({
-      status: 200,
+      status: cdnStatus(Number(route.request().url().match(/e2e-(\d+)/)![1])),
       contentType: "audio/mpeg",
       // What SoundCloud's CDN sends: an attachment, and CORS open (verified
       // live 2026-10-08), which is what lets the page fetch the file itself.
@@ -342,7 +365,44 @@ test("Save into a folder: files are fetched by the page and written as “Artist
   expect(popups).toBe(0);
   await expect(checkDialog(page)).toHaveCount(0);
   expect(await page.evaluate(() => localStorage.getItem("track-toolkit-multi-download-ok"))).toBeNull();
-  expect(seen).toEqual([[1, 2, 3].map((n) => `https://api.soundcloud.com/tracks/soundcloud:tracks:${n}/download`)]);
+  // One link per call, each asked for just before its file: a link dies
+  // about 90 s after it is issued, and a wav takes longer than that.
+  expect(seen).toEqual([1, 2, 3].map((n) => [`https://api.soundcloud.com/tracks/soundcloud:tracks:${n}/download`]));
+});
+
+test("a file the CDN refuses leaves no empty file behind, and Retry failed saves it under its own name", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "flow test");
+  let refuse = true;
+  await open(page, { picker: "fake", cdnStatus: (n) => (n === 2 && refuse ? 403 : 200) });
+  await page.getByRole("button", { name: "Download all (3)" }).click();
+  await expect(panel(page).getByText("2 saved · 0 not available · 1 failed")).toBeVisible();
+  await expect(panel(page).getByText(/link had expired/)).toBeVisible();
+  // Before, the empty file a failed save created stayed, and the retry
+  // became "Direct 2 (2).mp3".
+  expect(Object.keys((await folderRecord(page)).files)).toEqual(["testartist - Direct 1.mp3", "testartist - Direct 3.mp3"]);
+
+  refuse = false;
+  await panel(page).getByRole("button", { name: "Retry failed (1)" }).click();
+  await expect(panel(page).getByText("3 saved · 0 not available · 0 failed")).toBeVisible();
+  await expect(panel(page).getByRole("button", { name: /Retry failed/ })).toHaveCount(0);
+  const record = await folderRecord(page);
+  expect(Object.keys(record.files).sort()).toEqual(["testartist - Direct 1.mp3", "testartist - Direct 2.mp3", "testartist - Direct 3.mp3"]);
+  expect(record.picks).toBe(1);
+});
+
+test("an empty file left by an interrupted save is written over, not saved beside as (2)", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "flow test");
+  await open(page, { picker: "fake", files: { "testartist - Direct 1.mp3": "", "testartist - Direct 2.mp3": "ID3 kept" } });
+  await page.getByRole("button", { name: "Download all (3)" }).click();
+  await expect(panel(page).getByText("3 saved · 0 not available · 0 failed")).toBeVisible();
+  const record = await folderRecord(page);
+  expect(record.files).toEqual({
+    "testartist - Direct 1.mp3": "ID3",
+    // A real file of the same name is never overwritten.
+    "testartist - Direct 2.mp3": "ID3 kept",
+    "testartist - Direct 2 (2).mp3": "ID3",
+    "testartist - Direct 3.mp3": "ID3",
+  });
 });
 
 test("closing the folder picker queues nothing", async ({ page }, testInfo) => {
