@@ -8,8 +8,9 @@ const MAX_PENDING = 100;
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
 async function readStored(kv) {
+  const raw = await kv.get(KEY); // a read failure must reject, not look like "no state"
   try {
-    const parsed = JSON.parse(await kv.get(KEY));
+    const parsed = JSON.parse(raw);
     return isObject(parsed) ? parsed : null;
   } catch {
     return null;
@@ -49,7 +50,7 @@ export default {
     if (request.method !== 'GET' || url.pathname !== '/') {
       return new Response('Not found', { status: 404 });
     }
-    const stored = await readStored(env.STATE);
+    const stored = await readStored(env.STATE).catch(() => null);
     const lastResults = Array.isArray(stored?.lastResults) ? stored.lastResults : [];
     const body = {
       lastRun: typeof stored?.lastRun === 'string' ? stored.lastRun : null,

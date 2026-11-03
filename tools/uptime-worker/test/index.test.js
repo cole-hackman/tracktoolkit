@@ -61,6 +61,14 @@ describe('scheduled', () => {
     expect(saved.pending).toEqual([]);
   });
 
+  it('rejects without writing when the KV read fails', async () => {
+    stubFetch();
+    const kv = makeKv('{"checks":{},"pending":[]}');
+    kv.get.mockRejectedValue(new Error('kv unavailable'));
+    await expect(worker.scheduled(controller(), envWith(kv))).rejects.toThrow('kv unavailable');
+    expect(kv.put).not.toHaveBeenCalled();
+  });
+
   it('calls the webhook once after two failing runs', async () => {
     const hook = stubFetch();
     const kv = makeKv();
