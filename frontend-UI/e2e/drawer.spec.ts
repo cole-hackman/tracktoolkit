@@ -82,7 +82,7 @@ test.describe("mobile drawer", () => {
     // ~36 focusable elements, so focus would never reach the end and the loop
     // would pass with no trap at all.
     const closeButton = dialog.getByRole("button", { name: "Close menu" });
-    const lastFocusable = dialog.getByRole("link", { name: "Support Me", exact: true });
+    const lastFocusable = dialog.getByRole("link", { name: "Accessibility", exact: true });
 
     await expect(closeButton).toBeFocused();
 
