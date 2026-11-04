@@ -1,13 +1,12 @@
 # STATE
 
 ## Now
-Droploud and Cobrand gates run end to end in the extension, live-tested
-2026-11-04, but nothing is merged. Extension: `feat/gate-sites` in
-`~/Developer/tracktoolkit-extension-work` (head `508f030`, 117 tests), loaded
-in Cole's Chrome; 19 of its commits are **not pushed** to the private repo
-(its PR #1 shows the cloud session's older head). Web: PR #107 (open, full
-check green after review fixes). Waiting on Cole: push the extension branch,
-then merge extension PR #1, then web PR #107 (merging deploys).
+Nothing is mid-flight. Droploud and Cobrand gates are merged and live
+(2026-11-04): web PR #107 (`cf8efaa`) deployed and verified on
+`/downloads/` (Droploud and Cobrand rows get checkboxes with the new
+extension; the confirmation names what each site does; Cancel sends
+nothing). The extension's PR #1 is merged into `fix/extension-domain`
+(`6b917ca`) in the private repo, and Cole's folder is on that branch.
 
 ## Just done
 - **Gate sites live run** (2026-11-04). All five gates downloaded on the
@@ -114,12 +113,9 @@ then merge extension PR #1, then web PR #107 (merging deploys).
 3. ~~Move the extension to a private repo~~ Done 2026-11-04 (see Just done).
    The Hypeddit runner (`feat/hypeddit-runner`, local branch of this repo) is
    still local and unpushed.
-4. **Gate sites, to finish:** push the extension's `feat/gate-sites` (Cole's
-   call; an agent's push was blocked by its permission check), merge
-   extension PR #1 into `fix/extension-domain`, then merge web PR #107 and
-   check `/downloads/` live: Droploud and Cobrand rows get checkboxes only
-   with the new extension. The extension's debug mirror
-   (`sc-toolkit-ext-debug`) is a dev aid; keep or remove before merge.
+4. **Gate sites:** done (see Now). Open follow-ups: decide whether the
+   extension's debug mirror (`sc-toolkit-ext-debug`) stays; Cobrand files
+   keep the artist's upload name, not "Artist - Title".
 
 ### 2026-10-08
 0. ~~After #89 and #92 merge~~ **Done 2026-10-08 (see Just done).** What
