@@ -55,13 +55,19 @@ ticked SoundCloud direct download on `/downloads/`.
 
 ## Next
 ### 2026-11-04
-0. **Node is being killed (exit 137) repeatedly, cause unknown.** 2 kills on
-   11-03, 14 on 11-04 (13 of them 06:46-10:33 UTC, before the monitor
-   existed; 1 at 13:44). The monitor marked 6 checks down at 13:45:30, its
-   first real catch; `/health` timed out from about 13:40 and answered again
-   at 13:48. Before the 13:44 kill: `GET /api/playlists` took 45 s, and the
-   5-minute memory peak was only 425 MB, so the working-set metric does not
-   explain the kill. Not diagnosed. Also logged:
+0. **Node is being killed (exit 137) repeatedly; memory exhaustion is likely,
+   not proven.** 80 kills since 10-08 (the earliest logged), 22 on 11-04 by
+   15:00 UTC, with 22 `/health` gaps of 3-9 minutes (about 104 minutes). The
+   monitor marked 6 checks down at 13:45:30, its first real catch. Plan memory
+   reached 96-97% before kills, and at 1-minute resolution Node went 112 to
+   954 MB in about 3 minutes; the 5-minute metric hides this. `/me/playlists`
+   was fetched without `show_tracks=false` (SoundCloud defaults it to true),
+   so the list embedded every track, and the result stays in memory for 5
+   minutes. **This PR stops that and logs `[library-load]` per load.** A local
+   model reached about 980 MB only at the largest size tested, so other paths
+   may contribute: after the deploy, compare kills per day and read
+   `[library-load]` lines before calling it fixed. If kills continue, the same
+   `[library-load] start` lines show which load was running. Also logged:
    `ERR_ERL_INVALID_IP_ADDRESS` on a port-suffixed `req.ip`, which plan task
    B2 covers.
 1. On Cole's next queue: confirm no step tabs stay open and Chrome stays behind
