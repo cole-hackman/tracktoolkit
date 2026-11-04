@@ -799,6 +799,12 @@ router.post('/playlists/clone', authenticateUser, validateClonePlaylist, heavyOp
       if (!isOthersPrivate(playlist, req.user.soundcloudId)) harvestPlaylists([playlist]);
     }
     const trackIdsArray = filtered.map(t => t.id).filter(id => id != null);
+    // Someone else's private tracks inside a shared playlist: readable to us
+    // through the secret link, but SoundCloud may refuse them in a playlist
+    // the caller owns. Tried first; dropped on a refusal (writeClonePlaylists).
+    const excludable = new Set(
+      filtered.filter((t) => isOthersPrivate(t, req.user.soundcloudId)).map((t) => t.id),
+    );
 
     if (trackIdsArray.length === 0) {
       return res.status(400).json({ error: 'Playlist has no streamable tracks to clone.' });
@@ -810,34 +816,49 @@ router.post('/playlists/clone', authenticateUser, validateClonePlaylist, heavyOp
     // createPlaylistFromTrackIds with the same `sharing`, so a private source
     // can never produce a public part on any path.
     writeAttempted = true;
-    const parts = await writeClonePlaylists({
+    const { parts, skippedPrivate } = await writeClonePlaylists({
       accessToken: req.accessToken,
       refreshToken: req.refreshToken,
       trackIds: trackIdsArray,
       title: baseTitle,
       description: `Cloned from ${publicUrl}`,
       sharing: cloneOptions ? 'private' : undefined,
+      excludable,
     });
     const split = parts.length > 1;
+    const writtenIds = parts.flatMap((p) => p.trackIds);
+
+    // Read the copies back: what SoundCloud kept, against what the source
+    // holds (its track_count also counts entries the read could not show).
+    const landed = await countLandedTracks(req.accessToken, req.refreshToken, parts);
+    const sourceTracks = Number.isInteger(playlist.track_count) ? playlist.track_count : all.length;
 
     logOperation({
       req,
       action: 'clone',
       playlistIds: [sourceId, ...parts.map((p) => p.playlist.id)],
-      trackIds: trackIdsArray,
-      trackCount: trackIdsArray.length,
+      trackIds: writtenIds,
+      trackCount: writtenIds.length,
       status: split ? 'split' : 'success',
-      metadata: split
-        ? { sourcePlaylistId: sourceId, numPlaylistsCreated: parts.length }
-        : { sourcePlaylistId: sourceId, createdPlaylistId: parts[0].playlist.id },
+      metadata: {
+        sourcePlaylistId: sourceId,
+        ...(split ? { numPlaylistsCreated: parts.length } : { createdPlaylistId: parts[0].playlist.id }),
+        sourceTracks,
+        copiedTracks: landed,
+        ...(skippedPrivate > 0 ? { skippedPrivate } : {}),
+      },
     });
     invalidatePlaylistState(req.user.id);
     res.json({
       ...(split ? { playlists: parts.map((p) => p.playlist) } : { playlist: parts[0].playlist }),
       stats: {
-        totalTracks: trackIdsArray.length,
+        totalTracks: writtenIds.length,
         ...(split ? { numPlaylistsCreated: parts.length } : {}),
         ...(cloneOptions ? { private: true } : {}),
+        sourceTracks,
+        copiedTracks: landed ?? writtenIds.length,
+        verified: landed != null,
+        ...(skippedPrivate > 0 ? { skippedPrivate } : {}),
       },
     });
   } catch (error) {
@@ -2174,28 +2195,128 @@ async function createPlaylistFromTrackIds(accessToken, refreshToken, trackIds, t
 }
 
 /**
+ * A write SoundCloud refused on its merits (a 4xx), as opposed to auth (401,
+ * which scRequest handles), a timeout (408) or the rate limit (429).
+ */
+function isWriteRejection(err) {
+  const status = err?.status;
+  return Number.isInteger(status) && status >= 400 && status < 500 && ![401, 408, 429].includes(status);
+}
+
+/**
  * Write `trackIds` into new playlists of at most 500 tracks each, titled
  * "<title> (i/n)" when there is more than one. Every part is created by
  * createPlaylistFromTrackIds with the same `sharing`.
- * @returns {Promise<Array<{ playlist: object, title: string, trackIds: number[] }>>}
+ *
+ * `excludable` is the ids of private tracks owned by someone other than the
+ * caller. They are tried first; SoundCloud may refuse a playlist that holds
+ * them. If a write is refused with a 4xx while the part being written holds
+ * one, the write is retried ONCE with every excludable id dropped from what
+ * is left to write — onto the same playlist if it was already created (a PUT
+ * replaces its list), so the retry makes no extra playlist. Parts already
+ * finished keep what SoundCloud accepted. `skippedPrivate` counts the ids
+ * dropped. Any other failure carries the playlists made so far
+ * (withCreatedParts).
+ * @returns {Promise<{ parts: Array<{ playlist: object, title: string, trackIds: number[] }>, skippedPrivate: number }>}
  */
-async function writeClonePlaylists({ accessToken, refreshToken, trackIds, title, description, sharing }) {
-  const chunks = splitIntoChunks(trackIds, MAX_TRACKS_PER_PLAYLIST);
+async function writeClonePlaylists({ accessToken, refreshToken, trackIds, title, description, sharing, excludable = new Set() }) {
+  const partsFor = (n) => Math.max(1, Math.ceil(n / MAX_TRACKS_PER_PLAYLIST));
+  let remaining = [...trackIds];
+  let totalParts = partsFor(remaining.length);
+  let canRetry = excludable.size > 0;
+  let skippedPrivate = 0;
+  // A part created before its fill was refused; the retry refills it.
+  let reuse = null;
   const parts = [];
-  for (let i = 0; i < chunks.length; i++) {
-    if (i > 0) await sleep(SC_PLAYLIST_PACING_MS);
-    const partTitle = chunks.length > 1 ? `${title} (${i + 1}/${chunks.length})` : title;
+
+  while (remaining.length > 0) {
+    const chunk = remaining.slice(0, MAX_TRACKS_PER_PLAYLIST);
+    const partTitle = reuse
+      ? reuse.title
+      : (totalParts > 1 ? `${title} (${parts.length + 1}/${totalParts})` : title);
     let playlist;
     try {
-      playlist = await createPlaylistFromTrackIds(
-        accessToken, refreshToken, chunks[i], partTitle, description, { sharing },
-      );
+      if (reuse) {
+        const target = reuse;
+        let written = 0;
+        try {
+          await sleep(SC_WRITE_PACING_MS);
+          await writeGrowingPrefix({
+            ids: chunk,
+            floor: 0,
+            batchSize: BATCH_SIZE_PLAYLIST_TRACKS,
+            write: async (prefix) => {
+              await soundcloudClient.addTracksToPlaylist(accessToken, refreshToken, target.playlist.id, prefix);
+              written = prefix.length;
+            },
+          });
+        } catch (err) {
+          if (err && typeof err === 'object') {
+            err.partialPlaylist = {
+              id: target.playlist.id,
+              permalink_url: target.playlist.permalink_url,
+              title: target.title,
+              tracksWritten: written || target.tracksWritten,
+            };
+          }
+          throw err;
+        }
+        playlist = target.playlist;
+      } else {
+        if (parts.length > 0) await sleep(SC_PLAYLIST_PACING_MS);
+        playlist = await createPlaylistFromTrackIds(
+          accessToken, refreshToken, chunk, partTitle, description, { sharing },
+        );
+      }
     } catch (err) {
-      throw withCreatedParts(err, parts.map(describeCreatedPart), chunks.length);
+      const holdsExcludable = chunk.some((id) => excludable.has(id));
+      if (canRetry && isWriteRejection(err) && holdsExcludable) {
+        const kept = remaining.filter((id) => !excludable.has(id));
+        if (kept.length > 0) {
+          canRetry = false;
+          skippedPrivate = remaining.length - kept.length;
+          remaining = kept;
+          totalParts = parts.length + partsFor(remaining.length);
+          const partial = err.partialPlaylist;
+          reuse = partial
+            ? {
+              playlist: { id: partial.id, permalink_url: partial.permalink_url, title: partial.title },
+              title: partial.title,
+              tracksWritten: partial.tracksWritten,
+            }
+            : null;
+          continue;
+        }
+      }
+      throw withCreatedParts(err, parts.map(describeCreatedPart), totalParts);
     }
-    parts.push({ playlist, title: partTitle, trackIds: chunks[i] });
+    parts.push({ playlist, title: partTitle, trackIds: chunk });
+    remaining = remaining.slice(chunk.length);
+    reuse = null;
   }
-  return parts;
+  return { parts, skippedPrivate };
+}
+
+/**
+ * How many tracks each new playlist really holds, read back from SoundCloud
+ * (it can drop entries it accepted in the write). `null` when any read fails:
+ * an unknown count is reported as unknown, not as the number we sent.
+ */
+async function countLandedTracks(accessToken, refreshToken, parts) {
+  let landed = 0;
+  for (const part of parts) {
+    try {
+      const read = await soundcloudClient.getPlaylistWithTracks(accessToken, refreshToken, part.playlist.id);
+      const count = Number.isInteger(read?.track_count)
+        ? read.track_count
+        : (Array.isArray(read?.tracks) ? read.tracks.length : null);
+      if (count == null) return null;
+      landed += count;
+    } catch {
+      return null;
+    }
+  }
+  return landed;
 }
 
 function describeCreatedPart({ playlist, title, trackIds }) {

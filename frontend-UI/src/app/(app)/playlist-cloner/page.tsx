@@ -29,6 +29,35 @@ interface ClonedPlaylist {
   incomplete?: boolean;
 }
 
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/**
+ * "12 of 15 copied; …" when the copy holds fewer tracks than the source, in
+ * words: how many landed (read back from SoundCloud), and why the rest did
+ * not. Null when nothing is missing or the counts are absent.
+ */
+function copyGapMessage(stats: Record<string, unknown> | null): string | null {
+  const source = Number(stats?.sourceTracks);
+  const copied = Number(stats?.copiedTracks);
+  if (!Number.isFinite(source) || !Number.isFinite(copied) || copied >= source) return null;
+  const skipped = Number(stats?.skippedPrivate) || 0;
+  const rest = Math.max(0, source - copied - skipped);
+  const parts = [`${copied} of ${source} copied`];
+  if (skipped > 0) {
+    parts.push(`${plural(skipped, "private track")} by other accounts can't be added to your playlist`);
+  }
+  if (rest > 0) {
+    parts.push(
+      skipped > 0
+        ? `SoundCloud left out ${rest} more (blocked, removed or not streamable)`
+        : `SoundCloud left out the other ${rest} (blocked, removed, private or not streamable)`,
+    );
+  }
+  let message = `${parts.join("; ")}.`;
+  if (stats?.verified === false) message += " SoundCloud didn't confirm the count, so open the copy to check.";
+  return message;
+}
+
 export default function PlaylistClonerPage() {
   const announce = useAnnounce();
   const queryClient = useQueryClient();
@@ -115,8 +144,11 @@ export default function PlaylistClonerPage() {
       setStats(data.stats);
       setUrl("");
       setCustomTitle("");
+      const gap = copyGapMessage(data.stats);
       announce(
-        `Cloned ${data.stats?.totalTracks ?? 0} tracks into ${created.length} playlist${created.length === 1 ? "" : "s"}.`,
+        gap
+          ? `Cloned into ${plural(created.length, "playlist")}. ${gap}`
+          : `Cloned ${data.stats?.copiedTracks ?? data.stats?.totalTracks ?? 0} tracks into ${plural(created.length, "playlist")}.`,
       );
     } catch (err: unknown) {
       // `InlineAlert variant="error"` is `role="alert"` and is spoken on
@@ -346,6 +378,9 @@ export default function PlaylistClonerPage() {
                 SoundCloud took too long to list every like, so this is only part of them. Run it again later for the rest.
               </InlineAlert>
             )}
+            {copyGapMessage(stats) && (
+              <InlineAlert variant="warning">{copyGapMessage(stats)}</InlineAlert>
+            )}
             {stats?.private === true && (
               <InlineAlert variant="info">
                 The original is private, so the copy was created as a private playlist.
@@ -360,7 +395,7 @@ export default function PlaylistClonerPage() {
                     "37" read before "Tracks Cloned" counts nothing yet. */}
                 <div className="flex flex-col-reverse">
                   <p className="text-sm font-medium text-muted-foreground">Tracks Cloned</p>
-                  <p className="text-2xl font-bold text-foreground">{stats?.totalTracks?.toString() || "0"}</p>
+                  <p className="text-2xl font-bold text-foreground">{String(stats?.copiedTracks ?? stats?.totalTracks ?? 0)}</p>
                 </div>
               </Card>
               {Number(stats?.numPlaylistsCreated) > 1 && (

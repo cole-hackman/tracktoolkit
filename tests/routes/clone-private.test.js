@@ -529,3 +529,129 @@ describe('a failure after some playlists exist lists them instead of a bare 500'
     expect(res.body.stats).toMatchObject({ partial: true, numPlaylistsCreated: 2, totalParts: 3 });
   });
 });
+
+describe('someone else\'s private tracks inside a secret playlist', () => {
+  const refused = (status = 422) => Object.assign(new Error(`API request failed: ${status}`), { status });
+  // 15 tracks; 3 are private and owned by somebody other than the caller (111).
+  const othersPrivateIds = [4, 9, 13];
+  const sourceTracks = (n = 15, privateIds = othersPrivateIds) => range(n).map((id) => (
+    privateIds.includes(id)
+      ? { id, streamable: true, sharing: 'private', user: { id: 999 } }
+      : { id, streamable: true, sharing: 'public', user: { id: 999 } }
+  ));
+  // The source is 555; anything else is a copy being read back.
+  const readsBack = (source, landedById = {}) => getPlaylistWithTracks.mockImplementation(async (at, rt, id) => (
+    id === 555 ? source : { id, track_count: landedById[id] }
+  ));
+  const clone = () => request(app).post('/api/playlists/clone').send({ url: SECRET_URL });
+
+  beforeEach(() => {
+    resolveAny.mockResolvedValue({ kind: 'playlist', id: 555 });
+  });
+
+  test('a refused create is retried once without them; the response counts what landed', async () => {
+    readsBack({ id: 555, title: 'Hidden', sharing: 'private', track_count: 15, tracks: sourceTracks() }, { 90: 12 });
+    createPlaylist.mockRejectedValueOnce(refused(422));
+
+    const res = await clone();
+
+    expect(res.status).toBe(200);
+    expect(createPlaylist).toHaveBeenCalledTimes(2);
+    expect(createPlaylist.mock.calls[0][4]).toHaveLength(15);
+    const [, , title, , retried, options] = createPlaylist.mock.calls[1];
+    expect(title).toBe('Clone of Hidden');
+    expect(retried).toEqual(range(15).filter((id) => !othersPrivateIds.includes(id)));
+    expect(options).toEqual({ sharing: 'private' });
+    expect(res.body.playlist.id).toBe(90); // the refused create made nothing
+    expect(res.body.stats).toMatchObject({
+      sourceTracks: 15, copiedTracks: 12, verified: true, skippedPrivate: 3, totalTracks: 12, private: true,
+    });
+  });
+
+  test('accepted as they are: no retry, no skippedPrivate', async () => {
+    readsBack({ id: 555, title: 'Hidden', sharing: 'private', track_count: 15, tracks: sourceTracks() }, { 90: 15 });
+
+    const res = await clone();
+
+    expect(res.status).toBe(200);
+    expect(createPlaylist).toHaveBeenCalledTimes(1);
+    expect(res.body.stats).toMatchObject({ sourceTracks: 15, copiedTracks: 15, verified: true });
+    expect(res.body.stats.skippedPrivate).toBeUndefined();
+  });
+
+  test('SoundCloud silently keeping fewer is reported from the read-back, not from what was sent', async () => {
+    readsBack({ id: 555, title: 'Hidden', sharing: 'private', track_count: 15, tracks: sourceTracks() }, { 90: 12 });
+    const res = await clone();
+    expect(res.body.stats).toMatchObject({ sourceTracks: 15, copiedTracks: 12, totalTracks: 15, verified: true });
+    expect(res.body.stats.skippedPrivate).toBeUndefined();
+  });
+
+  test('a refused PUT after the create refills the same playlist; no second playlist', async () => {
+    const privateIds = [120, 121, 122];
+    readsBack({ id: 555, title: 'Hidden', sharing: 'private', track_count: 150, tracks: sourceTracks(150, privateIds) }, { 90: 147 });
+    addTracksToPlaylist.mockReset().mockRejectedValueOnce(refused(400)).mockResolvedValue({});
+
+    const res = await clone();
+
+    expect(res.status).toBe(200);
+    expect(createPlaylist).toHaveBeenCalledTimes(1);
+    const writes = addTracksToPlaylist.mock.calls;
+    expect(writes.every((c) => c[2] === 90)).toBe(true);
+    const last = writes.at(-1)[3];
+    expect(last).toHaveLength(147);
+    expect(last.some((id) => privateIds.includes(id))).toBe(false);
+    expect(res.body.playlist.id).toBe(90);
+    expect(res.body.stats).toMatchObject({ copiedTracks: 147, skippedPrivate: 3 });
+  });
+
+  test('a refusal with no such tracks to drop is not retried', async () => {
+    readsBack({ id: 555, title: 'Hidden', sharing: 'private', tracks: sourceTracks(15, []) });
+    createPlaylist.mockRejectedValue(refused(422));
+    const res = await clone();
+    expect(createPlaylist).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(500);
+  });
+
+  test('a 429 is never read as a refusal of the private tracks', async () => {
+    readsBack({ id: 555, title: 'Hidden', sharing: 'private', tracks: sourceTracks() });
+    createPlaylist.mockRejectedValue(refused(429));
+    await clone();
+    expect(createPlaylist).toHaveBeenCalledTimes(1);
+  });
+
+  test('a read-back that fails reports the count as unverified', async () => {
+    getPlaylistWithTracks.mockImplementation(async (at, rt, id) => {
+      if (id === 555) return { id: 555, title: 'Hidden', sharing: 'private', tracks: sourceTracks() };
+      throw refused(503);
+    });
+    const res = await clone();
+    expect(res.status).toBe(200);
+    expect(res.body.stats).toMatchObject({ sourceTracks: 15, copiedTracks: 15, verified: false });
+  });
+});
+
+describe('the private-track retry on a split copy', () => {
+  test('a refused part 2 is recreated without them; part 1 stays; every part is private', async () => {
+    const privateIds = [550, 551];
+    resolveAny.mockResolvedValue({ kind: 'playlist', id: 555 });
+    const tracks = range(600).map((id) => ({ id, streamable: true, sharing: privateIds.includes(id) ? 'private' : 'public', user: { id: 999 } }));
+    getPlaylistWithTracks.mockImplementation(async (at, rt, id) => (
+      id === 555 ? { id: 555, title: 'Big', sharing: 'private', tracks } : { id, track_count: id === 90 ? 500 : 98 }
+    ));
+    createPlaylist
+      .mockImplementationOnce(async (at, rt, title) => ({ id: 90, title, permalink_url: 'https://sc/90' }))
+      .mockRejectedValueOnce(Object.assign(new Error('API request failed: 422'), { status: 422 }))
+      .mockImplementationOnce(async (at, rt, title) => ({ id: 91, title, permalink_url: 'https://sc/91' }));
+
+    const res = await request(app).post('/api/playlists/clone').send({ url: SECRET_URL });
+
+    expect(res.status).toBe(200);
+    expect(createPlaylist.mock.calls.map((c) => [c[2], c[5]])).toEqual([
+      ['Clone of Big (1/2)', { sharing: 'private' }],
+      ['Clone of Big (2/2)', { sharing: 'private' }],
+      ['Clone of Big (2/2)', { sharing: 'private' }],
+    ]);
+    expect(res.body.playlists.map((p) => p.id)).toEqual([90, 91]);
+    expect(res.body.stats).toMatchObject({ sourceTracks: 600, copiedTracks: 598, skippedPrivate: 2, numPlaylistsCreated: 2 });
+  });
+});
