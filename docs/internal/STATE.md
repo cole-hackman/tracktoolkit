@@ -1,18 +1,23 @@
 # STATE
 
 ## Now
-Droploud and Cobrand gate support is planned and handed off, not started:
-the plan, fixtures and cloud-session prompts are on `feat/gate-sites` in the
-**private** repo `cole-hackman/tracktoolkit-extension`
-(`docs/PLAN-gate-sites.md`, `docs/HANDOFF-gate-sites.md`). The extension
-(`~/Developer/tracktoolkit-extension-work`, branch `fix/extension-domain`,
-head `d6573ed`, now pushed there) is committed and loads itself. Three things are
-unproven live: step tabs closing after a run (`d6573ed` passes 22 tests but
-no real run has exercised it), Chrome staying in the background through the
-last seconds of a gate (the one full run happened on a locked screen), and a
-ticked SoundCloud direct download on `/downloads/`.
+Droploud and Cobrand gates run end to end in the extension, live-tested
+2026-11-04, but nothing is merged. Extension: `feat/gate-sites` in
+`~/Developer/tracktoolkit-extension-work` (head `508f030`, 117 tests), loaded
+in Cole's Chrome; 19 of its commits are **not pushed** to the private repo
+(its PR #1 shows the cloud session's older head). Web: PR #107 (open, full
+check green after review fixes). Waiting on Cole: push the extension branch,
+then merge extension PR #1, then web PR #107 (merging deploys).
 
 ## Just done
+- **Gate sites live run** (2026-11-04). All five gates downloaded on the
+  final code: Droploud *Never Walk Alone* (.wav), *Dynamite* (.mp3),
+  *Confession* (.aiff, on retry: no second comment, no second grant), Hypeddit
+  *Dreamin* in a mixed queue, Cobrand *Spaceship* (artist's Dropbox .wav).
+  One "fire" comment per track, reposts in place, no tab left open. The first
+  run failed all four on wrong guesses in the handoff's fixtures; fixed with
+  captured live HTML (see Landmines). Reviews: extension 12 findings and web
+  5 findings, all fixed.
 - **Extension moved to a private repo** (2026-11-04):
   `cole-hackman/tracktoolkit-extension`, verified `PRIVATE`; `main` (original
   import `d5cd89b`), `fix/extension-domain` (`d6573ed`) and `feat/gate-sites`
@@ -109,12 +114,12 @@ ticked SoundCloud direct download on `/downloads/`.
 3. ~~Move the extension to a private repo~~ Done 2026-11-04 (see Just done).
    The Hypeddit runner (`feat/hypeddit-runner`, local branch of this repo) is
    still local and unpushed.
-4. **Droploud + Cobrand build:** run cloud session A (extension repo, tasks
-   1–5) and session B (this repo, task 6) with the prompts in the extension
-   repo's `docs/HANDOFF-gate-sites.md`. Both open PRs and stop. Then, locally:
-   pull `feat/gate-sites` into the same folder, live-run three Droploud gates
-   and the remaining Cobrand gate, merge the extension PR, then merge this
-   repo's PR (merging deploys) and check the live site.
+4. **Gate sites, to finish:** push the extension's `feat/gate-sites` (Cole's
+   call; an agent's push was blocked by its permission check), merge
+   extension PR #1 into `fix/extension-domain`, then merge web PR #107 and
+   check `/downloads/` live: Droploud and Cobrand rows get checkboxes only
+   with the new extension. The extension's debug mirror
+   (`sc-toolkit-ext-debug`) is a dev aid; keep or remove before merge.
 
 ### 2026-10-08
 0. ~~After #89 and #92 merge~~ **Done 2026-10-08 (see Just done).** What
@@ -536,6 +541,10 @@ ticked SoundCloud direct download on `/downloads/`.
   column with no card chrome, the card returning from `sm`.
 
 ### From the 2026-11-04 gate-sites session
+- **Cobrand gate tabs may come to the front** (Cole, 2026-11-04), an
+  exception to "a queue must not take focus": Cloudflare's Turnstile only
+  runs in a visible tab. Only the running Cobrand gate's own tab; every other
+  queue tab stays in the background.
 - **The extension lives in the private repo `cole-hackman/tracktoolkit-extension`**,
   never in this public one. Gate automation details stay there; this file and
   `CLAUDE.md` get one-sentence summaries.
@@ -553,6 +562,12 @@ ticked SoundCloud direct download on `/downloads/`.
   (`sc-toolkit-ext-gates`); the queue keeps the `sc-toolkit-hypeddit-queue` key.
 
 ## Landmines
+- **Gate pages differ from guesses; capture before building** (2026-11-04).
+  Droploud serves two layouts (v1 `dtr-`, v2 `dltg-`) with different button
+  text; SoundCloud's track page is a same-origin iframe whose Repost state is
+  its `aria-label` (pressing "Unpost / Edit repost" removes it); Cobrand has no
+  `<form>`, and its Turnstile token is made after Sign Up is pressed. The
+  extension repo's `test/fixtures/` README says which fixtures are captured.
 - **Never fetch 1001Tracklists from the server.** A plain request (`curl`,
   Node `fetch`) gets HTTP 401 `www-authenticate: reCaptcha` and an image
   captcha on every tracklist page (checked 2026-11-02 on two sets); a real
