@@ -1,0 +1,8 @@
+{
+  "name": "tracktoolkit-uptime",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-15",
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "kv_namespaces": [{ "binding": "STATE", "id": "ecdfb93db101419f83a90ed774e373f3" }],
+  "observability": { "enabled": true }
+}

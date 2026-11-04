@@ -67,6 +67,9 @@ dependency list. What they do not tell you:
   crash guard looks for.
 - `.do/app.yaml`, `vercel.json` — **RETIRED** pre-cutover DigitalOcean and
   Vercel configs, kept as rollback until those accounts are decommissioned.
+- `tools/uptime-worker/` is a standalone Cloudflare Worker (uptime monitor for
+  all five hostnames, Discord alerts), deployed by hand with wrangler, never by
+  the GitHub workflow; its README is the operator reference.
 - `docs/api.json` is SoundCloud's upstream spec, not this app's (see API
   Endpoints).
 
@@ -1032,10 +1035,10 @@ Two consequences worth holding onto:
 - **Merging to `main` is deploying.** Anything that has to happen before the
   code runs — the two unapplied files in `docs/sql/`, an App Service setting —
   has to happen *before* the merge, not after it.
-- Pushes that only touch `**.md`, `docs/**`, `infra/**`, `.gitignore` or
-  `LICENSE` skip the run. Infrastructure changes go through `infra/deploy.sh`
-  instead, and manual `workflow_dispatch` stays for redeploys and for
-  deploying a non-`main` ref.
+- Pushes that only touch `**.md`, `docs/**`, `infra/**`,
+  `tools/uptime-worker/**`, `.gitignore` or `LICENSE` skip the run.
+  Infrastructure changes go through `infra/deploy.sh` instead, and manual
+  `workflow_dispatch` stays for redeploys and for deploying a non-`main` ref.
 
 Auth is OIDC through the `azure` GitHub environment: `AZURE_CLIENT_ID`,
 `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` are repository *variables*, not

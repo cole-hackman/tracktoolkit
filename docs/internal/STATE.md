@@ -10,6 +10,17 @@ last seconds of a gate (the one full run happened on a locked screen), and a
 ticked SoundCloud direct download on `/downloads/`.
 
 ## Just done
+- **Uptime monitor deployed 2026-11-04** (`tools/uptime-worker/`, PR #99; the
+  Worker was deployed by hand with wrangler, not by CI). Status page:
+  https://tracktoolkit-uptime.tracktoolkit-uptime-worker.workers.dev/ — runs
+  every 5 minutes at about :30 past the 5-minute mark, 11/11 ok. **Drill:**
+  `DRILL_HOST=monitor-drill.tracktoolkit.com` deployed 13:11:14 UTC, first
+  failure 13:15:30, marked down 13:20:30 and the alert arrived on Discord
+  (Cole saw it): 9m16s here, up to about 10 minutes for an NXDOMAIN host.
+  Other 11 checks stayed green; removing the drill host sent no UP. Real DNS
+  breakage is slower because resolvers serve cached records until TTL expiry:
+  about 40 minutes at Spaceship's 30-minute TTL. Delete
+  `keep-api-warm.yml` after 7 days with no false alert (from 2026-11-11).
 - `3452e59` — #101 live: every automatic download in the `/downloads/` list has
   a checkbox, with a sticky "Download N selected" bar. Hypeddit picks go to the
   extension, direct ones to the queue. Live: 137 boxes, none ticked; a ticked
@@ -32,6 +43,15 @@ ticked SoundCloud direct download on `/downloads/`.
 
 ## Next
 ### 2026-11-04
+0. **Node is being killed (exit 137) repeatedly, cause unknown.** 2 kills on
+   11-03, 14 on 11-04 (13 of them 06:46-10:33 UTC, before the monitor
+   existed; 1 at 13:44). The monitor marked 6 checks down at 13:45:30, its
+   first real catch; `/health` timed out from about 13:40 and answered again
+   at 13:48. Before the 13:44 kill: `GET /api/playlists` took 45 s, and the
+   5-minute memory peak was only 425 MB, so the working-set metric does not
+   explain the kill. Not diagnosed. Also logged:
+   `ERR_ERL_INVALID_IP_ADDRESS` on a port-suffixed `req.ip`, which plan task
+   B2 covers.
 1. On Cole's next queue: confirm no step tabs stay open and Chrome stays behind
    his app at the end of each gate. If a tab stays, its site is the clue.
 2. Tick one SoundCloud direct download on `/downloads/` and confirm it queues

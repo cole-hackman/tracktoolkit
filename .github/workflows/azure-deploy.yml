@@ -6,7 +6,8 @@ name: Deploy to Azure App Service
 # AZURE_* values are repository variables, not secrets — they are identifiers.
 # Every merge to main deploys (the cutover in docs/internal/MIGRATION.md is
 # done; this replaced DigitalOcean's deploy_on_push on 2026-09-22). Pushes that
-# only touch documentation, the infra templates or the license skip the run;
+# only touch documentation, the infra templates, the license or the standalone
+# uptime monitor in tools/uptime-worker skip the run;
 # infra changes go through infra/deploy.sh. Manual dispatch stays for redeploys.
 on:
   push:
@@ -17,6 +18,7 @@ on:
       - 'infra/**'
       - '.gitignore'
       - 'LICENSE'
+      - 'tools/uptime-worker/**'
   workflow_dispatch:
     inputs:
       ref:
