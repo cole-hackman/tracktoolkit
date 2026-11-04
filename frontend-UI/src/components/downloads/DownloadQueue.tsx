@@ -4,6 +4,8 @@ import { useCallback, useEffect, useId, useReducer, useRef, useState } from "rea
 import { Pause, Play, RotateCcw, Trash2 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { Button, Dialog, ProgressBar } from "@/components/ui";
+import { GateRunSection } from "@/components/downloads/GateRun";
+import { hasGateSection, type GateRun } from "@/lib/gate-run";
 import { pickDownloadFolder, saveToFolder } from "@/lib/download-folder";
 import {
   EMPTY_QUEUE,
@@ -470,6 +472,9 @@ interface PanelProps {
   multiOk: boolean;
   /** The panel's own heading; omitted inside the Dialog, which has its title. */
   showHeading?: boolean;
+  /** The extension's gate run, when it has reported one. */
+  gates?: GateRun | null;
+  onGatesCleared?: () => void;
 }
 
 export function DownloadQueuePanel({
@@ -482,8 +487,13 @@ export function DownloadQueuePanel({
   onRetryChecked,
   multiOk,
   showHeading = true,
+  gates,
+  onGatesCleared,
 }: PanelProps) {
   const headingId = useId();
+  const directId = useId();
+  const hasDirect = state.items.length > 0;
+  const gateRun = hasGateSection(gates ?? null) ? gates! : null;
   return (
     <section aria-labelledby={showHeading ? headingId : undefined} aria-label={showHeading ? undefined : "Download queue"} className="space-y-3">
       {showHeading && (
@@ -491,78 +501,88 @@ export function DownloadQueuePanel({
           Download queue
         </h2>
       )}
-      <p className="text-sm text-muted-foreground">
-        SoundCloud downloads from <span className="font-medium text-foreground">{state.sourceTitle}</span>
-        {state.mode === "folder" && <> — saved into your folder as “Artist - Title”</>}
-      </p>
-      <ProgressBar
-        label={state.running ? (state.mode === "folder" ? "Saving" : "Downloading") : summary.waiting > 0 ? "Paused" : "Finished"}
-        value={summary.finished}
-        max={Math.max(summary.total, 1)}
-        detail={`${state.mode === "folder" ? `${summary.saved} saved` : `${summary.started} started`} · ${summary.unavailable} not available · ${summary.failed} failed`}
-      />
-      {state.check && (
-        <div className="space-y-2 rounded-md border border-border bg-card p-3" role="status">
-          <p className="text-sm font-semibold text-foreground">Did “{state.check.title}” save?</p>
-          <p className="text-sm text-muted-foreground">{MULTI_DOWNLOAD_HELP}</p>
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={onConfirmSaved}>
-              {YES_LABEL}
-            </Button>
-            <Button size="sm" variant="secondary" onClick={onRetryChecked}>
-              {NO_LABEL}
-            </Button>
-          </div>
-        </div>
-      )}
-      {state.running && !multiOk && state.mode !== "folder" && summary.total > 1 && (
-        <p className="text-sm text-muted-foreground">{MULTI_DOWNLOAD_HELP}</p>
-      )}
-      {state.pausedReason && !state.running && (
-        <p className="text-sm text-warning-text" role="status">
-          {state.pausedReason}
+      {hasDirect && (
+        <section aria-labelledby={gateRun ? directId : undefined} className="space-y-3">
+          {gateRun && (
+            <h3 id={directId} className="text-sm font-bold text-foreground">
+              SoundCloud downloads
+            </h3>
+          )}
+        <p className="text-sm text-muted-foreground">
+          SoundCloud downloads from <span className="font-medium text-foreground">{state.sourceTitle}</span>
+          {state.mode === "folder" && <> — saved into your folder as “Artist - Title”</>}
         </p>
-      )}
-      <div className="flex flex-wrap gap-2">
-        {state.running ? (
-          <Button variant="secondary" size="sm" onClick={onPause}>
-            <Pause className="h-4 w-4" aria-hidden="true" />
-            Pause
-          </Button>
-        ) : summary.waiting > 0 && !state.check ? (
-          <Button size="sm" onClick={() => onResume()}>
-            <Play className="h-4 w-4" aria-hidden="true" />
-            Resume ({summary.waiting} left)
-          </Button>
-        ) : null}
-        {!state.running && !state.check && summary.failed > 0 && (
-          <Button variant="secondary" size="sm" onClick={() => onResume({ retryFailed: true })}>
-            <RotateCcw className="h-4 w-4" aria-hidden="true" />
-            Retry failed ({summary.failed})
-          </Button>
+        <ProgressBar
+          label={state.running ? (state.mode === "folder" ? "Saving" : "Downloading") : summary.waiting > 0 ? "Paused" : "Finished"}
+          value={summary.finished}
+          max={Math.max(summary.total, 1)}
+          detail={`${state.mode === "folder" ? `${summary.saved} saved` : `${summary.started} started`} · ${summary.unavailable} not available · ${summary.failed} failed`}
+        />
+        {state.check && (
+          <div className="space-y-2 rounded-md border border-border bg-card p-3" role="status">
+            <p className="text-sm font-semibold text-foreground">Did “{state.check.title}” save?</p>
+            <p className="text-sm text-muted-foreground">{MULTI_DOWNLOAD_HELP}</p>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" onClick={onConfirmSaved}>
+                {YES_LABEL}
+              </Button>
+              <Button size="sm" variant="secondary" onClick={onRetryChecked}>
+                {NO_LABEL}
+              </Button>
+            </div>
+          </div>
         )}
-        <Button variant="ghost" size="sm" onClick={onClear}>
-          <Trash2 className="h-4 w-4" aria-hidden="true" />
-          Clear queue
-        </Button>
-      </div>
-      <ul className="max-h-80 space-y-1 overflow-y-auto pr-1 text-sm" aria-label="Queued tracks">
-        {state.items.map((item) => (
-          <li key={item.trackId} className="flex min-w-0 items-baseline justify-between gap-2 border-b border-border py-1.5 last:border-0">
-            <span className="min-w-0 text-foreground">
-              <span className="block truncate">
-                {item.title}
-                <span className="text-muted-foreground"> — {item.artist}</span>
+        {state.running && !multiOk && state.mode !== "folder" && summary.total > 1 && (
+          <p className="text-sm text-muted-foreground">{MULTI_DOWNLOAD_HELP}</p>
+        )}
+        {state.pausedReason && !state.running && (
+          <p className="text-sm text-warning-text" role="status">
+            {state.pausedReason}
+          </p>
+        )}
+        <div className="flex flex-wrap gap-2">
+          {state.running ? (
+            <Button variant="secondary" size="sm" onClick={onPause}>
+              <Pause className="h-4 w-4" aria-hidden="true" />
+              Pause
+            </Button>
+          ) : summary.waiting > 0 && !state.check ? (
+            <Button size="sm" onClick={() => onResume()}>
+              <Play className="h-4 w-4" aria-hidden="true" />
+              Resume ({summary.waiting} left)
+            </Button>
+          ) : null}
+          {!state.running && !state.check && summary.failed > 0 && (
+            <Button variant="secondary" size="sm" onClick={() => onResume({ retryFailed: true })}>
+              <RotateCcw className="h-4 w-4" aria-hidden="true" />
+              Retry failed ({summary.failed})
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={onClear}>
+            <Trash2 className="h-4 w-4" aria-hidden="true" />
+            Clear queue
+          </Button>
+        </div>
+        <ul className="max-h-80 space-y-1 overflow-y-auto pr-1 text-sm" aria-label="Queued tracks">
+          {state.items.map((item) => (
+            <li key={item.trackId} className="flex min-w-0 items-baseline justify-between gap-2 border-b border-border py-1.5 last:border-0">
+              <span className="min-w-0 text-foreground">
+                <span className="block truncate">
+                  {item.title}
+                  <span className="text-muted-foreground"> — {item.artist}</span>
+                </span>
+                {item.fileName && <span className="block truncate text-xs text-muted-foreground">{item.fileName}</span>}
               </span>
-              {item.fileName && <span className="block truncate text-xs text-muted-foreground">{item.fileName}</span>}
-            </span>
-            <span className={`shrink-0 text-xs font-medium ${STATUS_TONE[item.status]}`}>
-              {STATUS_WORDS[item.status]}
-            </span>
-            {item.reason && <span className="sr-only">: {item.reason}</span>}
-          </li>
-        ))}
-      </ul>
+              <span className={`shrink-0 text-xs font-medium ${STATUS_TONE[item.status]}`}>
+                {STATUS_WORDS[item.status]}
+              </span>
+              {item.reason && <span className="sr-only">: {item.reason}</span>}
+            </li>
+          ))}
+        </ul>
+        </section>
+      )}
+      {gateRun && <GateRunSection run={gateRun} onCleared={onGatesCleared ?? (() => {})} />}
     </section>
   );
 }
@@ -572,6 +592,7 @@ export function DownloadQueueSheet(props: Omit<PanelProps, "showHeading">) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const { summary, state } = props;
+  const gateRun = hasGateSection(props.gates ?? null) ? props.gates! : null;
   // The check arrives as its own dialog; two modals must not stack.
   useEffect(() => {
     if (state.check) setOpen(false);
@@ -583,11 +604,15 @@ export function DownloadQueueSheet(props: Omit<PanelProps, "showHeading">) {
           Download queue ·{" "}
           {state.check
             ? "check needed"
-            : state.running
-              ? `${summary.waiting} left`
-              : summary.waiting > 0
-                ? `paused, ${summary.waiting} left`
-                : "finished"}
+            : state.items.length === 0
+              ? gateRun?.active
+                ? "gates running"
+                : "gates"
+              : state.running
+                ? `${summary.waiting} left`
+                : summary.waiting > 0
+                  ? `paused, ${summary.waiting} left`
+                  : "finished"}
         </Button>
       </div>
       <Dialog open={open} onClose={() => setOpen(false)} title="Download queue" variant="sheet" size="md" returnFocusRef={triggerRef}>

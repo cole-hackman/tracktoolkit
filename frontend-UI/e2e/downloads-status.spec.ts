@@ -138,7 +138,8 @@ test("the normal list has a checkbox per automatic download, and only ticked tra
   ]);
   expect(await posted(page)).toEqual([{ type: "sc-toolkit-queue-set", queue: sent.queue, ts: sent.ts }]);
   await expect(gate).not.toBeChecked();
-  await expect(page.getByRole("status").filter({ hasText: "Queue sent to extension" })).toBeVisible();
+  await expect(page.locator("#app-live-region")).toHaveText("Queue sent to the extension. Gate progress appears in the download queue.");
+  await expect(page.getByText("Queue sent to extension.")).toHaveCount(0);
 });
 
 const ALL_TRACKS = [...TRACKS, ...GATE_TRACKS];
@@ -251,6 +252,7 @@ test("Auto-Download asks the same question, and Export (JSON) stays Hypeddit-onl
   const dialog = page.getByRole("dialog", { name: CONFIRM });
   await expect(dialog.getByText(DROPLOUD_LINE(2))).toBeVisible();
   await expect(dialog.getByText(COBRAND_LINE(1))).toBeVisible();
+  await expect(dialog.getByText("Chrome comes to the front for Cobrand gates, at the end of the run.")).toBeVisible();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   expect(await storedQueue(page)).toBeNull();
   expect(await posted(page)).toEqual([]);

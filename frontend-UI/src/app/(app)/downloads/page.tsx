@@ -8,6 +8,7 @@ import { apiFetch, readApiErrorMessage } from "@/lib/api";
 import { startSoundCloudDownload } from "@/lib/download";
 import { downloadedLabel, downloadedMap } from "@/lib/download-history";
 import { supportsFolderSave } from "@/lib/download-folder";
+import { useGateAnnouncements } from "@/components/downloads/GateRun";
 import { DownloadCheckDialog, DownloadQueuePanel, DownloadQueueSheet, useDownloadQueue } from "@/components/downloads/DownloadQueue";
 import { DownloadLinkAction, DownloadStatusLine, downloadTone } from "@/components/downloads/DownloadStatus";
 import {
@@ -57,6 +58,7 @@ import {
   gateQueueItem,
   gateSiteOf,
 } from "@/lib/gate-queue";
+import { GATE_RUN_STORAGE_KEY, hasGateSection, parseGateRun, parseGateRunJson, type GateRun } from "@/lib/gate-run";
 
 interface Playlist {
   id: number;
@@ -79,14 +81,6 @@ interface Track {
   purchase_url?: string;
   purchase_title?: string;
   permalink_url: string;
-}
-
-interface HypedditProgress {
-  total: number;
-  index: number;
-  completed: number;
-  failed: number;
-  active: boolean;
 }
 
 const LIKED_TRACKS_ID = -1;
@@ -156,15 +150,14 @@ export default function DownloadsPage() {
   // Which selection it is, not the tracks: the dialog is modal, so the
   // selection cannot change under it.
   const [confirmSend, setConfirmSend] = useState<"picked" | "auto" | null>(null);
-  const [hypedditProgress, setHypedditProgress] = useState<HypedditProgress | null>(null);
-  const [queueSent, setQueueSent] = useState(false);
+  const [hypedditProgress, setHypedditProgress] = useState<GateRun | null>(null);
 
   // Rows ticked in the normal list, for "Download N selected": either kind of
   // automatic download, without going through Auto-Download's select-all.
   const [pickedIds, setPickedIds] = useState<Set<number>>(new Set());
 
   const queue = useDownloadQueue(announce);
-  const hasQueue = queue.hydrated && queue.state.items.length > 0;
+  useGateAnnouncements(isOwner ? hypedditProgress : null, announce);
 
   const playlistsQuery = usePlaylistsQuery();
   const meQuery = useMeQuery();
@@ -215,14 +208,12 @@ export default function DownloadsPage() {
   useEffect(() => {
     setExtInstalled(localStorage.getItem("sc-toolkit-ext-installed") === "1.0");
     setExtGates(extensionGateSites(localStorage.getItem(EXT_GATES_KEY)));
-    const saved = localStorage.getItem("sc-toolkit-hypeddit-progress");
-    if (saved) {
-      try { setHypedditProgress(JSON.parse(saved)); } catch { /* ignore */ }
-    }
+    const saved = parseGateRunJson(localStorage.getItem(GATE_RUN_STORAGE_KEY));
+    if (saved) setHypedditProgress(saved);
 
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as HypedditProgress;
-      setHypedditProgress(detail);
+      const next = parseGateRun((e as CustomEvent).detail);
+      if (next) setHypedditProgress(next);
     };
     window.addEventListener("sc-toolkit-progress-update", handler);
     return () => window.removeEventListener("sc-toolkit-progress-update", handler);
@@ -263,7 +254,6 @@ export default function DownloadsPage() {
     setSelectedHypedditIds(new Set());
     setPickedIds(new Set());
     setInlineError(null);
-    setQueueSent(false);
   };
 
   const toggleSelectionMode = () => {
@@ -284,7 +274,6 @@ export default function DownloadsPage() {
     // press — it used to open on "Queue 0 tracks", disabled, until Select All.
     setSelectedHypedditIds(entering ? new Set(gateTracks.map((t) => t.id)) : new Set());
     setPickedIds(new Set());
-    setQueueSent(false);
     setInlineError(null);
   };
 
@@ -382,7 +371,7 @@ export default function DownloadsPage() {
     const ts = Date.now();
     localStorage.setItem("sc-toolkit-hypeddit-queue", JSON.stringify({ queue, ts }));
     window.postMessage({ type: "sc-toolkit-queue-set", queue, ts }, "*");
-    setQueueSent(true);
+    announce("Queue sent to the extension. Gate progress appears in the download queue.");
   };
 
   const sendToExtension = () => {
@@ -420,7 +409,7 @@ export default function DownloadsPage() {
   };
 
   const dismissProgress = () => {
-    localStorage.removeItem("sc-toolkit-hypeddit-progress");
+    localStorage.removeItem(GATE_RUN_STORAGE_KEY);
     setHypedditProgress(null);
   };
 
@@ -640,11 +629,14 @@ export default function DownloadsPage() {
     />
   );
 
+  // A v1 payload (counts only) keeps the banner; v2 shows the gate section in the queue panel.
+  const gateRun = isOwner && hasGateSection(hypedditProgress) ? hypedditProgress : null;
+  const hasQueue = (queue.hydrated && queue.state.items.length > 0) || !!gateRun;
   const hdActive = hypedditProgress?.active ?? false;
   const hdTotal = hypedditProgress?.total ?? 0;
   const hdCompleted = hypedditProgress?.completed ?? 0;
   const hdFailed = hypedditProgress?.failed ?? 0;
-  const showProgressBanner = hdTotal > 0;
+  const showProgressBanner = hdTotal > 0 && hypedditProgress?.version === 1;
 
   // Only computed while the confirm dialog is open — no point building this
   // on every render while it's closed.
@@ -863,23 +855,6 @@ export default function DownloadsPage() {
                     Extension not detected — open the panel from the Chrome toolbar to control the download.
                   </p>
                 )}
-              </div>
-            )}
-
-            {/* Queue-sent confirmation (owner-only) */}
-            {isOwner && queueSent && (
-              <div
-                role="status"
-                className="mb-4 flex items-start gap-3 rounded-xl border border-border bg-card px-4 py-3 text-sm text-foreground"
-              >
-                <Zap className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
-                <span className="min-w-0 flex-1">
-                  Queue sent to extension. Open the Track Toolkit side panel from the Chrome toolbar
-                  to watch it run; it starts on its own.
-                </span>
-                <IconButton label="Dismiss queue message" size="sm" onClick={() => setQueueSent(false)}>
-                  <X className="w-4 h-4" aria-hidden="true" />
-                </IconButton>
               </div>
             )}
 
@@ -1194,6 +1169,8 @@ export default function DownloadsPage() {
                 onConfirmSaved={queue.confirmSaved}
                 onRetryChecked={queue.retryChecked}
                 multiOk={queue.multiOk}
+                gates={gateRun}
+                onGatesCleared={dismissProgress}
               />
             </div>
           </aside>
@@ -1209,6 +1186,8 @@ export default function DownloadsPage() {
             onConfirmSaved={queue.confirmSaved}
             onRetryChecked={queue.retryChecked}
             multiOk={queue.multiOk}
+            gates={gateRun}
+            onGatesCleared={dismissProgress}
           />
         )}
         {hasQueue && (
@@ -1241,6 +1220,9 @@ export default function DownloadsPage() {
               <p>
                 {plural(confirmCounts.cobrand, "Cobrand gate")} will sign your phone number up to artist SMS.
               </p>
+            )}
+            {confirmCounts.cobrand > 0 && (
+              <p>Chrome comes to the front for Cobrand gates, at the end of the run.</p>
             )}
             {confirmCounts.droploud + confirmCounts.cobrand > EXT_RUN_CAP_DEFAULT && (
               <p className="text-muted-foreground">
