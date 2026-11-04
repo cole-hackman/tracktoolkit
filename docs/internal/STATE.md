@@ -76,8 +76,10 @@ ticked SoundCloud direct download on `/downloads/`.
    - **The quiet period is not a test yet.** The two heaviest clients made 34
      `/api/playlists` requests in the 3 days before the fix and none after. Do
      not call this fixed until a week passes with no kills and those clients
-     have returned. A kill will show as a Discord DOWN alert; the last
-     `[library-load] start` line shows which load was running.
+     have returned. Check the App Service logs for `Killed`, not only Discord:
+     the monitor needs two failed runs, so a short restart can raise no alert
+     (the 15:59:53 kill raised none). The last `[library-load] start` line
+     shows which load was running.
    - **Memory is not established as the cause.** Node reached 954 MB before
      the fix, but the 15:59:53 kill came on the new code with Node at about
      124 MB, plan memory 75% and CPU 35%. Plan memory also sat at 97% from
@@ -89,6 +91,9 @@ ticked SoundCloud direct download on `/downloads/`.
    - **Ruled out:** the retention job (the 15:57:02 run finished in 1 s,
      removed nothing) and the follow-back scheduler (`GROWTH_AUTOCHECK=false`
      in production, so it never runs).
+   - **Monitor record:** Discord shows five incidents on 11-04, first failure
+     at 13:40:30, 14:30:30 (home and two redirects only), 14:55:30, 15:20:30
+     and 15:40:30 UTC, and no DOWN after that.
    - **Measuring trap:** `curl` from a dev machine timed out around 16:00 while
      the monitor's six requests reached the app in the 15:55, 16:00 and 16:05
      buckets. Trust the monitor and App Service logs over a local probe.
