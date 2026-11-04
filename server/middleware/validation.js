@@ -454,12 +454,17 @@ export const validateClonePlaylist = [
     .isLength({ min: 1, max: 2048 })
     .withMessage('url must be a valid SoundCloud URL string')
     .custom((value) => validateSoundCloudUrl(value)),
+  // Plain text, never `.escape()`: SoundCloud stores the title as given, so
+  // "Rock & Roll" must not arrive as "Rock &amp; Roll". `.isString()` leads
+  // (array bypass), and control characters go before the length is measured.
   body('title')
     .optional()
+    .isString()
+    .withMessage('Title must be text')
+    .customSanitizer((value) => stripControlChars(value))
     .trim()
     .isLength({ min: 1, max: 200 })
-    .withMessage('Title must be between 1 and 200 characters')
-    .escape(),
+    .withMessage('Title must be between 1 and 200 characters'),
   handleValidationErrors
 ];
 

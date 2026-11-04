@@ -130,6 +130,27 @@ describe('POST /api/playlists/clone with a secret link', () => {
   });
 });
 
+describe('POST /api/playlists/clone title', () => {
+  beforeEach(() => {
+    resolveAny.mockResolvedValue({ kind: 'playlist', id: 8 });
+    getPlaylistWithTracks.mockResolvedValue({ id: 8, title: 'Open', sharing: 'public', tracks: toTracks(range(3)) });
+  });
+  const clone = (body) => request(app).post('/api/playlists/clone').send({ url: 'https://soundcloud.com/a/sets/open', ...body });
+
+  test('is stored as typed, not HTML-escaped, with control characters removed', async () => {
+    const res = await clone({ title: '  Rock & Roll <Live>\u0007 ' });
+    expect(res.status).toBe(200);
+    expect(createPlaylist.mock.calls[0][2]).toBe('Rock & Roll <Live>');
+  });
+
+  test('an array, an over-long or an all-control-character title is a 400', async () => {
+    expect((await clone({ title: ['x'] })).status).toBe(400);
+    expect((await clone({ title: 'x'.repeat(201) })).status).toBe(400);
+    expect((await clone({ title: '\u0001\u0002' })).status).toBe(400);
+    expect(createPlaylist).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /api/playlists/clone of your own private playlist', () => {
   test('no token needed; the copy stays private', async () => {
     resolveAny.mockResolvedValue({ kind: 'playlist', id: 7 });
