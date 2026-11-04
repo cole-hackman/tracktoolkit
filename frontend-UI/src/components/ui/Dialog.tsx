@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { IconButton } from "./IconButton";
 import { useDialog } from "./useDialog";
 
-export type DialogVariant = "center" | "sheet" | "drawer";
+export type DialogVariant = "center" | "sheet";
 export type DialogSize = "sm" | "md" | "lg";
 
 const SIZE_MAP: Record<DialogSize, string> = {
@@ -19,7 +19,6 @@ const LAYOUT_MAP: Record<DialogVariant, string> = {
   center: "flex items-center justify-center p-4",
   // A bottom sheet on a phone, the same centred card from `sm` up.
   sheet: "flex items-end justify-center sm:items-center sm:p-4",
-  drawer: "",
 };
 
 export interface DialogProps {
@@ -46,7 +45,7 @@ export interface DialogProps {
   labelledById?: string;
   /** `false` hides the corner close button (Escape and the backdrop still close). */
   showClose?: boolean;
-  /** Accessible name for the corner close button — "Close menu" on the drawer. */
+  /** Accessible name for the corner close button — "Close menu" on the nav sheets. */
   closeLabel?: string;
   panelClassName?: string;
 }
@@ -57,7 +56,7 @@ export interface DialogProps {
  * decided once.
  *
  * `z-[70]` is deliberate: above the selection banner (z-40) and the mobile
- * header and drawer (z-50), so a dialog is never partly covered.
+ * header and tab bar (z-50), so a dialog is never partly covered.
  */
 export function Dialog({
   open,
@@ -113,13 +112,8 @@ export function Dialog({
             "sm:rounded-2xl sm:border-b-2 sm:pb-0",
             SIZE_MAP[size],
           ],
-          variant === "drawer" && [
-            "fixed left-0 bottom-0 w-[min(18rem,85vw)] overflow-y-auto",
-            "rounded-r-2xl border-l-0 slide-in-from-left-4",
-          ],
           panelClassName,
         )}
-        style={variant === "drawer" ? { top: "var(--announcement-h)" } : undefined}
       >
         {showClose ? (
           <IconButton

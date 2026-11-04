@@ -15,27 +15,36 @@
 
 import type { ComponentType } from "react";
 import {
+  Accessibility,
   Activity,
   ArrowRightLeft,
   ClipboardCheck,
   Combine,
   Copy,
   Download,
+  Ellipsis,
+  FileText,
   FileUp,
+  Gauge,
   Heart,
+  HelpCircle,
   LayoutDashboard,
   Link as LinkIcon,
   ListChecks,
   ListMusic,
   ListOrdered,
   ListPlus,
+  MessageSquare,
   Music,
   Repeat,
+  ScrollText,
   Search,
+  Shield,
   Shuffle,
   Sparkles,
   Stethoscope,
   ThumbsUp,
+  UserCog,
   Users,
 } from "lucide-react";
 
@@ -108,6 +117,117 @@ export const NAV: NavEntry[] = [
 export const NAV_LINKS: NavLink[] = NAV.flatMap((entry) =>
   isGroup(entry) ? entry.items : [entry],
 );
+
+/** The rail's "Info" list, and the last section of the mobile More sheet. */
+export const INFO_LINKS: NavLink[] = [
+  { href: "/about", label: "About", icon: FileText },
+  { href: "/faq", label: "FAQ", icon: HelpCircle },
+  { href: "/feedback", label: "Send feedback", icon: MessageSquare },
+  { href: "/account", label: "Account", icon: UserCog },
+  { href: "/privacy", label: "Privacy", icon: Shield },
+  { href: "/terms", label: "Terms", icon: ScrollText },
+  { href: "/accessibility", label: "Accessibility", icon: Accessibility },
+];
+
+/**
+ * The admin console link. Only rendered for accounts on ADMIN_IDS (the server
+ * reports `isAdmin` on /api/auth/me). The page itself gates again and
+ * `adminAuth` is the real boundary, so this is a shortcut, not a guard.
+ */
+export const ADMIN_LINK: NavLink = { href: "/admin", label: "Admin console", icon: Gauge };
+
+/** `INFO_LINKS` plus the admin console for an admin. */
+export function infoLinks(isAdmin: boolean | undefined): NavLink[] {
+  return isAdmin ? [...INFO_LINKS, ADMIN_LINK] : INFO_LINKS;
+}
+
+/**
+ * `/dashboard/` is how the static export addresses the route and `NAV` writes
+ * it `/dashboard`, so an exact match is not enough on its own.
+ */
+export function isActivePath(pathname: string | null, href: string): boolean {
+  return pathname === href || !!pathname?.startsWith(href + "/");
+}
+
+/* ── Mobile tab bar ──
+   Five slots over the same tree: two direct links, two groups that open as a
+   sheet, and More for everything else. Everything is looked up in `NAV`, so a
+   renamed tool cannot drift, and `MORE_GROUPS` is what is left over, so a new
+   tool lands in More without anyone having to remember this list. */
+
+function navLink(href: string): NavLink {
+  const link = NAV_LINKS.find((candidate) => candidate.href === href);
+  if (!link) throw new Error(`No NAV link for ${href}`);
+  return link;
+}
+
+function navGroup(label: string): NavGroup {
+  const group = NAV.filter(isGroup).find((candidate) => candidate.label === label);
+  if (!group) throw new Error(`No NAV group called ${label}`);
+  return group;
+}
+
+export interface MobileTab {
+  id: string;
+  /** One word: the bar gives each slot about 72px at 360 wide. */
+  label: string;
+  icon: NavLink["icon"];
+  /** A tab that goes somewhere. Without one, the tab opens a sheet. */
+  href?: string;
+  /** The sheet this tab opens, and the routes that light the tab up. */
+  group?: NavGroup;
+}
+
+const dashboard = navLink("/dashboard");
+const downloads = navLink("/downloads");
+const playlists = navGroup("Playlists");
+const social = navGroup("Social & Activity");
+
+export const MOBILE_TABS: MobileTab[] = [
+  { id: "dashboard", label: dashboard.label, icon: dashboard.icon, href: dashboard.href },
+  { id: "playlists", label: "Playlists", icon: ListMusic, group: playlists },
+  { id: "social", label: "Social", icon: Users, group: social },
+  { id: "downloads", label: downloads.label, icon: downloads.icon, href: downloads.href },
+  { id: "more", label: "More", icon: Ellipsis },
+];
+
+/** Tools with no tab of their own, in `NAV` order. */
+export const MORE_GROUPS: NavGroup[] = [
+  {
+    label: "Library",
+    items: NAV.filter(
+      (entry): entry is NavLink =>
+        !isGroup(entry) && entry !== dashboard && entry !== downloads,
+    ),
+  },
+  ...NAV.filter(isGroup).filter((group) => group !== playlists && group !== social),
+];
+
+/**
+ * Tools and Info links whose name matches every word typed, across the whole
+ * tree. A tool's group counts as part of its name, so "social" finds that
+ * group, and arrows are ignored, so "likes playlist" finds "Likes → Playlist".
+ */
+export function filterNavLinks(query: string, isAdmin?: boolean): NavLink[] {
+  const terms = query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (terms.length === 0) return [];
+
+  const candidates = [
+    ...NAV.flatMap((entry) =>
+      isGroup(entry)
+        ? entry.items.map((link) => ({ link, name: `${link.label} ${entry.label}` }))
+        : [{ link: entry, name: entry.label }],
+    ),
+    ...infoLinks(isAdmin).map((link) => ({ link, name: link.label })),
+  ];
+
+  return candidates
+    .filter(({ name }) => {
+      const lower = name.toLowerCase();
+      return terms.every((term) => lower.includes(term));
+    })
+    .map(({ link }) => link);
+}
 
 /**
  * The human name for a pathname, or `null` when it is not one of our tools.

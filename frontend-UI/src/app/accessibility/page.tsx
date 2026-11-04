@@ -10,8 +10,8 @@ const LAST_REVIEWED = "2026-09-22";
  * Only what is still true. Five entries were seeded here when this page was
  * written and all five are now fixed, so all five are gone:
  *
- *  - the mobile drawer is a real `Dialog` with a focus trap, Escape and focus
- *    return (`components/AppShell.tsx`);
+ *  - the mobile nav sheets are a real `Dialog` with a focus trap, Escape and
+ *    focus return (`components/MobileNav.tsx`);
  *  - every bulk operation reports progress, with a `ProgressBar` where there
  *    is something determinate to count and an announcement where there is not;
  *  - icon-only controls are `IconButton` (or a link with an `aria-label`);
