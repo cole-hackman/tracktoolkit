@@ -389,3 +389,35 @@ describe('paginate crawl bounds', () => {
     expect(refreshCalls.length).toBeLessThanOrEqual(2);
   });
 });
+
+describe('paginate stopped by a 429', () => {
+  beforeEach(() => {
+    global.fetch = jest.fn();
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  test('a Retry-After past the deadline ends the crawl and marks it truncated', async () => {
+    fetch
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        collection: [{ id: 1 }, { id: 2 }],
+        next_href: 'https://api.soundcloud.com/users/9/likes/tracks?cursor=abc',
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response('', { status: 429, headers: { 'Retry-After': '600' } }));
+
+    const items = await soundcloudClient.paginate('/users/9/likes/tracks', 'a', 'r', 200, {
+      deadlineAt: Date.now() + 60_000,
+    });
+
+    expect(items.map((t) => t.id)).toEqual([1, 2]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(items.truncated).toBe(true);
+    expect(items.truncatedReason).toBe('rate-limited');
+  });
+
+  test('a crawl that reaches the end is not truncated', async () => {
+    fetch.mockResolvedValueOnce(new Response(JSON.stringify({ collection: [{ id: 1 }], next_href: null }), { status: 200 }));
+    const items = await soundcloudClient.paginate('/users/9/likes/tracks', 'a', 'r', 200);
+    expect(items.truncated).toBeUndefined();
+  });
+});

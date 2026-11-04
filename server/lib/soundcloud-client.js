@@ -733,6 +733,10 @@ class SoundCloudClient {
 
     let currentAccessToken = accessToken;
     let retries429 = 0;
+    // Set when a 429 ends the crawl early (its Retry-After would outlast the
+    // deadline). The loop exits with time still on the clock, so the deadline
+    // test below would not see it, and a partial list would pass as whole.
+    let stoppedOn429 = false;
 
     while (
       nextUrl
@@ -769,6 +773,7 @@ class SoundCloudClient {
         const delay = retryAfter ? parseInt(retryAfter) * 1000 : 1000;
         // Sleeping past the deadline is worse than a partial crawl
         if (deadlineAt !== null && Date.now() + delay >= deadlineAt) {
+          stoppedOn429 = true;
           break;
         }
         await new Promise(resolve => setTimeout(resolve, delay));
@@ -805,16 +810,17 @@ class SoundCloudClient {
     // callers that care can read `.truncated`.
     const hitPageCap = pagesFetched >= maxPages && Boolean(nextUrl);
     const hitDeadline = deadlineAt !== null && Date.now() >= deadlineAt && Boolean(nextUrl);
-    if (hitPageCap || hitDeadline) {
+    const hitRateLimit = stoppedOn429 && Boolean(nextUrl);
+    if (hitPageCap || hitDeadline || hitRateLimit) {
+      const reason = hitPageCap ? 'page-cap' : (hitRateLimit ? 'rate-limited' : 'deadline');
       Object.defineProperty(items, 'truncated', {
         value: true, enumerable: false, configurable: true,
       });
       Object.defineProperty(items, 'truncatedReason', {
-        value: hitPageCap ? 'page-cap' : 'deadline', enumerable: false, configurable: true,
+        value: reason, enumerable: false, configurable: true,
       });
       logger.warn('SoundCloud crawl truncated', {
-        endpoint, pagesFetched, collected: items.length,
-        reason: hitPageCap ? 'page-cap' : 'deadline',
+        endpoint, pagesFetched, collected: items.length, reason,
       });
     }
     return items;
