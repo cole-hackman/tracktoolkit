@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { ChevronDown, Copy, ExternalLink, Pause, Play, RotateCcw, Trash2 } from "lucide-react";
-import { Button, ConfirmDialog, ProgressBar, useAnnounce } from "@/components/ui";
+import { Button, ProgressBar, useAnnounce } from "@/components/ui";
 import {
   gateSiteLabel,
   gateStepWords,
@@ -74,9 +74,15 @@ export function useGateAnnouncements(run: GateRun | null, announce: ReturnType<t
       announce(lines.length > 3 ? `${shown}. And ${lines.length - 3} more` : shown);
     }
     if (prev.active && !run.active) {
-      const done = run.items.filter((i) => i.status === "done").length;
-      const failed = run.items.filter((i) => i.status === "failed").length;
-      announce(`Gate run finished: ${done} done, ${failed} failed`, { assertive: true });
+      // A stop leaves gates in line; only a run with nothing left has finished.
+      const left = run.items.some((i) => i.status === "waiting" || i.status === "running" || i.status === "saving");
+      if (left) {
+        announce("Gates paused");
+      } else {
+        const done = run.items.filter((i) => i.status === "done").length;
+        const failed = run.items.filter((i) => i.status === "failed").length;
+        announce(`Gate run finished: ${done} done, ${failed} failed`, { assertive: true });
+      }
     }
   }, [run, announce]);
 }
@@ -205,9 +211,8 @@ function RunSummary({ summary }: { summary: GateRunSummary }) {
 }
 
 /** Per-gate progress from the extension, with its controls and the run summary. */
-export function GateRunSection({ run, onCleared }: { run: GateRun; onCleared: () => void }) {
+export function GateRunSection({ run, onRequestClear }: { run: GateRun; onRequestClear: () => void }) {
   const headingId = useId();
-  const [confirmClear, setConfirmClear] = useState(false);
   const settled = run.items.filter((i) => SETTLED.includes(i.status)).length;
   const done = run.items.filter((i) => i.status === "done").length;
   const failed = run.items.filter((i) => i.status === "failed").length;
@@ -251,7 +256,7 @@ export function GateRunSection({ run, onCleared }: { run: GateRun; onCleared: ()
             Retry failed gates ({failed})
           </Button>
         )}
-        <Button variant="ghost" size="sm" onClick={() => setConfirmClear(true)}>
+        <Button variant="ghost" size="sm" onClick={onRequestClear}>
           <Trash2 className="h-4 w-4" aria-hidden="true" />
           Clear gates
         </Button>
@@ -259,24 +264,11 @@ export function GateRunSection({ run, onCleared }: { run: GateRun; onCleared: ()
       {run.summary && <RunSummary summary={run.summary} />}
       {run.items.length > 0 && (
         <ul className="max-h-80 overflow-y-auto pr-1" aria-label="Gates">
-          {run.items.map((item) => (
-            <GateRow key={item.id} item={item} onRetry={(id) => postGateCommand("sc-toolkit-retry-failed", { ids: [id] })} />
+          {run.items.map((item, index) => (
+            <GateRow key={`${item.id}-${index}`} item={item} onRetry={(id) => postGateCommand("sc-toolkit-retry-failed", { ids: [id] })} />
           ))}
         </ul>
       )}
-      <ConfirmDialog
-        open={confirmClear}
-        title="Clear the gate queue?"
-        description="The extension forgets the gates still in line. Run history and summaries are kept."
-        confirmLabel="Clear gates"
-        variant="destructive"
-        onConfirm={() => {
-          setConfirmClear(false);
-          postGateCommand("sc-toolkit-clear");
-          onCleared();
-        }}
-        onCancel={() => setConfirmClear(false)}
-      />
     </section>
   );
 }

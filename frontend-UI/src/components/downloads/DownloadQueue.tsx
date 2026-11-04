@@ -474,7 +474,8 @@ interface PanelProps {
   showHeading?: boolean;
   /** The extension's gate run, when it has reported one. */
   gates?: GateRun | null;
-  onGatesCleared?: () => void;
+  /** Asks the page to confirm clearing the gates; the confirm lives there, not in a sheet. */
+  onRequestClearGates?: () => void;
 }
 
 export function DownloadQueuePanel({
@@ -488,7 +489,7 @@ export function DownloadQueuePanel({
   multiOk,
   showHeading = true,
   gates,
-  onGatesCleared,
+  onRequestClearGates,
 }: PanelProps) {
   const headingId = useId();
   const directId = useId();
@@ -582,7 +583,7 @@ export function DownloadQueuePanel({
         </ul>
         </section>
       )}
-      {gateRun && <GateRunSection run={gateRun} onCleared={onGatesCleared ?? (() => {})} />}
+      {gateRun && <GateRunSection run={gateRun} onRequestClear={onRequestClearGates ?? (() => {})} />}
     </section>
   );
 }
@@ -616,7 +617,16 @@ export function DownloadQueueSheet(props: Omit<PanelProps, "showHeading">) {
         </Button>
       </div>
       <Dialog open={open} onClose={() => setOpen(false)} title="Download queue" variant="sheet" size="md" returnFocusRef={triggerRef}>
-        <DownloadQueuePanel {...props} showHeading={false} />
+        <DownloadQueuePanel
+          {...props}
+          showHeading={false}
+          onRequestClearGates={() => {
+            // Two modals must not stack: close the sheet, and open the confirm
+            // once its scroll lock and focus trap have been released.
+            setOpen(false);
+            requestAnimationFrame(() => props.onRequestClearGates?.());
+          }}
+        />
       </Dialog>
     </>
   );

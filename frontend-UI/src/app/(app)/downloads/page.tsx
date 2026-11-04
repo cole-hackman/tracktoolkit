@@ -58,7 +58,7 @@ import {
   gateQueueItem,
   gateSiteOf,
 } from "@/lib/gate-queue";
-import { GATE_RUN_STORAGE_KEY, hasGateSection, parseGateRun, parseGateRunJson, type GateRun } from "@/lib/gate-run";
+import { GATE_RUN_STORAGE_KEY, hasGateSection, postGateCommand, parseGateRun, parseGateRunJson, type GateRun } from "@/lib/gate-run";
 
 interface Playlist {
   id: number;
@@ -150,6 +150,9 @@ export default function DownloadsPage() {
   // Which selection it is, not the tracks: the dialog is modal, so the
   // selection cannot change under it.
   const [confirmSend, setConfirmSend] = useState<"picked" | "auto" | null>(null);
+  const [confirmClearGates, setConfirmClearGates] = useState(false);
+  // A run the person cleared stays cleared: the extension may still send its summary.
+  const clearedRunIdRef = useRef<string | null>(null);
   const [hypedditProgress, setHypedditProgress] = useState<GateRun | null>(null);
 
   // Rows ticked in the normal list, for "Download N selected": either kind of
@@ -213,7 +216,9 @@ export default function DownloadsPage() {
 
     const handler = (e: Event) => {
       const next = parseGateRun((e as CustomEvent).detail);
-      if (next) setHypedditProgress(next);
+      if (!next) return;
+      if (next.runId !== null && next.runId === clearedRunIdRef.current) return;
+      setHypedditProgress(next);
     };
     window.addEventListener("sc-toolkit-progress-update", handler);
     return () => window.removeEventListener("sc-toolkit-progress-update", handler);
@@ -406,6 +411,19 @@ export default function DownloadsPage() {
     // dialog, so focus would fall to the body. Cancel keeps that button, and
     // the dialog returns focus to it as usual.
     requestAnimationFrame(() => backToSourcesRef.current?.focus());
+  };
+
+  const clearGates = () => {
+    setConfirmClearGates(false);
+    postGateCommand("sc-toolkit-clear");
+    clearedRunIdRef.current = hypedditProgress?.runId ?? null;
+    dismissProgress();
+    // The Clear button unmounts with the section; focus the page's own anchor.
+    requestAnimationFrame(() => {
+      const target = backToSourcesRef.current ?? document.querySelector<HTMLElement>("h1");
+      if (target && !target.hasAttribute("tabindex") && target.tagName === "H1") target.setAttribute("tabindex", "-1");
+      target?.focus();
+    });
   };
 
   const dismissProgress = () => {
@@ -1170,7 +1188,7 @@ export default function DownloadsPage() {
                 onRetryChecked={queue.retryChecked}
                 multiOk={queue.multiOk}
                 gates={gateRun}
-                onGatesCleared={dismissProgress}
+                onRequestClearGates={() => setConfirmClearGates(true)}
               />
             </div>
           </aside>
@@ -1187,7 +1205,7 @@ export default function DownloadsPage() {
             onRetryChecked={queue.retryChecked}
             multiOk={queue.multiOk}
             gates={gateRun}
-            onGatesCleared={dismissProgress}
+            onRequestClearGates={() => setConfirmClearGates(true)}
           />
         )}
         {hasQueue && (
@@ -1231,6 +1249,16 @@ export default function DownloadsPage() {
             )}
           </div>
         }
+      />
+
+      <ConfirmDialog
+        open={confirmClearGates}
+        title="Clear the gate queue?"
+        description="The extension forgets the gates still in line. Run history and summaries are kept."
+        confirmLabel="Clear gates"
+        variant="destructive"
+        onConfirm={clearGates}
+        onCancel={() => setConfirmClearGates(false)}
       />
 
       <ConfirmDialog

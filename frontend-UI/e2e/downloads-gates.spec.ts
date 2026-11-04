@@ -206,17 +206,80 @@ test("the summary expands each count, lists actions without a file, and copies",
   expect(clip).toContain("Actions done without a file:");
 });
 
-test("a gate landing on done or failed is announced, a step change is not, and the run end is", async ({ page }, testInfo) => {
+const withStatus = (id: number, over: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+  payload({ notice: undefined, ...extra, items: payload().items.map((i) => (i.id === id ? { ...i, ...over } : i)) });
+
+test("a gate landing on done is announced, a step change is not, a stop says paused, and only an emptied run says finished", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "flow test");
   await open(page);
-  await send(page, payload({ notice: undefined }));
   const polite = page.locator("#app-live-region");
-  await expect(polite).not.toHaveText(/Track 2/);
-  // Step change only: silent.
-  await send(page, payload({ notice: undefined, items: payload().items.map((i) => (i.id === 2 ? { ...i, step: "verifying" } : i)) }));
-  await expect(polite).not.toHaveText(/Track 2/);
-  await send(page, payload({ notice: undefined, items: payload().items.map((i) => (i.id === 2 ? { ...i, status: "done", step: undefined } : i)) }));
+  const assertive = page.locator("#app-live-region-assertive");
+  await send(page, payload({ notice: undefined }));
+  // The progress bar's own quarter-mark announcement is all there is yet.
+  await expect(polite).toHaveText("Working gates \u2014 50% complete");
+  // Step change only: nothing new.
+  await send(page, withStatus(2, { step: "verifying" }));
+  await page.waitForTimeout(300);
+  await expect(polite).toHaveText("Working gates \u2014 50% complete");
+  await send(page, withStatus(2, { status: "done", step: undefined }));
   await expect(polite).toHaveText("Track 2 done");
-  await send(page, payload({ active: false, notice: undefined, items: payload().items.map((i) => (i.id === 2 ? { ...i, status: "done", step: undefined } : i)) }));
-  await expect(page.locator("#app-live-region-assertive")).toHaveText("Gate run finished: 2 done, 1 failed");
+  // Stopped with a gate still waiting: paused, never finished.
+  await send(page, withStatus(2, { status: "done", step: undefined }, { active: false }));
+  await expect(polite).toHaveText("Gates paused");
+  await expect(assertive).not.toHaveText(/finished/);
+  // Resumed, then everything settles.
+  await send(page, withStatus(2, { status: "done", step: undefined }));
+  const settled = payload({ notice: undefined, active: false, items: payload().items.map((i) => ({ ...i, status: i.id === 3 ? "failed" : "done", step: undefined })) });
+  await send(page, settled);
+  await expect(assertive).toHaveText("Gate run finished: 3 done, 1 failed");
+});
+
+test("reloading with a finished run in storage says nothing", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "flow test");
+  await open(page);
+  const finished = payload({ active: false, notice: undefined, items: payload().items.map((i) => ({ ...i, status: "done", step: undefined })), summary: SUMMARY });
+  await page.evaluate((d) => localStorage.setItem("sc-toolkit-hypeddit-progress", JSON.stringify(d)), finished);
+  await page.reload();
+  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await expect(page.getByRole("region", { name: "Download queue" }).getByText("This run: 9 gates")).toBeVisible();
+  await page.waitForTimeout(400);
+  await expect(page.locator("#app-live-region")).not.toHaveText(/done|finished|paused/);
+  await expect(page.locator("#app-live-region-assertive")).not.toHaveText(/finished/);
+});
+
+test("Clear on a gate-only run (phone): the sheet closes first, the page scrolls, focus lands on something real, a late summary stays gone", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "m390", "phone flow");
+  await open(page);
+  await send(page, payload({ active: false }));
+  await page.getByRole("button", { name: /^Download queue · / }).click();
+  const sheet = page.getByRole("dialog", { name: "Download queue" });
+  await sheet.getByRole("button", { name: "Clear gates" }).click();
+  const confirm = page.getByRole("dialog", { name: "Clear the gate queue?" });
+  await expect(confirm).toBeVisible();
+  // Never two modals at once.
+  await expect(page.getByRole("dialog")).toHaveCount(1);
+  await confirm.getByRole("button", { name: "Clear gates" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Download queue · / })).toHaveCount(0);
+  expect(await page.evaluate(() => document.body.style.overflow)).not.toBe("hidden");
+  await expect.poll(() => page.evaluate(() => document.activeElement?.isConnected === true && document.activeElement !== document.body)).toBe(true);
+  expect((await posted(page)) as Array<{ type: string }>).toEqual([{ type: "sc-toolkit-clear" }]);
+  // The extension's lingering summary for the cleared run does not bring it back.
+  await send(page, payload({ active: false, summary: SUMMARY }));
+  await expect(page.getByRole("button", { name: /^Download queue · / })).toHaveCount(0);
+  // A new run does.
+  await send(page, payload({ runId: "r2" }));
+  await expect(page.getByRole("button", { name: /^Download queue · / })).toBeVisible();
+});
+
+test("Escape on the clear confirm closes only that dialog", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "m390", "phone flow");
+  await open(page);
+  await send(page, payload({ active: false }));
+  await page.getByRole("button", { name: /^Download queue · / }).click();
+  await page.getByRole("dialog", { name: "Download queue" }).getByRole("button", { name: "Clear gates" }).click();
+  await expect(page.getByRole("dialog", { name: "Clear the gate queue?" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(await page.evaluate(() => document.body.style.overflow)).not.toBe("hidden");
 });

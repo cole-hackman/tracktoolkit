@@ -218,7 +218,7 @@ export type GateCommand = "sc-toolkit-stop" | "sc-toolkit-resume" | "sc-toolkit-
 /** Same-origin command for the extension's content script. */
 export function postGateCommand(type: GateCommand, extra?: Record<string, unknown>) {
   if (typeof window === "undefined") return;
-  window.postMessage({ type, ...extra }, "*");
+  window.postMessage({ type, ...extra }, window.location.origin);
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
