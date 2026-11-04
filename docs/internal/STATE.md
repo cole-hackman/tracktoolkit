@@ -1,15 +1,26 @@
 # STATE
 
 ## Now
-Nothing is mid-flight. `main` is at `0e39d6a` and live (sidebar change below). The Hypeddit extension
+Droploud and Cobrand gate support is planned and handed off, not started:
+the plan, fixtures and cloud-session prompts are on `feat/gate-sites` in the
+**private** repo `cole-hackman/tracktoolkit-extension`
+(`docs/PLAN-gate-sites.md`, `docs/HANDOFF-gate-sites.md`). The extension
 (`~/Developer/tracktoolkit-extension-work`, branch `fix/extension-domain`,
-local only, head `d6573ed`) is committed and loads itself. Three things are
+head `d6573ed`, now pushed there) is committed and loads itself. Three things are
 unproven live: step tabs closing after a run (`d6573ed` passes 22 tests but
 no real run has exercised it), Chrome staying in the background through the
 last seconds of a gate (the one full run happened on a locked screen), and a
 ticked SoundCloud direct download on `/downloads/`.
 
 ## Just done
+- **Extension moved to a private repo** (2026-11-04):
+  `cole-hackman/tracktoolkit-extension`, verified `PRIVATE`; `main` (original
+  import `d5cd89b`), `fix/extension-domain` (`d6573ed`) and `feat/gate-sites`
+  (`a8eae33` fixtures, `dd4a5db` plan + handoff, `ae5afa2` README) pushed.
+  The local folder stays on `fix/extension-domain`, so the loaded extension
+  and its ID are unchanged. Investigation behind the plan: 99 Droploud gates
+  read, 7 tested live, 2 run to a file; 4 Cobrand links (2 real gates), 1
+  signup run. Existing 22 extension tests pass (the suite takes about 3 min).
 - `0e39d6a` — sidebar scrolls itself and the account block moved to the top.
   The desktop `<aside>` is sticky and viewport-tall, so the nav list scrolls
   inside it instead of the page; profile, theme, log out and Support Me sit
@@ -74,7 +85,15 @@ ticked SoundCloud direct download on `/downloads/`.
    his app at the end of each gate. If a tab stays, its site is the clue.
 2. Tick one SoundCloud direct download on `/downloads/` and confirm it queues
    alone (only the Hypeddit half was run live).
-3. Move the extension and runner to a private repo (item 3 under 2026-10-08).
+3. ~~Move the extension to a private repo~~ Done 2026-11-04 (see Just done).
+   The Hypeddit runner (`feat/hypeddit-runner`, local branch of this repo) is
+   still local and unpushed.
+4. **Droploud + Cobrand build:** run cloud session A (extension repo, tasks
+   1–5) and session B (this repo, task 6) with the prompts in the extension
+   repo's `docs/HANDOFF-gate-sites.md`. Both open PRs and stop. Then, locally:
+   pull `feat/gate-sites` into the same folder, live-run three Droploud gates
+   and the remaining Cobrand gate, merge the extension PR, then merge this
+   repo's PR (merging deploys) and check the live site.
 
 ### 2026-10-08
 0. ~~After #89 and #92 merge~~ **Done 2026-10-08 (see Just done).** What
@@ -494,6 +513,23 @@ ticked SoundCloud direct download on `/downloads/`.
 - **On a phone the login button sits at the bottom of the screen** (Cole's ask
   to optimize for mobile, 2026-11-04): logo and tagline at the top, a plain
   column with no card chrome, the card returning from `sm`.
+
+### From the 2026-11-04 gate-sites session
+- **The extension lives in the private repo `cole-hackman/tracktoolkit-extension`**,
+  never in this public one. Gate automation details stay there; this file and
+  `CLAUDE.md` get one-sentence summaries.
+- **Droploud gates are full auto in the extension** (Cole, 2026-11-04),
+  performing every action the gate requires on Cole's real account. A per-run
+  cap (default 10) limits how many go in one queue.
+- **Cobrand gates are automated too** (Cole, 2026-11-04). Each signup consents
+  to that artist's marketing SMS; the web app says so before sending.
+- **No bypassing server-checked gate steps** (2026-11-04). Steps a gate
+  verifies (OAuth-run actions, a checked repost, Turnstile, phone) are done for
+  real; only honor steps the gate itself does not check are clicked through.
+  Do not build or research ways to make a gate believe an action happened.
+- **The extension ships before the web app**, and the web app shows new gate
+  sites only when the extension says it supports them
+  (`sc-toolkit-ext-gates`); the queue keeps the `sc-toolkit-hypeddit-queue` key.
 
 ## Landmines
 - **Never fetch 1001Tracklists from the server.** A plain request (`curl`,
