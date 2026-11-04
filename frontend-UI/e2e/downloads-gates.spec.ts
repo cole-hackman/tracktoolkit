@@ -126,7 +126,19 @@ test("a v2 run shows one row per gate with its status, step and reason — axe-c
   expect(await overflow(page)).toBeLessThanOrEqual(0);
 
   // A summary adds its own blocks; same checks.
-  await send(page, payload({ active: false, summary: SUMMARY }));
+  await send(
+    page,
+    payload({
+      active: false,
+      summary: SUMMARY,
+      items: [
+        item(1, { status: "done" }),
+        item(2, { status: "done" }),
+        item(3, { status: "failed", reason: "Droploud never unlocked the download" }),
+        item(4, { status: "done", site: "cobrand", gateUrl: "https://drop.cobrand.com/a/4" }),
+      ],
+    }),
+  );
   await expect(panel.getByText("This run: 9 gates")).toBeVisible();
   expect(serious(await axe(page).include(desktop ? "aside" : '[role="dialog"]').analyze())).toEqual([]);
   expect(await overflow(page)).toBeLessThanOrEqual(0);
@@ -224,9 +236,11 @@ test("a gate landing on done is announced, a step change is not, a stop says pau
   await send(page, withStatus(2, { status: "done", step: undefined }));
   await expect(polite).toHaveText("Track 2 done");
   // Stopped with a gate still waiting: paused, never finished.
-  await send(page, withStatus(2, { status: "done", step: undefined }, { active: false }));
+  await send(page, withStatus(2, { status: "done", step: undefined }, { active: false, summary: SUMMARY }));
   await expect(polite).toHaveText("Gates paused");
   await expect(assertive).not.toHaveText(/finished/);
+  // A paused run's summary is what happened so far, not the run's total.
+  await expect(page.getByText("So far: 9 gates")).toBeVisible();
   // Resumed, then everything settles.
   await send(page, withStatus(2, { status: "done", step: undefined }));
   const settled = payload({ notice: undefined, active: false, items: payload().items.map((i) => ({ ...i, status: i.id === 3 ? "failed" : "done", step: undefined })) });

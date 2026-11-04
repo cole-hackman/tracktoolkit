@@ -158,7 +158,7 @@ function SummaryCount({ label, tracks, open, onToggle }: { label: string; tracks
   );
 }
 
-function RunSummary({ summary }: { summary: GateRunSummary }) {
+function RunSummary({ summary, paused }: { summary: GateRunSummary; paused: boolean }) {
   const announce = useAnnounce();
   const [open, setOpen] = useState<Partial<Record<SummaryKey, boolean>>>({});
   const parts = summaryParts(summary).filter((p) => p.key !== null);
@@ -172,7 +172,7 @@ function RunSummary({ summary }: { summary: GateRunSummary }) {
   };
   return (
     <div className="space-y-2 rounded-md border border-border p-3" aria-label="Run summary" role="group">
-      <p className="text-sm font-semibold text-foreground">This run: {summary.gates} {summary.gates === 1 ? "gate" : "gates"}</p>
+      <p className="text-sm font-semibold text-foreground">{paused ? "So far" : "This run"}: {summary.gates} {summary.gates === 1 ? "gate" : "gates"}</p>
       {parts.length > 0 && (
         <ul className="divide-y divide-border">
           {parts.map((p) => (
@@ -261,7 +261,8 @@ export function GateRunSection({ run, onRequestClear }: { run: GateRun; onReques
           Clear gates
         </Button>
       </div>
-      {run.summary && <RunSummary summary={run.summary} />}
+      {/* A paused run carries its summary so far, too. */}
+      {run.summary && <RunSummary summary={run.summary} paused={waiting} />}
       {run.items.length > 0 && (
         <ul className="max-h-80 overflow-y-auto pr-1" aria-label="Gates">
           {run.items.map((item, index) => (
