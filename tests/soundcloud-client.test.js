@@ -241,6 +241,42 @@ describe('soundcloud client behaviors', () => {
       expect(fetch).toHaveBeenCalledTimes(2);
     });
 
+    test('getAllPlaylists asks for playlists without embedded tracks', async () => {
+      fetch.mockReturnValueOnce(page(0, 1, null));
+
+      await soundcloudClient.getAllPlaylists('a', 'r');
+
+      const url = new URL(fetch.mock.calls[0][0]);
+      expect(url.pathname).toBe('/me/playlists');
+      expect(url.searchParams.get('show_tracks')).toBe('false');
+    });
+
+    test('extraParams survive a next_href that drops them', async () => {
+      fetch
+        .mockReturnValueOnce(page(0, 2, 'https://api.soundcloud.com/me/playlists?limit=2&cursor=abc%3Adef'))
+        .mockReturnValueOnce(page(2, 1, null));
+
+      await soundcloudClient.paginate('/me/playlists', 'a', 'r', 2, {
+        extraParams: { show_tracks: 'false' },
+      });
+
+      const second = new URL(fetch.mock.calls[1][0]);
+      expect(second.searchParams.get('show_tracks')).toBe('false');
+      expect(second.searchParams.get('cursor')).toBe('abc:def');
+      expect(second.searchParams.get('limit')).toBe('2');
+    });
+
+    test('next_href is followed untouched when there are no extraParams', async () => {
+      const href = 'https://api.soundcloud.com/x?cursor=2024-01-28T15%253A28';
+      fetch
+        .mockReturnValueOnce(page(0, 2, href))
+        .mockReturnValueOnce(page(2, 1, null));
+
+      await soundcloudClient.paginate('/x', 'a', 'r', 2);
+
+      expect(fetch.mock.calls[1][0]).toBe(href);
+    });
+
     test('stops at maxItems and slices an overshooting page', async () => {
       fetch.mockReturnValueOnce(page(0, 200, 'https://api.soundcloud.com/x?cursor=2'));
 
