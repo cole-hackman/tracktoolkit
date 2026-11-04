@@ -142,6 +142,10 @@ export default function DownloadsPage() {
   const [hypedditProgress, setHypedditProgress] = useState<HypedditProgress | null>(null);
   const [queueSent, setQueueSent] = useState(false);
 
+  // Rows ticked in the normal list, for "Download N selected": either kind of
+  // automatic download, without going through Auto-Download's select-all.
+  const [pickedIds, setPickedIds] = useState<Set<number>>(new Set());
+
   const queue = useDownloadQueue(announce);
   const hasQueue = queue.hydrated && queue.state.items.length > 0;
 
@@ -221,6 +225,7 @@ export default function DownloadsPage() {
     setHypedditMode(false);
     setSelectedTrackIds(new Set());
     setSelectedHypedditIds(new Set());
+    setPickedIds(new Set());
     setInlineError(null);
     setQueueSent(false);
   };
@@ -230,6 +235,7 @@ export default function DownloadsPage() {
     setHypedditMode(false);
     setSelectedTrackIds(new Set());
     setSelectedHypedditIds(new Set());
+    setPickedIds(new Set());
     setInlineError(null);
   };
 
@@ -241,6 +247,7 @@ export default function DownloadsPage() {
     // Entering the mode selects every Hypeddit track, so "Queue" is ready to
     // press — it used to open on "Queue 0 tracks", disabled, until Select All.
     setSelectedHypedditIds(entering ? new Set(hypedditTracks.map((t) => t.id)) : new Set());
+    setPickedIds(new Set());
     setQueueSent(false);
     setInlineError(null);
   };
@@ -253,6 +260,16 @@ export default function DownloadsPage() {
       newSelected.add(id);
     }
     setSelectedTrackIds(newSelected);
+  };
+
+  const togglePicked = (id: number) => {
+    const next = new Set(pickedIds);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    setPickedIds(next);
   };
 
   const toggleHypedditSelection = (id: number) => {
@@ -322,9 +339,8 @@ export default function DownloadsPage() {
     }
   };
 
-  const sendToExtension = () => {
-    const toQueue = hypedditTracks.filter((t) => selectedHypedditIds.has(t.id));
-    const queue: HypedditQueueItem[] = toQueue.map((t) => ({
+  const sendGatesToExtension = (gates: Track[]) => {
+    const queue: HypedditQueueItem[] = gates.map((t) => ({
       id: t.id,
       title: t.title,
       artist: t.user?.username ?? "",
@@ -336,6 +352,10 @@ export default function DownloadsPage() {
     localStorage.setItem("sc-toolkit-hypeddit-queue", JSON.stringify({ queue, ts }));
     window.postMessage({ type: "sc-toolkit-queue-set", queue, ts }, "*");
     setQueueSent(true);
+  };
+
+  const sendToExtension = () => {
+    sendGatesToExtension(hypedditTracks.filter((t) => selectedHypedditIds.has(t.id)));
     setHypedditMode(false);
     setSelectedHypedditIds(new Set());
   };
@@ -438,11 +458,11 @@ export default function DownloadsPage() {
     }
   };
 
-  const startQueue = () => {
+  const beginDirectQueue = (toQueue: Track[]) => {
     if (!selectedSource) return;
     void queue.begin(
       selectedSource.title,
-      directTracks.map((t) => ({
+      toQueue.map((t) => ({
         trackId: t.id,
         title: t.title,
         artist: t.user?.username ?? "",
@@ -451,11 +471,29 @@ export default function DownloadsPage() {
       { folder: folderSupported && folderMode },
     );
   };
+  const startQueue = () => beginDirectQueue(directTracks);
 
   const hypedditTracks = useMemo(
     () => downloadableTracks.filter((t) => statusById.get(t.id)?.site === "Hypeddit"),
     [downloadableTracks, statusById],
   );
+
+  // What a tick can download without a click per track. A gate on any other
+  // site gets no checkbox: only Hypeddit's can be worked through automatically.
+  const isDirectPick = (t: Track) => statusOf(t).kind === "direct" && !!t.download_url;
+  const isGatePick = (t: Track) => {
+    const status = statusOf(t);
+    return isFreeDownload(status) && status.site === "Hypeddit";
+  };
+  const pickedTracks = useMemo(() => tracks.filter((t) => pickedIds.has(t.id)), [tracks, pickedIds]);
+  const pickedDirect = pickedTracks.filter(isDirectPick);
+  const pickedGates = pickedTracks.filter((t) => !isDirectPick(t) && isGatePick(t));
+
+  const downloadPicked = () => {
+    if (pickedGates.length > 0) sendGatesToExtension(pickedGates);
+    if (pickedDirect.length > 0) beginDirectQueue(pickedDirect);
+    setPickedIds(new Set());
+  };
 
   // How many of the source's tracks are actually downloadable is the whole
   // point of the page, and nothing else says it out loud.
@@ -996,6 +1034,17 @@ export default function DownloadsPage() {
                     return (
                       <div key={track.id}>
                         <div className="flex items-center gap-4 rounded-xl bg-secondary/20 p-3">
+                          {isOwner && (isDirectPick(track) || isGatePick(track)) && (
+                            <label className="touch-44 flex shrink-0 cursor-pointer items-center justify-center">
+                              <input
+                                type="checkbox"
+                                checked={pickedIds.has(track.id)}
+                                onChange={() => togglePicked(track.id)}
+                                aria-label={`Select ${track.title}`}
+                                className="h-6 w-6 cursor-pointer accent-primary"
+                              />
+                            </label>
+                          )}
                           <span
                             aria-hidden="true"
                             className="hidden w-8 shrink-0 text-center text-sm text-muted-foreground-subtle sm:block"
@@ -1033,6 +1082,30 @@ export default function DownloadsPage() {
                         {(hypedditMode ? hypedditTracks : listedTracks).length - visibleCount}
                       </Button>
                     </div>
+                  )}
+                </div>
+              )}
+              {/* Sticky: the list runs to hundreds of rows, and the toolbar is
+                  a long scroll back up from the row just ticked. */}
+              {isOwner && pickedTracks.length > 0 && !selectionMode && !hypedditMode && (
+                <div
+                  className={`sticky z-30 mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-3 ${hasQueue ? "bottom-24 lg:bottom-3" : "bottom-3"}`}
+                >
+                  <Button
+                    onClick={downloadPicked}
+                    disabled={pickedDirect.length > 0 && queue.state.running}
+                  >
+                    <Download className="w-4 h-4" aria-hidden="true" />
+                    Download {pickedTracks.length} selected
+                  </Button>
+                  <Button variant="secondary" className="text-muted-foreground" onClick={() => setPickedIds(new Set())}>
+                    <X className="w-4 h-4" aria-hidden="true" />
+                    Clear
+                  </Button>
+                  {pickedGates.length > 0 && !extInstalled && (
+                    <p className="w-full text-xs text-muted-foreground-subtle">
+                      Hypeddit tracks need the Track Toolkit browser extension.
+                    </p>
                   )}
                 </div>
               )}

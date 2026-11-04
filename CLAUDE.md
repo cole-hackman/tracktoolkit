@@ -286,6 +286,14 @@ helper tab too with working buttons (the first time, Chrome's prompt appears
 `check` is set returns the state unchanged) and `begin` refuse a new queue
 until it is answered — "Download all" re-opens the question instead.
 
+**Row checkboxes are the everyday way to pick downloads.** For
+`canDownload` accounts, every row in the normal list with an automatic
+download (SoundCloud's own, or a Hypeddit gate) has a checkbox, and a sticky
+"Download N selected" bar sends the ticked Hypeddit gates to the extension
+and the ticked direct downloads to the queue. A gate on any other site gets
+no checkbox, because only Hypeddit's can be worked through automatically.
+Auto-Download is still there for the select-everything case.
+
 ### Growth & Discovery (`routes/growth.js`)
 
 All `/growth/*` routes are `authenticateUser`; the write-heavy ones also carry
