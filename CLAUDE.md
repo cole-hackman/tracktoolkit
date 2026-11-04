@@ -987,7 +987,7 @@ One app, one origin. The Vercel + DigitalOcean + Neon split was retired at the
 
 | Component | Platform | Notes |
 |-----------|----------|-------|
-| Frontend + backend | **Azure App Service** (`tracktoolkit`, Linux B1, Node 22) | One Express process serves `/api` and `frontend-UI/out/`. **One worker, pinned** — `capacity: 1` on the plan and `numberOfWorkers: 1` on the site (`infra/main.bicep`), because the library cache's invalidation marks are per-process (see `server/lib/social-cache.js`) |
+| Frontend + backend | **Azure App Service** (`tracktoolkit`, Linux B1, Node 22) | One Express process serves `/api` and `frontend-UI/out/`. **One worker, pinned** — `capacity: 1` on the plan and `numberOfWorkers: 1` on the site (`infra/main.bicep`), because the library cache's invalidation marks are per-process (see `server/lib/social-cache.js`). The plan's 1.75 GB is **shared** with `unfollowr-api` (resource group `rg-unfollowr`), so Node has less headroom than the SKU suggests |
 | Database | **Azure Database for PostgreSQL Flexible Server** (`tracktoolkit-pg`, PG 17, Burstable B1ms) | `DATABASE_URL` comes from Key Vault `tracktoolkit-kv` |
 | Secrets | **Azure Key Vault** (`tracktoolkit-kv`) | RBAC; the app reads by reference, so no secret is in the App Service config |
 | Infrastructure | **Bicep** (`infra/main.bicep`, `infra/deploy.sh`) | `infra/main.cutover.bicepparam` is the live parameter set |
