@@ -7,7 +7,7 @@ import { getTokenContext, countScCall } from './token-context.js';
 import { invalidateCachedAuth } from './auth-cache.js';
 import { isAllowedDownloadUrl } from './download-utils.js';
 import { cursorEndpoint } from './sc-cursor.js';
-import { redactSecretToken } from './secret-link.js';
+import { extractSecretToken, redactSecretToken } from './secret-link.js';
 
 /**
  * Safely parse a fetch Response body as JSON.
@@ -32,6 +32,22 @@ async function parseScJson(response, { context = 'SoundCloud API', allowEmpty = 
     logger.warn(`[${context}] non-JSON response (status ${response.status}): ${snippet}`);
     throw new Error(`${context}: invalid JSON response (status ${response.status})`);
   }
+}
+
+/**
+ * Attach the secret token a resolve revealed — from the redirect Location, or
+ * failing that the resource's own `secret_uri`/`uri` — as a non-enumerable
+ * `secretToken`, so JSON.stringify and spreads never carry it anywhere.
+ */
+function withSecretToken(resource, location) {
+  if (!resource || typeof resource !== 'object') return resource;
+  const token = extractSecretToken(location)
+    || extractSecretToken(resource.secret_uri)
+    || extractSecretToken(resource.uri);
+  if (token) {
+    Object.defineProperty(resource, 'secretToken', { value: token, enumerable: false, configurable: true });
+  }
+  return resource;
 }
 
 const SC_FETCH_TIMEOUT_MS = Number(process.env.SC_FETCH_TIMEOUT_MS) || 30_000;
@@ -886,7 +902,14 @@ class SoundCloudClient {
   }
 
   /**
-   * Resolve URL with explicit 302 handling
+   * Resolve URL with explicit 302 handling.
+   *
+   * A secret link — including an `on.soundcloud.com` short link, whose token
+   * is not in the URL the user pasted — resolves to an API Location carrying
+   * `?secret_token=s-…`. That token is what later reads the playlist, so it
+   * rides back on the result as a NON-enumerable `secretToken`: callers that
+   * want it read it, and it can never be serialized into a response, a cache
+   * entry or a log line by accident. Nothing here logs the Location.
    */
   async resolveAny(accessToken, refreshToken, targetUrl) {
     const doFetch = async (token) => {
@@ -911,13 +934,13 @@ class SoundCloudClient {
           // Don't include response body in error message
           throw new Error(`Resolve follow error: ${res2.status}`);
         }
-        return parseScJson(res2, { context: 'resolve' });
+        return withSecretToken(await parseScJson(res2, { context: 'resolve' }), location);
       }
       if (!res.ok) {
         // Don't include response body in error message
         throw new Error(`Resolve error: ${res.status}`);
       }
-      return parseScJson(res, { context: 'resolve' });
+      return withSecretToken(await parseScJson(res, { context: 'resolve' }));
     };
 
     try {
@@ -947,13 +970,13 @@ class SoundCloudClient {
         // Don't include response body in error message
         throw new Error(`Resolve follow error: ${res2.status}`);
       }
-      return parseScJson(res2, { context: 'resolve (public)' });
+      return withSecretToken(await parseScJson(res2, { context: 'resolve (public)' }), location);
     }
     if (!res.ok) {
       // Don't include response body in error message
       throw new Error(`Resolve error: ${res.status}`);
     }
-    return parseScJson(res, { context: 'resolve (public)' });
+    return withSecretToken(await parseScJson(res, { context: 'resolve (public)' }));
   }
 
   buildPagedEndpoint(endpoint, { limit = 50, next, extraParams = {} } = {}) {

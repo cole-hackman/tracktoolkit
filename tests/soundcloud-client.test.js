@@ -464,3 +464,42 @@ describe('a secret_token never reaches a log line or an error', () => {
     expect(everything(err)).not.toContain('AbC123xyz');
   });
 });
+
+describe('resolveAny on a short link to a secret playlist', () => {
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  test('the token in the redirect Location rides back, non-enumerable and unlogged', async () => {
+    const { default: logger } = await import('../server/lib/logger.js');
+    const logged = [];
+    for (const level of ['debug', 'info', 'warn', 'error']) {
+      jest.spyOn(logger, level).mockImplementation((...args) => { logged.push(args); });
+    }
+    fetch
+      .mockResolvedValueOnce(new Response('', {
+        status: 302,
+        headers: { Location: 'https://api.soundcloud.com/playlists/soundcloud:playlists:555?secret_token=s-AbC123xyz' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        kind: 'playlist', id: 555, permalink_url: 'https://soundcloud.com/someone/sets/hidden-mix',
+      }), { status: 200 }));
+
+    const resource = await soundcloudClient.resolveAny('a', 'r', 'https://on.soundcloud.com/AbCd1234');
+
+    expect(fetch.mock.calls[0][0]).toContain(encodeURIComponent('https://on.soundcloud.com/AbCd1234'));
+    expect(resource.secretToken).toBe('s-AbC123xyz');
+    expect(Object.keys(resource)).not.toContain('secretToken');
+    expect(JSON.stringify(resource)).not.toContain('AbC123xyz');
+    expect(JSON.stringify(logged)).not.toContain('AbC123xyz');
+  });
+
+  test('a public resolve carries no token', async () => {
+    fetch
+      .mockResolvedValueOnce(new Response('', { status: 302, headers: { Location: 'https://api.soundcloud.com/playlists/7' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ kind: 'playlist', id: 7 }), { status: 200 }));
+    const resource = await soundcloudClient.resolveAny('a', 'r', 'https://soundcloud.com/u/sets/open');
+    expect(resource.secretToken).toBeUndefined();
+  });
+});

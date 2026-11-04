@@ -709,9 +709,10 @@ router.post('/playlists/clone', authenticateUser, validateClonePlaylist, heavyOp
     const canonical = canonicalSoundCloudUrl(sanitizeUrl(url));
     // A private playlist shared by link carries `s-…`. It is a credential: it
     // goes to SoundCloud as `secret_token` and nowhere else, so everything we
-    // store or publish uses `publicUrl`.
-    const secretToken = extractSecretToken(canonical);
-    const publicUrl = stripSecretToken(canonical);
+    // store or publish uses `publicUrl`. A short link (on.soundcloud.com)
+    // hides it until the resolve, so `secretToken` may be filled in below.
+    let secretToken = extractSecretToken(canonical);
+    const isShortLink = canonical.startsWith('https://on.soundcloud.com/');
 
     // 1. Resolve URL
     let resource;
@@ -725,9 +726,17 @@ router.post('/playlists/clone', authenticateUser, validateClonePlaylist, heavyOp
       }
     }
 
-    if (resource.kind !== 'playlist') {
+    if (resource?.kind !== 'playlist') {
       return res.status(400).json({ error: 'URL must point to a playlist.' });
     }
+    // Non-enumerable, set by the client from the resolve redirect: how a
+    // short link's token reaches the playlist read without being logged.
+    if (!secretToken && resource.secretToken) secretToken = resource.secretToken;
+    // A short link to a secret playlist is itself a way in, so it is never
+    // written into the copy: describe it by its public permalink instead.
+    const publicUrl = isShortLink
+      ? stripSecretToken(canonicalSoundCloudUrl(resource.permalink_url)) || 'a SoundCloud share link'
+      : stripSecretToken(canonical);
 
     const sourceId = extractNumericId(resource.id || resource.urn);
 

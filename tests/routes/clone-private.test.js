@@ -169,6 +169,41 @@ describe('POST /api/playlists/clone title', () => {
   });
 });
 
+describe('POST /api/playlists/clone with an on.soundcloud.com short link', () => {
+  const SHORT = 'https://on.soundcloud.com/AbCd1234';
+  const resolvedWithToken = (token) => {
+    const resource = { kind: 'playlist', id: 555, permalink_url: 'https://soundcloud.com/someone/sets/hidden-mix' };
+    // What the client does: non-enumerable, read only by the route.
+    if (token) Object.defineProperty(resource, 'secretToken', { value: token, enumerable: false });
+    return resource;
+  };
+
+  test('the token found by the resolve reaches the playlist read; the copy is private', async () => {
+    resolveAny.mockResolvedValue(resolvedWithToken('s-AbC123xyz'));
+    getPlaylistWithTracks.mockResolvedValue({ id: 555, title: 'Hidden Mix', sharing: 'private', tracks: toTracks(range(4)) });
+    const res = await request(app).post('/api/playlists/clone').send({ url: `${SHORT}?si=abc&utm_source=clipboard` });
+
+    expect(res.status).toBe(200);
+    expect(resolveAny).toHaveBeenCalledWith('at', 'rt', SHORT);
+    expect(getPlaylistWithTracks).toHaveBeenCalledWith('at', 'rt', 555, { secretToken: 's-AbC123xyz' });
+    const [, , , description, , options] = createPlaylist.mock.calls[0];
+    expect(options).toEqual({ sharing: 'private' });
+    // The short link opens the secret playlist, so it is not written either.
+    expect(description).toContain('Cloned from https://soundcloud.com/someone/sets/hidden-mix');
+    expect(description).not.toContain('on.soundcloud.com');
+    expect(description).not.toContain('s-AbC123xyz');
+  });
+
+  test('a short link to a public playlist reads without a token', async () => {
+    resolveAny.mockResolvedValue(resolvedWithToken(null));
+    getPlaylistWithTracks.mockResolvedValue({ id: 555, title: 'Open', sharing: 'public', tracks: toTracks(range(2)) });
+    const res = await request(app).post('/api/playlists/clone').send({ url: SHORT });
+
+    expect(res.status).toBe(200);
+    expect(getPlaylistWithTracks).toHaveBeenCalledWith('at', 'rt', 555, undefined);
+  });
+});
+
 describe('POST /api/playlists/clone of your own private playlist', () => {
   test('no token needed; the copy stays private', async () => {
     resolveAny.mockResolvedValue({ kind: 'playlist', id: 7 });
