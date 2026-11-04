@@ -34,18 +34,31 @@ export async function pickDownloadFolder(): Promise<FileSystemDirectoryHandle | 
 
 export class FolderSaveError extends Error {}
 
-/** A name not already taken in the folder: "x.wav", then "x (2).wav", … */
+/**
+ * A name not already taken in the folder: "x.wav", then "x (2).wav", …
+ * An empty file counts as free. `getFileHandle(…, { create: true })` creates
+ * the file before a byte is written, so a save cut off by a reload leaves an
+ * empty "x.wav" (and Chrome's "x.wav.crswap" beside it); treating that as
+ * taken is what turned every retry into "x (2).wav".
+ */
 async function freeName(dir: FileSystemDirectoryHandle, base: string): Promise<string> {
   const dot = base.lastIndexOf(".");
   const stem = base.slice(0, dot);
   const ext = base.slice(dot);
   for (let n = 1; n < 100; n++) {
     const candidate = n === 1 ? base : `${stem} (${n})${ext}`;
+    let existing: FileSystemFileHandle;
     try {
-      await dir.getFileHandle(candidate);
+      existing = await dir.getFileHandle(candidate);
     } catch (error) {
       if ((error as DOMException)?.name === "NotFoundError") return candidate;
       throw error;
+    }
+    if ((await existing.getFile()).size === 0) {
+      // Chrome names the swap file after the target, so the interrupted
+      // save's swap is in the way of this one: remove it too.
+      await dir.removeEntry(`${candidate}.crswap`).catch(() => {});
+      return candidate;
     }
   }
   return `${stem} (${Date.now()})${ext}`;
@@ -70,7 +83,9 @@ export async function saveToFolder(
   }
   if (!response.ok || !response.body) {
     throw new FolderSaveError(
-      response.status === 403 ? "SoundCloud's download link had expired. Resume to ask for it again." : `SoundCloud's download server answered ${response.status}.`,
+      response.status === 403
+        ? "SoundCloud's download link had expired. Retry failed to ask for a new one."
+        : `SoundCloud's download server answered ${response.status}.`,
     );
   }
   const reader = response.body.getReader();
@@ -81,7 +96,13 @@ export async function saveToFolder(
     buildFileName(item, { head, contentType: response.headers.get("content-type"), disposition: response.headers.get("content-disposition") }),
   );
   const handle = await dir.getFileHandle(fileName, { create: true });
-  const writer = (await handle.createWritable()).getWriter();
+  let writer: WritableStreamDefaultWriter<Uint8Array>;
+  try {
+    writer = (await handle.createWritable()).getWriter();
+  } catch (error) {
+    await dir.removeEntry(fileName).catch(() => {});
+    throw error;
+  }
   try {
     if (head.length > 0) await writer.write(head);
     while (!first.done) {
@@ -92,6 +113,9 @@ export async function saveToFolder(
     await writer.close();
   } catch (error) {
     await writer.abort().catch(() => {});
+    await reader.cancel().catch(() => {});
+    // The file was created empty before the first write; leave nothing behind.
+    await dir.removeEntry(fileName).catch(() => {});
     throw error;
   }
   return { fileName };

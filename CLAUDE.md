@@ -265,8 +265,14 @@ check never fires; the queue reports `saved`, not `started`, and shows the
 name used. SoundCloud's CDN is CORS-open (verified live 2026-10-08, which is
 what makes this possible) and the CSP `connectSrc` lists both CDN hosts.
 The directory handle lives in memory only, so after a reload Resume asks for
-the folder again; links are fetched five at a time (`FOLDER_BATCH_SIZE`) so a
-signed link does not expire behind a batch of wavs. The history still records
+the folder again. Links are fetched **one per call**, just before their file
+(`FOLDER_BATCH_SIZE = 1`): a signed CloudFront link stops working about 90 s
+after it is issued (measured 2026-11-03) and a wav takes 2–3 minutes, so at
+five per call only the first of each batch saved and the rest 403'd. A save
+that fails deletes the empty file `getFileHandle({ create: true })` made, and
+an empty file already there (a reload mid-save) is written over rather than
+saved beside as `(2)`. "Retry failed" puts failed tracks back in line;
+Resume alone does not. The history still records
 "a link was fetched", not "the file is on disk" — a failed save is still
 "downloaded" there. Without the API (Firefox, Safari) or with the box
 unticked, the helper-tab flow below is unchanged.
@@ -282,6 +288,14 @@ helper tab too with working buttons (the first time, Chrome's prompt appears
 *there* and that tab has focus), and both the reducer (`enqueue` while
 `check` is set returns the state unchanged) and `begin` refuse a new queue
 until it is answered — "Download all" re-opens the question instead.
+
+**Row checkboxes are the everyday way to pick downloads.** For
+`canDownload` accounts, every row in the normal list with an automatic
+download (SoundCloud's own, or a Hypeddit gate) has a checkbox, and a sticky
+"Download N selected" bar sends the ticked Hypeddit gates to the extension
+and the ticked direct downloads to the queue. A gate on any other site gets
+no checkbox, because only Hypeddit's can be worked through automatically.
+Auto-Download is still there for the select-everything case.
 
 ### Growth & Discovery (`routes/growth.js`)
 

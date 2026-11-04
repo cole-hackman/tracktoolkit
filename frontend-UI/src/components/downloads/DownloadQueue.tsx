@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useReducer, useRef, useState } from "react";
-import { Pause, Play, Trash2 } from "lucide-react";
+import { Pause, Play, RotateCcw, Trash2 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { Button, Dialog, ProgressBar } from "@/components/ui";
 import { pickDownloadFolder, saveToFolder } from "@/lib/download-folder";
@@ -222,8 +222,16 @@ export function useDownloadQueue(announce: Announce) {
     [announce, openHelperTab],
   );
 
-  /** Call from a click handler: it may reopen the helper tab, or re-ask for the folder. */
-  const resume = useCallback(async () => {
+  /**
+   * Call from a click handler: it may reopen the helper tab, or re-ask for the
+   * folder. With `retryFailed`, the failed tracks go back in line first — only
+   * once the folder or tab is there, so a closed picker leaves them as they were.
+   */
+  const resume = useCallback(async (options?: { retryFailed?: boolean }) => {
+    const start = () => {
+      if (options?.retryFailed === true) dispatch({ type: "retryFailed" });
+      dispatch({ type: "start" });
+    };
     if (stateRef.current.mode === "folder") {
       if (!dirRef.current) {
         const dir = await pickDownloadFolder();
@@ -233,14 +241,14 @@ export function useDownloadQueue(announce: Announce) {
         }
         dirRef.current = dir;
       }
-      dispatch({ type: "start" });
+      start();
       return;
     }
     if (!openHelperTab()) {
       dispatch({ type: "pause", reason: popupBlocked });
       return;
     }
-    dispatch({ type: "start" });
+    start();
   }, [openHelperTab]);
 
   const pause = useCallback(() => {
@@ -454,7 +462,7 @@ interface PanelProps {
   state: QueueState;
   summary: ReturnType<typeof summarize>;
   onPause: () => void;
-  onResume: () => void;
+  onResume: (options?: { retryFailed?: boolean }) => void;
   onClear: () => void;
   onConfirmSaved: () => void;
   onRetryChecked: () => void;
@@ -522,11 +530,17 @@ export function DownloadQueuePanel({
             Pause
           </Button>
         ) : summary.waiting > 0 && !state.check ? (
-          <Button size="sm" onClick={onResume}>
+          <Button size="sm" onClick={() => onResume()}>
             <Play className="h-4 w-4" aria-hidden="true" />
             Resume ({summary.waiting} left)
           </Button>
         ) : null}
+        {!state.running && !state.check && summary.failed > 0 && (
+          <Button variant="secondary" size="sm" onClick={() => onResume({ retryFailed: true })}>
+            <RotateCcw className="h-4 w-4" aria-hidden="true" />
+            Retry failed ({summary.failed})
+          </Button>
+        )}
         <Button variant="ghost" size="sm" onClick={onClear}>
           <Trash2 className="h-4 w-4" aria-hidden="true" />
           Clear queue
