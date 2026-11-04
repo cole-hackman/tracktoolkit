@@ -858,6 +858,8 @@ router.post('/playlists/clone', authenticateUser, validateClonePlaylist, heavyOp
       const response = sourceRefusalResponse(classified, { secretToken });
       if (response) return res.status(response.status).json(response.body);
     }
+    const partial = partialCreateResponse(error, { writeAttempted });
+    if (partial) return res.status(partial.status).json(partial.body);
     const mapped = scErrorResponse(classified, { writeAttempted });
     if (mapped) return res.status(mapped.status).json(mapped.body);
     res.status(500).json({ error: 'Failed to clone playlist' });
@@ -974,6 +976,8 @@ router.post('/users/likes/clone', authenticateUser, validateCloneUserLikes, heav
     if (error?.cloneSourceStep && classifyScError(classified) === 'not_found') {
       return res.status(404).json({ code: 'USER_NOT_FOUND', error: 'That profile was not found.' });
     }
+    const partial = partialCreateResponse(error, { writeAttempted });
+    if (partial) return res.status(partial.status).json(partial.body);
     const mapped = scErrorResponse(classified, { writeAttempted });
     if (mapped) return res.status(mapped.status).json(mapped.body);
     res.status(500).json({ error: 'Failed to clone liked tracks' });
@@ -2181,12 +2185,73 @@ async function writeClonePlaylists({ accessToken, refreshToken, trackIds, title,
   for (let i = 0; i < chunks.length; i++) {
     if (i > 0) await sleep(SC_PLAYLIST_PACING_MS);
     const partTitle = chunks.length > 1 ? `${title} (${i + 1}/${chunks.length})` : title;
-    const playlist = await createPlaylistFromTrackIds(
-      accessToken, refreshToken, chunks[i], partTitle, description, { sharing },
-    );
+    let playlist;
+    try {
+      playlist = await createPlaylistFromTrackIds(
+        accessToken, refreshToken, chunks[i], partTitle, description, { sharing },
+      );
+    } catch (err) {
+      throw withCreatedParts(err, parts.map(describeCreatedPart), chunks.length);
+    }
     parts.push({ playlist, title: partTitle, trackIds: chunks[i] });
   }
   return parts;
+}
+
+function describeCreatedPart({ playlist, title, trackIds }) {
+  return { id: playlist.id, title, permalink_url: playlist.permalink_url, trackCount: trackIds.length };
+}
+
+/**
+ * Attach to a write error every playlist that already exists because of this
+ * operation — finished parts plus the half-filled one createPlaylistFromTrackIds
+ * reports as `partialPlaylist` — so the route can list them instead of a bare
+ * 500 that invites a retry into duplicates. Additive: same error object.
+ */
+function withCreatedParts(err, finished, totalParts) {
+  if (!err || typeof err !== 'object') return err;
+  const created = [...finished];
+  if (err.partialPlaylist) {
+    const { id, title, permalink_url, tracksWritten } = err.partialPlaylist;
+    created.push({ id, title, permalink_url, trackCount: tracksWritten, incomplete: true });
+  }
+  err.createdParts = created;
+  err.totalParts = totalParts;
+  return err;
+}
+
+/**
+ * The response for a create-and-split write that failed after at least one
+ * playlist exists: what is on the user's account now, and that running it
+ * again starts a new full copy. Null when nothing was created, so the caller
+ * falls through to its usual mapping.
+ */
+function partialCreateResponse(error, { writeAttempted }) {
+  const created = Array.isArray(error?.createdParts) ? error.createdParts : [];
+  if (created.length === 0) return null;
+  const kind = classifyScError(error);
+  const mapped = scErrorResponse(error, { writeAttempted });
+  const status = kind === 'rate_limited' ? 429 : (mapped ? mapped.status : 500);
+  const reason = kind === 'rate_limited'
+    ? "SoundCloud's rate limit stopped the copy partway through."
+    : (mapped ? mapped.body.error : 'The copy stopped partway through.');
+  const list = created
+    .map((p) => `"${p.title}" (${p.trackCount} track${p.trackCount === 1 ? '' : 's'}${p.incomplete ? ', unfinished' : ''})`)
+    .join(', ');
+  return {
+    status,
+    body: {
+      code: 'CLONE_PARTIAL',
+      error: `${reason} Already on your account: ${list}. Running it again makes a new full copy, so check these first.`,
+      playlists: created,
+      stats: {
+        partial: true,
+        totalTracks: created.reduce((n, p) => n + (Number(p.trackCount) || 0), 0),
+        numPlaylistsCreated: created.length,
+        ...(error.totalParts ? { totalParts: error.totalParts } : {}),
+      },
+    },
+  };
 }
 
 function uniquePositiveIds(ids = []) {
@@ -2256,7 +2321,8 @@ async function createOrAppendTrackIds({ accessToken, refreshToken, trackIds, tit
   }
 
   if (uniqueTrackIds.length <= MAX_TRACKS_PER_PLAYLIST) {
-    const newPlaylist = await createPlaylistFromTrackIds(accessToken, refreshToken, uniqueTrackIds, title, description);
+    const newPlaylist = await createPlaylistFromTrackIds(accessToken, refreshToken, uniqueTrackIds, title, description)
+      .catch((err) => { throw withCreatedParts(err, [], 1); });
     return {
       playlistId: newPlaylist.id,
       permalink_url: newPlaylist.permalink_url,
@@ -2276,7 +2342,7 @@ async function createOrAppendTrackIds({ accessToken, refreshToken, trackIds, tit
       chunks[i],
       playlistTitle,
       `${description}${partSuffix}`
-    );
+    ).catch((err) => { throw withCreatedParts(err, playlists, chunks.length); });
     playlists.push({
       id: newPlaylist.id,
       title: playlistTitle,

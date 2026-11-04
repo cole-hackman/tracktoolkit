@@ -167,13 +167,15 @@ describe('POST /api/playlists/clone', () => {
     expect((await clone()).status).toBe(404);
   });
 
-  test('a 404 on a PUT after the create is NOT "source not found": 500, create happened', async () => {
+  test('a 404 on a PUT after the create is NOT "source not found": 500, and names the half-made copy', async () => {
     source(150);
     addTracksToPlaylist.mockRejectedValue(scError(404));
     const res = await clone();
     expect(createPlaylist).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(500);
-    expect(res.body).toEqual({ error: 'Failed to clone playlist' });
+    expect(res.body.code).toBe('CLONE_PARTIAL');
+    expect(res.body.error).not.toMatch(/not found/i);
+    expect(res.body.playlists).toEqual([expect.objectContaining({ incomplete: true, trackCount: 100 })]);
   });
 
   test('a 404 on the create itself is a 500, not "source not found"', async () => {

@@ -24,6 +24,9 @@ interface ClonedPlaylist {
   id?: number | string;
   title?: string;
   permalink_url?: string;
+  trackCount?: number;
+  // Created, then the copy stopped before it was filled (CLONE_PARTIAL).
+  incomplete?: boolean;
 }
 
 export default function PlaylistClonerPage() {
@@ -57,6 +60,16 @@ export default function PlaylistClonerPage() {
     if (initialUrl) setUrl(initialUrl);
   }, []);
 
+  // The copy stopped after some playlists were made. List them, so the user
+  // can see what exists before running it again (which starts a new copy).
+  const showPartial = (data: { code?: string; playlists?: ClonedPlaylist[]; stats?: Record<string, unknown> } | null) => {
+    if (data?.code !== "CLONE_PARTIAL" || !Array.isArray(data.playlists) || data.playlists.length === 0) return false;
+    setResultPlaylists(data.playlists);
+    setStats(data.stats ?? { partial: true });
+    void invalidatePlaylistCaches(queryClient);
+    return true;
+  };
+
   const handleClone = async (e: FormEvent) => {
     e.preventDefault();
     if (!url.trim()) {
@@ -87,6 +100,7 @@ export default function PlaylistClonerPage() {
       if (!res.ok) {
         // Show the reason first: it must not wait on a list refetch.
         setError(errorMessageFromBody(data, "Failed to clone playlist"));
+        if (showPartial(data)) return;
         if (res.status === 502 && data?.code === "SOUNDCLOUD_UNAVAILABLE") {
           // A write may have landed before SoundCloud stopped answering; the
           // user is told to check their playlists, so make that list fresh.
@@ -140,6 +154,7 @@ export default function PlaylistClonerPage() {
       const data = await res.json().catch(() => null);
       if (!res.ok) {
         setError(errorMessageFromBody(data, "Failed to clone liked tracks"));
+        if (showPartial(data)) return;
         if (res.status === 502 && data?.code === "SOUNDCLOUD_UNAVAILABLE") {
           void invalidatePlaylistCaches(queryClient);
         }
@@ -321,8 +336,8 @@ export default function PlaylistClonerPage() {
 
       {resultPlaylists.length > 0 && (
         <ResultPanel
-          title="Cloning Complete"
-          tone="success"
+          title={stats?.partial === true ? "Partly cloned" : "Cloning Complete"}
+          tone={stats?.partial === true ? "neutral" : "success"}
           className="animate-in fade-in slide-in-from-bottom-4 duration-500"
         >
           <div className="space-y-6">
@@ -370,7 +385,9 @@ export default function PlaylistClonerPage() {
                         {pl.title}
                       </div>
                       <div className="text-sm text-muted-foreground">
-                        ID: {pl.id}
+                        {pl.incomplete
+                          ? `Unfinished: ${pl.trackCount ?? 0} tracks so far`
+                          : `ID: ${pl.id}`}
                       </div>
                     </div>
                     {pl.permalink_url && (

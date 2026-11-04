@@ -474,3 +474,58 @@ describe('middleware order on both clone routes', () => {
     expect(limiter).toBeGreaterThan(validatorEnd);
   });
 });
+
+describe('a failure after some playlists exist lists them instead of a bare 500', () => {
+  const rateLimited = () => Object.assign(new Error('API request failed: 429'), { status: 429 });
+
+  test('playlist clone: 429 on part 2 of 3 answers 429 with part 1 and the half-made part 2', async () => {
+    resolveAny.mockResolvedValue({ kind: 'playlist', id: 8 });
+    getPlaylistWithTracks.mockResolvedValue({ id: 8, title: 'Big', sharing: 'public', tracks: toTracks(range(1100)) });
+    // Part 1 fills (create + 4 PUTs); part 2 is created, then its first PUT is refused.
+    addTracksToPlaylist.mockReset()
+      .mockResolvedValueOnce({}).mockResolvedValueOnce({}).mockResolvedValueOnce({}).mockResolvedValueOnce({})
+      .mockRejectedValue(rateLimited());
+
+    const res = await request(app).post('/api/playlists/clone').send({ url: 'https://soundcloud.com/a/sets/big' });
+
+    expect(res.status).toBe(429);
+    expect(res.body.code).toBe('CLONE_PARTIAL');
+    expect(res.body.playlists).toEqual([
+      { id: 90, title: 'Clone of Big (1/3)', permalink_url: 'https://sc/90', trackCount: 500 },
+      { id: 91, title: 'Clone of Big (2/3)', permalink_url: 'https://sc/91', trackCount: 100, incomplete: true },
+    ]);
+    expect(res.body.stats).toMatchObject({ partial: true, numPlaylistsCreated: 2, totalParts: 3 });
+    expect(res.body.error).toMatch(/rate limit/i);
+    expect(res.body.error).toContain('"Clone of Big (1/3)"');
+    expect(res.body.error).toMatch(/new full copy/);
+    expect(createPlaylist).toHaveBeenCalledTimes(2); // part 3 never attempted
+  });
+
+  test('playlist clone: a failure on the very first create is unchanged (nothing exists)', async () => {
+    resolveAny.mockResolvedValue({ kind: 'playlist', id: 8 });
+    getPlaylistWithTracks.mockResolvedValue({ id: 8, title: 'Big', sharing: 'public', tracks: toTracks(range(600)) });
+    createPlaylist.mockRejectedValue(rateLimited());
+    const res = await request(app).post('/api/playlists/clone').send({ url: 'https://soundcloud.com/a/sets/big' });
+    expect(res.body.code).not.toBe('CLONE_PARTIAL');
+    expect(res.status).toBe(500);
+  });
+
+  test('likes clone: 429 creating part 3 lists parts 1 and 2', async () => {
+    resolveAny.mockResolvedValue({ kind: 'user', id: 321, username: 'Some DJ' });
+    getUserLikedTracks.mockResolvedValue(toTracks(range(1200)));
+    createPlaylist.mockReset()
+      .mockResolvedValueOnce({ id: 90, permalink_url: 'https://sc/90' })
+      .mockResolvedValueOnce({ id: 91, permalink_url: 'https://sc/91' })
+      .mockRejectedValue(rateLimited());
+
+    const res = await request(app).post('/api/users/likes/clone').send({ url: 'https://soundcloud.com/some-dj' });
+
+    expect(res.status).toBe(429);
+    expect(res.body.code).toBe('CLONE_PARTIAL');
+    expect(res.body.playlists.map((p) => [p.title, p.trackCount])).toEqual([
+      ['Some DJ Likes (1/3)', 500],
+      ['Some DJ Likes (2/3)', 500],
+    ]);
+    expect(res.body.stats).toMatchObject({ partial: true, numPlaylistsCreated: 2, totalParts: 3 });
+  });
+});
