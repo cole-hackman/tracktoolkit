@@ -262,7 +262,7 @@ export default function PlaylistClonerPage() {
             <div className="space-y-4">
               <Field
                 label="Profile URL"
-                hint="Copies every public like into playlists on your account. Over 500 tracks, it splits into parts."
+                hint="Someone you follow, or your own profile. Copies every public like into playlists on your account; over 500 tracks, it splits into parts."
                 error={likesUrlError ?? undefined}
                 required
               >

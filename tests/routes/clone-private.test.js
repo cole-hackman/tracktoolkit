@@ -9,7 +9,8 @@ import request from 'supertest';
  *    never written into the clone's description;
  *  - a copy of a private playlist is itself private, never public;
  *  - public clones are unchanged (same createPlaylist arguments as before);
- *  - cloning likes splits at 500 tracks the way likes-to-playlist does.
+ *  - cloning likes splits at 500 tracks the way likes-to-playlist does, and
+ *    only for a profile the caller follows (or their own).
  */
 
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
@@ -19,6 +20,7 @@ const resolveAny = jest.fn();
 const resolvePublic = jest.fn();
 const getPlaylistWithTracks = jest.fn();
 const getUserLikedTracks = jest.fn();
+const getFollowings = jest.fn();
 const addTracksToPlaylist = jest.fn();
 const createPlaylist = jest.fn();
 const logOperation = jest.fn();
@@ -33,7 +35,7 @@ jest.unstable_mockModule('../../server/lib/pacing.js', () => ({
   mapWithConcurrency: async (items, _l, fn) => Promise.all(items.map(fn)),
 }));
 jest.unstable_mockModule('../../server/lib/soundcloud-client.js', () => ({
-  soundcloudClient: { resolveAny, resolvePublic, getPlaylistWithTracks, getUserLikedTracks, addTracksToPlaylist, createPlaylist },
+  soundcloudClient: { resolveAny, resolvePublic, getPlaylistWithTracks, getUserLikedTracks, addTracksToPlaylist, createPlaylist, getFollowings },
   fetchWithTimeout: jest.fn(async () => ({ ok: false, status: 503 })),
 }));
 jest.unstable_mockModule('../../server/lib/analytics.js', () => ({
@@ -54,6 +56,9 @@ jest.unstable_mockModule('../../server/middleware/auth.js', () => ({
 }));
 
 const { default: apiRoutes } = await import('../../server/routes/api.js');
+// Not mocked: the follow check reads the real per-user cache, so each test
+// starts from a cold one.
+const { requestCache } = await import('../../server/lib/request-cache.js');
 
 const app = express();
 app.use(express.json());
@@ -66,6 +71,9 @@ const toTracks = (ids) => ids.map((id) => ({ id, streamable: true }));
 const SECRET_URL = 'https://soundcloud.com/someone/sets/hidden-mix/s-AbC123xyz';
 
 beforeEach(() => {
+  requestCache.invalidateUser('user-a');
+  // 321 is the profile the likes tests clone; following it is the default.
+  getFollowings.mockReset().mockResolvedValue([{ id: 321 }]);
   resolveAny.mockReset();
   resolvePublic.mockReset();
   getPlaylistWithTracks.mockReset();
@@ -78,6 +86,7 @@ beforeEach(() => {
   });
   addTracksToPlaylist.mockReset().mockResolvedValue({ id: 1 });
   jest.spyOn(console, 'error').mockImplementation(() => {});
+  jest.spyOn(console, 'warn').mockImplementation(() => {});
 });
 afterEach(() => jest.restoreAllMocks());
 
@@ -225,6 +234,28 @@ describe('POST /api/users/likes/clone', () => {
 
     expect(res.status).toBe(404);
     expect(res.body.code).toBe('USER_NOT_FOUND');
+  });
+
+  test('a profile the caller does not follow is a 403; nothing is crawled or written', async () => {
+    getFollowings.mockResolvedValue([{ id: 222 }]);
+    const res = await clone({ url: PROFILE });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('NOT_FOLLOWED');
+    expect(res.body.error).toMatch(/someone you follow/i);
+    expect(getUserLikedTracks).not.toHaveBeenCalled();
+    expect(createPlaylist).not.toHaveBeenCalled();
+    expect(logOperation).not.toHaveBeenCalled();
+  });
+
+  test('your own profile needs no follow', async () => {
+    getFollowings.mockResolvedValue([]);
+    resolveAny.mockResolvedValue({ kind: 'user', id: 111, username: 'Me' });
+    getUserLikedTracks.mockResolvedValue(toTracks(range(3)));
+    const res = await clone({ url: 'https://soundcloud.com/me' });
+
+    expect(res.status).toBe(200);
+    expect(getFollowings).not.toHaveBeenCalled();
   });
 
   test('rejects non-SoundCloud hosts, array urls and an empty body', async () => {

@@ -894,8 +894,9 @@ router.post('/playlists/clone', authenticateUser, heavyOperationRateLimiter, val
 
 /**
  * POST /api/users/likes/clone
- * Copy every public like of any SoundCloud user (pasted profile link) into
- * playlists on the caller's account. Splits at 500 tracks exactly like
+ * Copy every public like of a SoundCloud user the caller follows (or the
+ * caller's own profile), pasted as a profile link, into playlists on the
+ * caller's account. Splits at 500 tracks exactly like
  * likes-to-playlist, because it goes through the same createOrAppendTrackIds.
  */
 router.post('/users/likes/clone', authenticateUser, heavyOperationRateLimiter, validateCloneUserLikes, async (req, res) => {
@@ -926,6 +927,14 @@ router.post('/users/likes/clone', authenticateUser, heavyOperationRateLimiter, v
       return res.status(400).json({ error: 'URL must point to a SoundCloud profile.' });
     }
     const sourceName = resource.username || 'SoundCloud user';
+
+    // Same rule as the followed-library routes (STATE.md, decision kept by
+    // Cole): this crawls another account, so it is limited to accounts the
+    // caller follows. Your own profile needs no follow. Checked before the
+    // crawl, so a refused request costs SoundCloud nothing past the resolve.
+    if (Number(sourceUserId) !== Number(req.user.soundcloudId)) {
+      await assertFollowedUser(req, sourceUserId);
+    }
 
     const tracks = await soundcloudClient
       .getUserLikedTracks(req.accessToken, req.refreshToken, sourceUserId, 200)
@@ -977,6 +986,12 @@ router.post('/users/likes/clone', authenticateUser, heavyOperationRateLimiter, v
       },
     });
   } catch (error) {
+    if (error?.code === 'NOT_FOLLOWED') {
+      return res.status(403).json({
+        code: 'NOT_FOLLOWED',
+        error: "You can only clone the likes of someone you follow. Follow them on SoundCloud, then try again.",
+      });
+    }
     if (writeAttempted) invalidatePlaylistState(req.user.id);
     logger.error('Clone user likes error:', safeError(error));
     let classified = error;
