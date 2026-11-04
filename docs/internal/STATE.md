@@ -1,163 +1,43 @@
 # STATE
 
 ## Now
-`feat/set-to-playlist` (worktree `.worktrees/set-to-playlist`): the
-**Set → Playlist** tool — paste a DJ tracklist (1001Tracklists copy text or
-"Artist - Title" lines), match on SoundCloud, review, create one playlist
-with the tracklist as its description. Tests and e2e pass locally; not
-merged. Before merging: one real playlist on Cole's account to confirm
-SoundCloud's description limit (assumed 4000, `SC_PLAYLIST_DESCRIPTION_MAX`)
-and to measure match quality against both fixtures.
-
-Nothing is in flight. #92 (folder mode for Downloads, carrying #89's check
-dialog) merged to `main` as `3d062cc` and is **verified live** (see Just
-done). **Still unproven live:** the SoundCloud `access` default behind #60
-(see Next 1, 2026-10-07), and the helper-tab copy of the check question
-(e2e only — the helper tab is `about:blank`, which the Claude tab group
-cannot screenshot).
+Nothing is mid-flight. `main` is at `3452e59` and live. The Hypeddit extension
+(`~/Developer/tracktoolkit-extension-work`, branch `fix/extension-domain`,
+local only, head `d6573ed`) is committed and loads itself. Three things are
+unproven live: step tabs closing after a run (`d6573ed` passes 22 tests but
+no real run has exercised it), Chrome staying in the background through the
+last seconds of a gate (the one full run happened on a locked screen), and a
+ticked SoundCloud direct download on `/downloads/`.
 
 ## Just done
-- `3d062cc` — #92 merged and **live** (deploy run 37814525234, success
-  17:13 UTC; the CSP half arrived ~1 min after the chunk, as usual). #89 was
-  carried in by #92 (it conflicted with `main` on STATE.md; GitHub marks it
-  merged). Verified on tracktoolkit.com, signed in as Cole, Chrome 1374 px:
-  - **Folder mode:** with `showDirectoryPicker` stubbed to an in-memory
-    handle (the native picker cannot be driven from the tab group), "Download
-    all (1)" on *Franky Type Mix* fetched the real CDN file in-page through
-    the new `connect-src` and CORS — 12,600,423 bytes — and wrote it as
-    `SIÔN - SION - FADE (FREE DOWNLOAD).mp3`; panel "1 saved", row shows the
-    name. **Side effect:** that track is now in Cole's download history
-    (a link was fetched) but is **not on disk** — it still needs a real run.
-  - **Tab flow + check:** box unticked, "Download all (2)" on *crate*: both
-    wavs landed in ~/Downloads under the CDN's names (`A&VJ - Turn Off The
-    Lights (Master).wav`, `LMFAO - … MV1.wav`; Chrome had already allowed
-    multiple downloads for the site), and "Did “Chris Lake - Turn Off The
-    Lights (AEOLUS & Versace James Remix)” save?" appeared as a modal dialog
-    (screenshot). "Yes" set `track-toolkit-multi-download-ok=1` and finished
-    the queue. Cole's browser was left with folder mode on and the queue
-    cleared; the page's helper tab ("Track Toolkit — downloads") is still
-    open in his window.
-- PR #92 — folder mode for the Downloads queue (Cole's filename report).
-  **Evidence that decided it:** from the signed-in page, an `<img
-  crossorigin="anonymous">` request to a real CDN link exposed
-  `responseStatus: 200` in Resource Timing while the no-CORS control exposed
-  0, which only happens when the CDN sends `Access-Control-Allow-Origin`; a
-  page `fetch` was blocked only by our own `connect-src`. The CDN link itself
-  is a signed CloudFront URL with an opaque path; the name came from
-  `Content-Disposition`, i.e. the artist's upload filename. New:
-  `lib/download-folder.ts`, `lib/download-file-name.ts`, statuses
-  `saving`/`saved`, `QueueState.mode`, `FOLDER_BATCH_SIZE` 5, the "Save into
-  a folder" box (default on where supported), CSP `connect-src` +
-  `*.sndcdn.com` + `*.cloudfront.net`. Full check in the worktree: 1030 Jest,
-  lint/build/contrast, targeted e2e green; the full-suite result is in the PR.
-- 19ba9a9 — PR #89: the downloads queue's "Did X save?" check is a `Dialog`
-  on every width, is painted into the helper tab with working buttons, and
-  blocks a restart (`enqueue` while `check` is set is a no-op; "Download all"
-  re-opens the question). **Evidence:** Cole's saved queue was sitting on the
-  check with `track-toolkit-multi-download-ok` unset; `/api/downloads/history`
-  showed three two-file runs (13:19, 13:31, 13:32 UTC); his window is below
-  `lg`, so the check was behind the grey "check needed" bar. Full check: 1030
-  Jest, lint/build/contrast, e2e 755 passed / 0 failed. Not live.
-- **Filenames (Cole's second report), diagnosed, not changed:** the queue's
-  CDN links are signed CloudFront URLs with an opaque path
-  (`/cmoXVDN1hWhb?Policy=…&Signature=…&Key-Pair-Id=…`); the saved name comes
-  from SoundCloud's `Content-Disposition`, i.e. the artist's original upload
-  filename (`drakeMASTERED_.wav`, `final styler mashup.wav`). A cross-origin
-  navigation cannot be renamed by the page. Options and the open question
-  are under Next, 2026-10-08 item 0b.
-- `42718c0` + `a398c23` — #93 and #94 merged and live: **Work through gates
-  (N)** on `/rekordbox-gaps`. Every free gate (any site) for a track not in
-  Rekordbox, one at a time: Open gate (new tab), Done — next, Skip, Undo, and
-  a progress bar. Progress is per browser (`track-toolkit-gate-progress`). It
-  only opens links. This is the manual route now that the runner is
-  bot-blocked. Live, signed in, with a synthetic XML: 643 gates, matching the
-  Downloads page; a toggle takes 7–12 ms with no long tasks. (Scripts that
-  wait on `requestAnimationFrame` hang in the Claude tab group, because its
-  window is a hidden tab.)
-- `2642fa0` — #91: `7d8a86b` (the #90 docs commit) was made with
-  `git commit -a` in the shared checkout. It swept in another session's
-  uncommitted edit to `tests/security-headers.test.js` (a `connectSrc`
-  assertion for `*.sndcdn.com` / `*.cloudfront.net`, without its
-  `security.js` change). `main` failed and the `fc652a7` deploy stopped
-  (production stayed on `783f997`). #91 restored the file. That session's
-  edit is still in `7d8a86b` if it wants it back. **In a checkout another
-  session may be using, use a worktree and stage files by name.**
-- `783f997` — #87 merged and live: `/rekordbox-gaps` gets **Export Hypeddit
-  queue**, with Hypeddit gates only for tracks missing or in a different
-  version, in the local runner's format (`hypeddit-queue-not-in-rekordbox.json`).
-  "Download missing" became **Download direct** and now covers a different
-  version too. Live: the served page chunk carries both buttons and the
-  filename. Why: the Downloads export queued all 518 Hypeddit likes, about a
-  third of them already in Cole's Rekordbox.
-- 2026-10-08 reconciliation (plan: the session's pasted brief; no plan file).
-  Each code PR got the full check on a tree merged with the then-current
-  `main` before it merged. "Live" means the deploy run succeeded, the App
-  Service restarted after it (`Server running` in the docker log), and the
-  check below passed against tracktoolkit.com.
-  - `ac4b6ff` — #76: a page navigation to `<route>/index.txt` 302s to
-    `<route>/`. Live: `Sec-Fetch-Dest: document` → 302 `/dashboard/`, and
-    `RSC: 1` → 200 `no-cache`. Signed in (Cole's browser), "Get started" →
-    `/dashboard/`, no console errors, no `index.txt` navigation. **Why it sat
-    unmerged:** nothing blocked it. Auto-merge is disabled on the repo, there
-    is no branch protection, and CodeRabbit (the only status) was green.
-    Nobody pressed merge.
-  - `685ad48` — #78 (SEO P1, now including #9): per-page canonical/og:url,
-    robots.txt down to `/api/` + `/admin`, no `SearchAction`, legacy hosts
-    one hop, `/404.html` and `/404/` → 404, `<route>/index.html` → 301. Every
-    redirect built from the request path now goes through `sameSitePath()`.
-    #76's redirect turned `//evil.example/index.txt` into
-    `Location: //evil.example/` on bare Express. It did **not** reproduce live
-    (Azure's front end collapses `//` and `\`), so this is defence in depth.
-    The server half took about a minute longer than the files to go live:
-    zip deploy swaps the files before the process restarts.
-  - `3dcc4cc` — #80: a partly created followed-user clone is shown, not
-    hidden. Live: the new copy is in the served `following-library` chunk,
-    `api.js` on App Service carries "Nothing was changed", and there were no
-    errors after the restart. A real clone was not run (it writes playlists).
-  - `39c5175` — #74, rebuilt: its server half had shipped as #72, and its
-    downloads half (stop after the 2nd file until Chrome's multiple-downloads
-    prompt is answered) had only ever been committed on a local `main`. The PR
-    now carries that commit alone. Live: `track-toolkit-multi-download-ok` is
-    in the served Downloads chunk, and the page renders signed in. No queue was
-    run (it downloads files).
-  - `7bc45c0` — #67 (security, rebased): a pagination cursor can only
-    continue its own request; `userUrn` is validated. Live, signed in:
-    `/api/likes/paged` with a genuine `next_href` → 200; with a
-    `/me/followings` cursor → 400 "Invalid next cursor";
-    `/api/users/me%3Fx%3D1/related` → 400.
-  - `b3fdba5` — #66 (rebased twice, retargeted from the merged
-    `feat/download-queue`): `/rekordbox-gaps`. Its live result is under Next.
-  - `fa531a8` #82, `94c4e78` #77: docs only, no deploy.
-- `f03bbdf` + `c9c3b21` — #75 and #81 merged and live: README usage figures
-  are now shields.io badges reading the unauthenticated
-  `GET /api/stats/public` (`server/routes/stats.js`), with a note that they
-  update daily. Users = `lifetime_distinct_users` (3,119); tracks = the new
-  running total `lifetime_tracks_processed` (2,746,090 on its first run,
-  14:51 UTC), advanced by a cursor key, `lifetime_tracks_processed_through`.
-  Verified: endpoint 200, the retention log line, and both badges rendering on
-  the GitHub README (screenshot). #81 changed the badges' cache key — see
-  Landmines.
-- `6b08284` — #70 merged and live: SoundCloud errors now carry `status`
-  (messages unchanged); GET is retried once on 502/503/504; merge answers 409
-  `PLAYLIST_NOT_FOUND` / 502 `SOUNDCLOUD_UNAVAILABLE` instead of 500, and
-  `GET /api/playlists/:id` answers 404/502. Prompted by the merge 5xx
-  investigation: 56/295 merges 500'd (37 SoundCloud outage 502/504 on
-  09-25/26, 15 deleted-but-cached source playlists, 6 our 30 s timeout).
-  Plan: `~/.claude/plans/merge-5xx-error-mapping.md`.
-- `d896e61` — #59 merged and live: genre focus on Grow your network (Nick).
-  It was rebased onto #60/#61 and re-checked: 792 tests, e2e 594 passed /
-  0 failed.
-- `5487d01` — #61 merged and live: appends never shrink an existing playlist;
-  targets over 500 are refused with 409.
-- `73f410e` — #60 merged and live: playlist rewrites read blocked tracks and
-  require declared removals (Steve). Before it, the short-read guard refused
-  **101 of 148** playlist PUTs, because SoundCloud's `access` defaults to
-  `playable,preview`.
-- `67c5443` — #58 merged and live: `POST /api/growth/reverse` 500'd on every
-  call (`SC_WRITE_PACING_MS` was not imported).
-- Plan: `~/.claude/plans/pasted-content-id-9479-two-pieces-streamed-abelson.md`.
+- `3452e59` — #101 live: every automatic download in the `/downloads/` list has
+  a checkbox, with a sticky "Download N selected" bar. Hypeddit picks go to the
+  extension, direct ones to the queue. Live: 137 boxes, none ticked; a ticked
+  Hypeddit track queued alone. Full check: 1066 Jest, 823 e2e, 1 flaky failure
+  (`growth-genre.spec.ts:35`, passed 3 reruns; see Next, Recorded).
+- `3062144` — #100 live: folder mode fetches each link just before its file
+  (`FOLDER_BATCH_SIZE = 1`, links die after about 90 s) and adds Retry failed.
+  Cole's own retry of that folder is unconfirmed.
+- `011c7a2`, `756d5d8` (extension) — the stepper reads the current slide, runs
+  on every Hypeddit tab, and one gate saves one file. Live: a 5-track queue
+  finished 5/5 with one download per track, in about 3.5 minutes.
+- `3280829`, `0bd641a`, `5b41ebd` (extension) — a page load no longer resends
+  the last queue; a queue with nothing to run no longer stops a running one;
+  gate steps open as background tabs. Live: Terminal stayed in front for a
+  70 s run, and Get Lucky completed end to end with one file. Note `0bd641a`
+  also carries the worker's once-per-submit `ts` check.
+- `d6573ed`, `67b273d` (extension) — step tabs are recorded when opened and
+  closed on load, gate end or deadline (not yet seen live); an unpacked copy
+  reloads itself when its files change (seen working).
 
 ## Next
+### 2026-11-04
+1. On Cole's next queue: confirm no step tabs stay open and Chrome stays behind
+   his app at the end of each gate. If a tab stays, its site is the clue.
+2. Tick one SoundCloud direct download on `/downloads/` and confirm it queues
+   alone (only the Hypeddit half was run live).
+3. Move the extension and runner to a private repo (item 3 under 2026-10-08).
+
 ### 2026-10-08
 0. ~~After #89 and #92 merge~~ **Done 2026-10-08 (see Just done).** What
    remains is a real folder-mode run by Cole: pick a folder in the native
@@ -234,9 +114,9 @@ cannot screenshot).
      the origin guard (401, no cookie). The ID comes from the folder path, since
      the manifest has no `key`, so moving the folder changes it. The setting is
      not in Bicep, so **`infra/deploy.sh` removes it**; re-add it afterwards.
-   - The extension's own Hypeddit stepper no longer matches live gates; the
-     runner is the way to do gates. Its `comment-cleanup.js` does not check
-     which page it is on (see the extension repo's README).
+   - ~~The extension's stepper no longer matches live gates~~ Fixed 2026-11-03
+     (`011c7a2`): the extension is the way to do gates again. Its
+     `comment-cleanup.js` still does not check which page it is on.
    - **2026-10-08: the runner's logins are bot-blocked.** SoundCloud,
      Instagram and Spotify all refused sign-in in the runner's Playwright
      Chromium, and SoundCloud blocked the network IP ("We detected unusual
@@ -552,6 +432,20 @@ cannot screenshot).
   as the fallback for browsers without the API and for anyone who unticks
   the box.
 
+### From the 2026-11-03 Hypeddit session
+- **The extension works every Hypeddit tab, not only queue tabs** (Cole,
+  2026-11-03). Autofill and click-through on a gate opened by hand is what he
+  had and wants. Commit `2000b1b` removed it without asking; don't remove it.
+- **Tracks are picked with row checkboxes** (Cole, 2026-11-04). Auto-Download
+  stays for select-all; it must not be the only way in.
+- **A queue must not take focus** (Cole, 2026-11-04). Queue tabs never call
+  `window.open`; the worker opens step pages as background tabs. A minimized
+  queue window was tried and failed (`60947ea`), so don't bring it back.
+- **Agents reload the extension themselves** (Cole, 2026-11-04), through
+  `src/dev-reload.js`. Wait up to a minute after an edit; don't ask him.
+- **No captcha, bot-check or `isTrusted` workarounds.** The stepper stops at a
+  captcha and leaves the gate to the person.
+
 ## Landmines
 - **Never fetch 1001Tracklists from the server.** A plain request (`curl`,
   Node `fetch`) gets HTTP 401 `www-authenticate: reCaptcha` and an image
@@ -757,3 +651,21 @@ cannot screenshot).
   wrong base. Work in a worktree (`.worktrees/<branch>`, node_modules
   symlinked from the main checkout, `E2E_PORT` of your own) and leave the main
   checkout alone.
+- **`window.open` always shows Chrome's window**, even for a tab of a hidden
+  window, and that pulls Chrome in front of the app in use. Hypeddit's popup
+  helper also calls `focus()` on the result.
+- **Spotify's step needs its tab alive past 10 s.** With no `window.opener`,
+  `/spotify_callback` writes `hypeChildWindow` to localStorage and the gate
+  moves on from the `storage` event. A leftover identical value fires no event,
+  so opening that callback by hand can stall the next gate: remove the key.
+- **Do not trust `onCreated` for `openerTabId` on a tab from `tabs.create`.** It
+  looks unset at that point (inferred from tabs never closing), and
+  `test/fake-chrome.mjs` does not reproduce it, so tests passed with the bug.
+- **Hypeddit starts its own download up to about 6 s after the unlock.** The
+  worker waits up to 15 s before starting one, or each file saves twice.
+- **The extension's saved email lives per extension ID.** The ID comes from the
+  folder path, so loading another folder means an empty `hdEmail` and gates
+  stopping at the first step.
+- **Closing the lid interrupts gate downloads.** They need Resume in
+  `chrome://downloads`, and a signed link lasted about 100 minutes. The queue
+  reports a track done when its download starts, not when the file lands.
