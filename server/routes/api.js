@@ -691,7 +691,7 @@ router.get('/playlists', authenticateUser, instrumentRead('playlists'), async (r
  * POST /api/playlists/clone
  * Clones another user's playlist to the current user's account
  */
-router.post('/playlists/clone', authenticateUser, heavyOperationRateLimiter, validateClonePlaylist, async (req, res) => {
+router.post('/playlists/clone', authenticateUser, validateClonePlaylist, heavyOperationRateLimiter, async (req, res) => {
   // Set immediately BEFORE each create or PUT: a write that timed out or came
   // back 502 may still have landed, so this is what picks the 502 wording.
   let writeAttempted = false;
@@ -899,7 +899,7 @@ router.post('/playlists/clone', authenticateUser, heavyOperationRateLimiter, val
  * caller's account. Splits at 500 tracks exactly like
  * likes-to-playlist, because it goes through the same createOrAppendTrackIds.
  */
-router.post('/users/likes/clone', authenticateUser, heavyOperationRateLimiter, validateCloneUserLikes, async (req, res) => {
+router.post('/users/likes/clone', authenticateUser, validateCloneUserLikes, heavyOperationRateLimiter, async (req, res) => {
   let writeAttempted = false;
   const tagSourceStep = (err) => {
     if (err && typeof err === 'object') err.cloneSourceStep = true;

@@ -56,6 +56,7 @@ jest.unstable_mockModule('../../server/middleware/auth.js', () => ({
 }));
 
 const { default: apiRoutes } = await import('../../server/routes/api.js');
+const { heavyOperationRateLimiter } = await import('../../server/middleware/rateLimiter.js');
 // Not mocked: the follow check reads the real per-user cache, so each test
 // starts from a cold one.
 const { requestCache } = await import('../../server/lib/request-cache.js');
@@ -263,5 +264,22 @@ describe('POST /api/users/likes/clone', () => {
     expect((await clone({ url: [PROFILE] })).status).toBe(400);
     expect((await clone({})).status).toBe(400);
     expect(resolveAny).not.toHaveBeenCalled();
+  });
+});
+
+describe('middleware order on both clone routes', () => {
+  // A malformed or cross-site form post must die at the validator with a 400
+  // before it can spend the caller's 20/hour heavy-operation budget.
+  test.each(['/playlists/clone', '/users/likes/clone'])('%s validates before the rate limiter', (path) => {
+    const layer = apiRoutes.stack.find((l) => l.route && l.route.path === path && l.route.methods.post);
+    expect(layer).toBeDefined();
+    const handles = layer.route.stack.map((s) => s.handle);
+    const names = handles.map((h) => h.name);
+    const validatorEnd = names.indexOf('handleValidationErrors');
+    const limiter = handles.indexOf(heavyOperationRateLimiter);
+
+    expect(names[0]).toBe('authenticateUser');
+    expect(validatorEnd).toBeGreaterThan(0);
+    expect(limiter).toBeGreaterThan(validatorEnd);
   });
 });
