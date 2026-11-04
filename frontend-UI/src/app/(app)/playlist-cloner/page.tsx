@@ -259,7 +259,7 @@ export default function PlaylistClonerPage() {
               )}
             </Field>
 
-            <Field label="Custom name (optional)">
+            <Field label="Name for the copy (optional)">
               {(field) => (
                 <Input
                   {...field}
@@ -336,7 +336,7 @@ export default function PlaylistClonerPage() {
                 )}
               </Field>
 
-              <Field label="Custom name (optional)">
+              <Field label="Name for the likes playlist (optional)">
                 {(field) => (
                   <Input
                     {...field}
@@ -375,7 +375,7 @@ export default function PlaylistClonerPage() {
           <div className="space-y-6">
             {stats?.truncated === true && (
               <InlineAlert variant="warning">
-                SoundCloud took too long to list every like, so this is only part of them. Run it again later for the rest.
+                SoundCloud stopped listing likes before the end, so only {String(stats?.totalTracks ?? 0)} were copied. Running it again makes a new full copy, not just the rest.
               </InlineAlert>
             )}
             {copyGapMessage(stats) && (
