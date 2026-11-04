@@ -117,6 +117,24 @@ describe('POST /api/playlists/clone with a secret link', () => {
     expect(description).not.toContain('s-AbC123xyz');
   });
 
+  test('a link copied from the share menu: canonical URL resolved, no token or tracking in the description', async () => {
+    const shared = 'https://soundcloud.com/someone/sets/hidden-mix/s-AbC123xyz'
+      + '?ref=clipboard&p=i&c=1&si=0123456789abcdef0123456789abcdef'
+      + '&utm_source=clipboard&utm_medium=text&utm_campaign=social_sharing';
+    const res = await request(app).post('/api/playlists/clone').send({ url: shared });
+
+    expect(res.status).toBe(200);
+    expect(resolveAny).toHaveBeenCalledWith('at', 'rt', SECRET_URL);
+    expect(getPlaylistWithTracks).toHaveBeenCalledWith('at', 'rt', 555, { secretToken: 's-AbC123xyz' });
+    const description = createPlaylist.mock.calls[0][3];
+    expect(description).toContain('Cloned from https://soundcloud.com/someone/sets/hidden-mix');
+    for (const leak of ['s-AbC123xyz', 'si=', 'utm_', 'ref=', 'clipboard', '0123456789abcdef']) {
+      expect(description).not.toContain(leak);
+    }
+    const { req: _req, ...logged } = logOperation.mock.calls[0][0];
+    expect(JSON.stringify(logged)).not.toContain('s-AbC123xyz');
+  });
+
   test('a secret link to a 600-track playlist makes every part private', async () => {
     getPlaylistWithTracks.mockResolvedValue({ id: 555, title: 'Big', tracks: toTracks(range(600)) });
     const res = await request(app).post('/api/playlists/clone').send({ url: SECRET_URL });

@@ -48,3 +48,34 @@ export function stripSecretToken(input) {
   }
   return url.toString();
 }
+
+/**
+ * The link as SoundCloud names the resource: `https://soundcloud.com/<path>`
+ * with the whole query dropped. A link copied from SoundCloud's share menu
+ * carries `ref`, `p`, `c`, `si` and `utm_*`; none of them identify anything,
+ * so none of them are sent to /resolve or written into a description. A
+ * token given as `?secret_token=` on a playlist link is moved into the path
+ * (`/sets/<slug>/s-…`), the form SoundCloud itself shares. Short links
+ * (`on.soundcloud.com/…`) keep their host. Returns '' for anything unparseable.
+ */
+export function canonicalSoundCloudUrl(input) {
+  const url = parse(input);
+  if (!url) return '';
+  const host = url.hostname.toLowerCase();
+  const segments = url.pathname.split('/').filter(Boolean);
+  const token = extractSecretToken(url.toString());
+  const setsAt = segments.indexOf('sets');
+  if (token && setsAt !== -1 && segments.length === setsAt + 2) segments.push(token);
+  const origin = host === 'on.soundcloud.com' ? 'https://on.soundcloud.com' : 'https://soundcloud.com';
+  return segments.length ? `${origin}/${segments.join('/')}` : origin;
+}
+
+/**
+ * For log lines and error text: any secret token, in a query or as a
+ * trailing `/s-…` path segment, replaced with a placeholder.
+ */
+export function redactSecretToken(input) {
+  return String(input ?? '')
+    .replace(/(secret_token=)[^&#\s]*/gi, '$1[redacted]')
+    .replace(/\/s-[A-Za-z0-9]{3,64}(?=[/?#\s]|$)/g, '/s-[redacted]');
+}

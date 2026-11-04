@@ -91,7 +91,7 @@ import {
   validateSetlistPlaylist,
 } from '../middleware/validation.js';
 import { buildSetlistDescription, dedupeTracks } from '../lib/setlist.js';
-import { extractSecretToken, stripSecretToken } from '../lib/secret-link.js';
+import { canonicalSoundCloudUrl, extractSecretToken, stripSecretToken } from '../lib/secret-link.js';
 const router = express.Router();
 
 // The domain moves with the Azure cutover (docs/internal/MIGRATION.md work item 4): the
@@ -703,20 +703,23 @@ router.post('/playlists/clone', authenticateUser, validateClonePlaylist, heavyOp
   };
   try {
     const { url, title } = req.body;
-    const cleaned = sanitizeUrl(url);
+    // A link from SoundCloud's share menu carries ref/p/c/si/utm_* tracking;
+    // `canonical` drops the whole query, so none of it is sent to /resolve or
+    // written into the description.
+    const canonical = canonicalSoundCloudUrl(sanitizeUrl(url));
     // A private playlist shared by link carries `s-…`. It is a credential: it
     // goes to SoundCloud as `secret_token` and nowhere else, so everything we
     // store or publish uses `publicUrl`.
-    const secretToken = extractSecretToken(cleaned);
-    const publicUrl = stripSecretToken(cleaned);
+    const secretToken = extractSecretToken(canonical);
+    const publicUrl = stripSecretToken(canonical);
 
     // 1. Resolve URL
     let resource;
     try {
-      resource = await soundcloudClient.resolveAny(req.accessToken, req.refreshToken, cleaned);
+      resource = await soundcloudClient.resolveAny(req.accessToken, req.refreshToken, canonical);
     } catch (e) {
       if (String(e?.message).includes('401')) {
-        resource = await soundcloudClient.resolvePublic(cleaned).catch(tagSourceStep);
+        resource = await soundcloudClient.resolvePublic(canonical).catch(tagSourceStep);
       } else {
         tagSourceStep(e);
       }
@@ -906,7 +909,7 @@ router.post('/users/likes/clone', authenticateUser, validateCloneUserLikes, heav
     throw err;
   };
   try {
-    const cleaned = sanitizeUrl(req.body.url);
+    const cleaned = canonicalSoundCloudUrl(sanitizeUrl(req.body.url));
 
     let resource;
     try {
