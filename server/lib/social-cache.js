@@ -342,6 +342,7 @@ function revalidateInBackground(userId, resource, crawl, shape) {
   const done = Promise.resolve()
     .then(async () => {
       const items = await crawl();
+      logLibraryLoad(resource, 'revalidate', items);
       if (!stillCurrent(userId, resource, mark)) {
         logger.info('[snapshot-cache] discarding background revalidate; invalidated mid-crawl', { resource });
         return;
@@ -375,6 +376,22 @@ function revalidateInBackground(userId, resource, crawl, shape) {
     .finally(() => { revalidating.delete(key); });
 
   revalidating.set(key, done);
+}
+
+/**
+ * Diagnostic for the exit-137 kills: which load ran, how big, and what the
+ * process held afterwards. Counts rather than bytes, because serializing a
+ * large library to measure it would allocate the memory being investigated.
+ */
+function logLibraryLoad(resource, source, items) {
+  const { rss, heapUsed } = process.memoryUsage();
+  logger.info('[library-load]', {
+    resource,
+    source,
+    items: items?.length ?? 0,
+    rssMB: Math.round(rss / 1_048_576),
+    heapMB: Math.round(heapUsed / 1_048_576),
+  });
 }
 
 /**
@@ -417,6 +434,8 @@ export async function loadUserCollection(req, resource, crawl, shape) {
     && invalidated > 0
     && !(Number.isFinite(syncedMs) && syncedMs > invalidated);
 
+  if (snapshot) logLibraryLoad(resource, 'snapshot', snapshot.items);
+
   if (snapshot && !supersededByMutation) {
     const payload = {
       ...shape(snapshot.items),
@@ -439,6 +458,7 @@ export async function loadUserCollection(req, resource, crawl, shape) {
 
   return getCachedUserPayload(resource, userId, 'default', async () => {
     const items = await crawl();
+    logLibraryLoad(resource, 'crawl', items);
     // One computation for both the response and the snapshot row: the test
     // 'a truncated crawl is reported as truncated' asserts they agree.
     const truncated = items?.truncated === true;
