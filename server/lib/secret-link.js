@@ -77,5 +77,5 @@ export function canonicalSoundCloudUrl(input) {
 export function redactSecretToken(input) {
   return String(input ?? '')
     .replace(/(secret_token=)[^&#\s]*/gi, '$1[redacted]')
-    .replace(/\/s-[A-Za-z0-9]{3,64}(?=[/?#\s]|$)/g, '/s-[redacted]');
+    .replace(/\/s-[A-Za-z0-9]{3,64}(?![A-Za-z0-9])/g, '/s-[redacted]');
 }

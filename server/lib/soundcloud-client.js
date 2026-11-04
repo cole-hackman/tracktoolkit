@@ -7,6 +7,7 @@ import { getTokenContext, countScCall } from './token-context.js';
 import { invalidateCachedAuth } from './auth-cache.js';
 import { isAllowedDownloadUrl } from './download-utils.js';
 import { cursorEndpoint } from './sc-cursor.js';
+import { redactSecretToken } from './secret-link.js';
 
 /**
  * Safely parse a fetch Response body as JSON.
@@ -25,7 +26,9 @@ async function parseScJson(response, { context = 'SoundCloud API', allowEmpty = 
   try {
     return JSON.parse(text);
   } catch {
-    const snippet = text.length > 200 ? `${text.slice(0, 200)}…` : text;
+    // A body can echo the request (a secret_uri, an error page quoting the
+    // URL), so the snippet is redacted like the context.
+    const snippet = redactSecretToken(text.length > 200 ? `${text.slice(0, 200)}…` : text);
     logger.warn(`[${context}] non-JSON response (status ${response.status}): ${snippet}`);
     throw new Error(`${context}: invalid JSON response (status ${response.status})`);
   }
@@ -569,6 +572,9 @@ class SoundCloudClient {
   async scRequest(endpoint, accessToken, refreshToken, options = {}) {
     const { max429Retries = 3, retryAttempt = 0, ...fetchOptions } = options;
     const url = `${this.baseUrl}${endpoint}`;
+    // What log lines and error objects may say about this call: a private
+    // playlist read carries `secret_token=s-…`, a credential, in the endpoint.
+    const logEndpoint = redactSecretToken(endpoint);
     
     const response = await fetchWithGatewayRetry(url, {
       ...fetchOptions,
@@ -600,7 +606,7 @@ class SoundCloudClient {
           throw new Error(`API request failed after token refresh: ${retryResponse.status}`);
         }
 
-        return parseScJson(retryResponse, { context: endpoint });
+        return parseScJson(retryResponse, { context: logEndpoint });
       } catch (refreshError) {
         // Don't expose refresh error details
         throw new Error(`Token refresh failed`);
@@ -629,12 +635,12 @@ class SoundCloudClient {
       // Don't include response body in error message to prevent secret leakage
       throw Object.assign(new Error(`API request failed: ${response.status}`), {
         status: response.status,
-        endpoint,
+        endpoint: logEndpoint,
         method: String(fetchOptions.method || 'GET').toUpperCase(),
       });
     }
 
-    return parseScJson(response, { context: endpoint });
+    return parseScJson(response, { context: logEndpoint });
   }
 
   /**

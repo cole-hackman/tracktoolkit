@@ -421,3 +421,46 @@ describe('paginate stopped by a 429', () => {
     expect(items.truncated).toBeUndefined();
   });
 });
+
+describe('a secret_token never reaches a log line or an error', () => {
+  const TOKEN = 's-AbC123xyz';
+  let logged;
+
+  beforeEach(async () => {
+    global.fetch = jest.fn();
+    const { default: logger } = await import('../server/lib/logger.js');
+    logged = [];
+    for (const level of ['debug', 'info', 'warn', 'error']) {
+      jest.spyOn(logger, level).mockImplementation((...args) => { logged.push(args); });
+    }
+    for (const level of ['log', 'info', 'warn', 'error']) {
+      jest.spyOn(console, level).mockImplementation((...args) => { logged.push(args); });
+    }
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  const everything = (err) => JSON.stringify([logged.map((a) => a.map(String)), err?.message, err?.endpoint]);
+
+  test('a non-JSON body on a secret playlist read', async () => {
+    fetch.mockResolvedValueOnce(new Response(`<html>try https://soundcloud.com/u/sets/m/${TOKEN}</html>`, { status: 200 }));
+    const err = await soundcloudClient
+      .getPlaylistWithTracks('a', 'r', 555, { secretToken: TOKEN })
+      .catch((e) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect(fetch.mock.calls[0][0]).toContain(`secret_token=${TOKEN}`); // it still goes to SoundCloud
+    expect(logged.length).toBeGreaterThan(0);
+    expect(everything(err)).not.toContain('AbC123xyz');
+  });
+
+  test('a refused secret playlist read', async () => {
+    fetch.mockResolvedValueOnce(new Response('', { status: 403 }));
+    const err = await soundcloudClient
+      .getPlaylistWithTracks('a', 'r', 555, { secretToken: TOKEN })
+      .catch((e) => e);
+
+    expect(err.status).toBe(403);
+    expect(err.endpoint).toContain('secret_token=[redacted]');
+    expect(everything(err)).not.toContain('AbC123xyz');
+  });
+});
