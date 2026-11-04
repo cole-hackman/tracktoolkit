@@ -67,7 +67,7 @@ ticked SoundCloud direct download on `/downloads/`.
    model reached about 980 MB only at the largest size tested, so other paths
    may contribute: after the deploy, compare kills per day and read
    `[library-load]` lines before calling it fixed. If kills continue, the same
-   lines show which load preceded them. Also logged:
+   `[library-load] start` lines show which load was running. Also logged:
    `ERR_ERL_INVALID_IP_ADDRESS` on a port-suffixed `req.ip`, which plan task
    B2 covers.
 1. On Cole's next queue: confirm no step tabs stay open and Chrome stays behind

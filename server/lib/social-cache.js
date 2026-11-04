@@ -341,6 +341,7 @@ function revalidateInBackground(userId, resource, crawl, shape) {
 
   const done = Promise.resolve()
     .then(async () => {
+      logger.info('[library-load] start', { resource, source: 'revalidate' });
       const items = await crawl();
       logLibraryLoad(resource, 'revalidate', items);
       if (!stillCurrent(userId, resource, mark)) {
@@ -382,6 +383,7 @@ function revalidateInBackground(userId, resource, crawl, shape) {
  * Diagnostic for the exit-137 kills: which load ran, how big, and what the
  * process held afterwards. Counts rather than bytes, because serializing a
  * large library to measure it would allocate the memory being investigated.
+ * A `start` line precedes each load, so a load the kill interrupts still shows.
  */
 function logLibraryLoad(resource, source, items) {
   const { rss, heapUsed } = process.memoryUsage();
@@ -420,6 +422,7 @@ export async function loadUserCollection(req, resource, crawl, shape) {
   // immediately and refreshed behind the response — an answer now beats a
   // correct answer after a 25-page crawl. An invalidated one is not served at
   // all: readSnapshot refuses any status other than 'complete'.
+  logger.info('[library-load] start', { resource, source: 'snapshot' });
   const snapshot = await readSnapshot(userId, resource);
   // A snapshot synced at or before the last invalidation is pre-mutation data
   // even if its row still says 'complete': invalidateSnapshot's UPDATE is a
@@ -457,6 +460,7 @@ export async function loadUserCollection(req, resource, crawl, shape) {
   const mark = invalidationMark(userId, resource);
 
   return getCachedUserPayload(resource, userId, 'default', async () => {
+    logger.info('[library-load] start', { resource, source: 'crawl' });
     const items = await crawl();
     logLibraryLoad(resource, 'crawl', items);
     // One computation for both the response and the snapshot row: the test

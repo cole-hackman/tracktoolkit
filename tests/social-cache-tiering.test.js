@@ -51,6 +51,21 @@ describe('[library-load] diagnostic', () => {
     info.mockRestore();
   });
 
+  test('each load logs a start line first, so a kill mid-load still names it', async () => {
+    const info = jest.spyOn(logger, 'info').mockImplementation(() => {});
+    readSnapshot.mockResolvedValue(null);
+
+    await loadUserCollection(req, 'playlists', async () => {
+      expect(info.mock.calls).toEqual(expect.arrayContaining([
+        ['[library-load] start', { resource: 'playlists', source: 'crawl' }],
+      ]));
+      return [];
+    }, shape);
+
+    expect(info.mock.calls[0]).toEqual(['[library-load] start', { resource: 'playlists', source: 'snapshot' }]);
+    info.mockRestore();
+  });
+
   test('a snapshot read logs too, and neither line names the user', async () => {
     const info = jest.spyOn(logger, 'info').mockImplementation(() => {});
     readSnapshot.mockResolvedValue({
