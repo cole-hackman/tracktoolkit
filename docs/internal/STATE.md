@@ -1,15 +1,21 @@
 # STATE
 
 ## Now
-Nothing is mid-flight. `main` is at `3452e59` and live. The Hypeddit extension
-(`~/Developer/tracktoolkit-extension-work`, branch `fix/extension-domain`,
-local only, head `d6573ed`) is committed and loads itself. Three things are
-unproven live: step tabs closing after a run (`d6573ed` passes 22 tests but
-no real run has exercised it), Chrome staying in the background through the
-last seconds of a gate (the one full run happened on a locked screen), and a
-ticked SoundCloud direct download on `/downloads/`.
+Clone private playlists + clone a user's likes is built and committed on
+`feat/clone-private` (`51e0058`, worktree `.worktrees/feat-clone-private`),
+NOT pushed or merged, so nothing is live and nothing is verified against
+SoundCloud. Server suite 1082/1082, tsc/lint/build/contrast clean, a11y,
+mobile and long-title e2e for `/playlist-cloner/` pass. Unproven: whether
+SoundCloud's `/resolve` accepts a secret-link URL and whether
+`secret_token` on `GET /playlists/{id}` returns the tracks. Main (`3452e59`)
+is otherwise as below; the Hypeddit items still stand.
 
 ## Just done
+- `51e0058` (`feat/clone-private`, unmerged) — Playlist Cloner accepts your own
+  private playlists and others' secret links (`.../s-XXXX`), and a new
+  `POST /api/users/likes/clone` copies a profile's public likes, split at 500
+  through `createOrAppendTrackIds` (same logic as likes-to-playlist). Tests:
+  `tests/routes/clone-private.test.js`, `tests/secret-link.test.js`.
 - **Uptime monitor deployed 2026-11-04** (`tools/uptime-worker/`, PR #99; the
   Worker was deployed by hand with wrangler, not by CI). Status page:
   https://tracktoolkit-uptime.tracktoolkit-uptime-worker.workers.dev/ — runs
@@ -42,6 +48,17 @@ ticked SoundCloud direct download on `/downloads/`.
   reloads itself when its files change (seen working).
 
 ## Next
+### 2026-11-04 (clone-private)
+0. **Verify on a real private playlist before merging.** Merging to `main`
+   deploys. With a real secret link, run the clone from a local server and
+   check: it resolves, the tracks arrive, the copy is private, and the
+   description has no `s-` token. If `/resolve` rejects the URL, resolve the
+   playlist another way. Then merge and run /verify-deploy on `/playlist-cloner/`.
+1. Try "Clone someone's likes" on a profile with over 500 likes and confirm
+   the parts are titled `(1/n)`. A crawl cut short shows a warning
+   (`stats.truncated`, 120 s crawl budget).
+2. No test calls SoundCloud for real; add one if secret links misbehave.
+
 ### 2026-11-04
 0. **Node is being killed (exit 137) repeatedly, cause unknown.** 2 kills on
    11-03, 14 on 11-04 (13 of them 06:46-10:33 UTC, before the monitor
@@ -466,6 +483,14 @@ ticked SoundCloud direct download on `/downloads/`.
 - **No captcha, bot-check or `isTrusted` workarounds.** The stepper stops at a
   captcha and leaves the gate to the person.
 
+### From the 2026-11-04 clone-private session
+- **A copy of a private playlist is private** (Claude's call, 2026-11-04, not
+  yet reviewed by Cole): a secret link or `sharing: 'private'` source makes
+  every cloned part `sharing: 'private'`. Cloning used to hard-code public.
+  Revisit only by asking Cole.
+- **Clone a user's likes** is a separate route from followed-likes (which needs
+  a followed user), takes any profile URL, and reuses `createOrAppendTrackIds`.
+
 ## Landmines
 - **Never fetch 1001Tracklists from the server.** A plain request (`curl`,
   Node `fetch`) gets HTTP 401 `www-authenticate: reCaptcha` and an image
@@ -689,3 +714,6 @@ ticked SoundCloud direct download on `/downloads/`.
 - **Closing the lid interrupts gate downloads.** They need Resume in
   `chrome://downloads`, and a signed link lasted about 100 minutes. The queue
   reports a track done when its download starts, not when the file lands.
+- **A secret link's `s-…` token is a credential.** It goes to SoundCloud only as
+  `secret_token`; the clone description uses `stripSecretToken`. Never log the
+  raw URL or put it in `OperationLog` metadata.
