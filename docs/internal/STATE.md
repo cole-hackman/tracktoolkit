@@ -17,6 +17,17 @@ done). **Still unproven live:** the SoundCloud `access` default behind #60
 cannot screenshot).
 
 ## Just done
+- **Uptime monitor deployed 2026-11-04** (`tools/uptime-worker/`, PR #99 not
+  yet merged; the Worker was deployed from the branch). Status page:
+  https://tracktoolkit-uptime.tracktoolkit-uptime-worker.workers.dev/ — runs
+  every 5 minutes at about :30 past the 5-minute mark, 11/11 ok. **Drill:**
+  `DRILL_HOST=monitor-drill.tracktoolkit.com` deployed 13:11:14 UTC, first
+  failure 13:15:30, marked down 13:20:30 with the alert accepted by Discord
+  (`pending` empty): 9m16s here, up to about 10 minutes for an NXDOMAIN host.
+  Other 11 checks stayed green; removing the drill host sent no UP. Real DNS
+  breakage is slower because resolvers serve cached records until TTL expiry:
+  about 40 minutes at Spaceship's 30-minute TTL. Delete
+  `keep-api-warm.yml` after 7 days with no false alert (from 2026-11-11).
 - `3d062cc` — #92 merged and **live** (deploy run 37814525234, success
   17:13 UTC; the CSP half arrived ~1 min after the chunk, as usual). #89 was
   carried in by #92 (it conflicted with `main` on STATE.md; GitHub marks it
