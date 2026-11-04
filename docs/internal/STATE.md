@@ -66,21 +66,42 @@ ticked SoundCloud direct download on `/downloads/`.
 
 ## Next
 ### 2026-11-04
-0. **Node is being killed (exit 137) repeatedly; memory exhaustion is likely,
-   not proven.** 80 kills since 10-08 (the earliest logged), 22 on 11-04 by
-   15:00 UTC, with 22 `/health` gaps of 3-9 minutes (about 104 minutes). The
-   monitor marked 6 checks down at 13:45:30, its first real catch. Plan memory
-   reached 96-97% before kills, and at 1-minute resolution Node went 112 to
-   954 MB in about 3 minutes; the 5-minute metric hides this. `/me/playlists`
-   was fetched without `show_tracks=false` (SoundCloud defaults it to true),
-   so the list embedded every track, and the result stays in memory for 5
-   minutes. **This PR stops that and logs `[library-load]` per load.** A local
-   model reached about 980 MB only at the largest size tested, so other paths
-   may contribute: after the deploy, compare kills per day and read
-   `[library-load]` lines before calling it fixed. If kills continue, the same
-   `[library-load] start` lines show which load was running. Also logged:
-   `ERR_ERL_INVALID_IP_ADDRESS` on a port-suffixed `req.ip`, which plan task
-   B2 covers.
+0. **Node exit 137 kills: cause unknown, quiet since #105, not proven fixed.**
+   27 kills on 11-04 and 85 since 10-08 (the earliest logged); the last was
+   11-04 15:59:53 UTC. `/health` gaps on 11-04 reached 3-9 minutes each.
+   - **Shipped:** #105 went live about 15:41 UTC after #105's own deploy hit an
+     Azure 409 and a manual dispatch of `main` succeeded. `/me/playlists` now
+     sends `show_tracks=false`. Largest `/api/playlists` response: 4.41 MB
+     compressed before, 0.67 MB after, but see the next point.
+   - **The quiet period is not a test yet.** The two heaviest clients made 34
+     `/api/playlists` requests in the 3 days before the fix and none after. Do
+     not call this fixed until a week passes with no kills and those clients
+     have returned. Check the App Service logs for `Killed`, not only Discord:
+     the monitor needs two failed runs, so a short restart can raise no alert
+     (the 15:59:53 kill raised none). The last `[library-load] start` line
+     shows which load was running.
+   - **Memory is not established as the cause.** Node reached 954 MB before
+     the fix, but the 15:59:53 kill came on the new code with Node at about
+     124 MB, plan memory 75% and CPU 35%. Plan memory also sat at 97% from
+     15:43 to 15:51 while Node reported 0 MB, so high plan memory can be a
+     result of restarts. A spike between 1-minute samples is not excluded.
+   - **Timing lead:** 53 of 58 kills came within 15 minutes of "Site started",
+     peaking broadly at 3-7 minutes. That suggests work resuming after a
+     restart rather than a timer. Unproven.
+   - **Ruled out:** the retention job (the 15:57:02 run finished in 1 s,
+     removed nothing) and the follow-back scheduler (`GROWTH_AUTOCHECK=false`
+     in production, so it never runs).
+   - **Monitor record:** Discord shows five incidents on 11-04, first failure
+     at 13:40:30, 14:30:30 (home and two redirects only), 14:55:30, 15:20:30
+     and 15:40:30 UTC, and no DOWN after that.
+   - **Measuring trap:** `curl` from a dev machine timed out around 16:00 while
+     the monitor's six requests reached the app in the 15:55, 16:00 and 16:05
+     buckets. Trust the monitor and App Service logs over a local probe.
+   - **Open options, not done:** B2 (the plan is still B1) to separate memory
+     pressure from a platform fault, and invalidating old oversized `playlists`
+     snapshots, which is a production write. Both wait for the next kill.
+   - Also logged: `ERR_ERL_INVALID_IP_ADDRESS` on a port-suffixed `req.ip`,
+     which plan task B2 covers.
 1. On Cole's next queue: confirm no step tabs stay open and Chrome stays behind
    his app at the end of each gate. If a tab stays, its site is the clue.
 2. Tick one SoundCloud direct download on `/downloads/` and confirm it queues
