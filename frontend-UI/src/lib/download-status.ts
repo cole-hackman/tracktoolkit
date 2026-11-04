@@ -137,6 +137,11 @@ export function downloadStatus(track: DownloadStatusTrack): DownloadStatus {
     if (PREORDER_TITLE.test(purchaseTitle)) kind = "preorder";
     else if (!known && FREE_TITLE.test(purchaseTitle)) kind = "gate";
     else if (!known && BUY_TITLE.test(purchaseTitle)) kind = "store";
+    // drop.cobrand.com also carries SMS sign-up and merch drops, not only free
+    // downloads, so it is a gate only when the button or the track says "free".
+    else if (host === "drop.cobrand.com" && !FREE_TITLE.test(purchaseTitle) && !FREE_TITLE.test(track.title || "")) {
+      kind = "link";
+    }
 
     if (kind === "gate") {
       return {
