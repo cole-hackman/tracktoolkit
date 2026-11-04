@@ -5,13 +5,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
-import { Card, CardContent, CardHeader, CardFooter, LoadingSpinner, Button } from "@/components/ui";
+import { Card, LoadingSpinner, Button } from "@/components/ui";
+import { InlineAlert } from "@/components/ui/InlineAlert";
 import { SupportLink } from "@/components/SupportLink";
-import { ArrowUpRight } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
-
-
 
 export default function LoginPage() {
   const { isAuthenticated, loading, login, apiUnreachable, retryAuth } = useAuth();
@@ -61,165 +59,89 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="relative min-h-screen bg-background text-foreground">
-      <div
-        className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(circle_at_30%_20%,rgba(255,85,0,0.08),transparent_50%),radial-gradient(circle_at_70%_80%,rgba(37,99,235,0.08),transparent_50%)]"
-        aria-hidden
-      />
+    <div className="flex min-h-[calc(100dvh-var(--announcement-h))] flex-col bg-background text-foreground">
+      <main
+        id="main-content"
+        tabIndex={-1}
+        className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-4 py-10 focus:outline-none sm:px-6 lg:max-w-6xl lg:px-8"
+      >
+        <div className="grid items-center gap-10 lg:grid-cols-[minmax(0,1.1fr)_minmax(380px,420px)] lg:gap-16 xl:gap-20">
+          <section className="flex flex-col items-start">
+            <Link href="/" aria-label="Track Toolkit home" className="-ml-1 rounded-lg">
+              <BrandWordmark title="" className="h-8 w-auto text-foreground" />
+            </Link>
 
-      <main id="main-content" tabIndex={-1} className="relative z-10 mx-auto flex min-h-screen w-full max-w-6xl flex-col justify-center px-4 py-4 focus:outline-none sm:px-6 sm:py-8 lg:px-8 lg:py-10">
-        <div className="grid items-center gap-10 lg:grid-cols-[minmax(0,1.1fr)_minmax(380px,440px)] lg:gap-16">
-          <section className="order-2 flex flex-col items-start lg:order-1 lg:pr-8">
-            <BrandWordmark className="h-8 w-auto text-foreground" />
-
-            <h1 className="mt-10 text-balance font-display text-3xl font-semibold leading-tight sm:text-4xl lg:text-5xl xl:text-6xl">
+            <h1 className="mt-8 text-balance font-display text-[1.75rem] font-semibold leading-tight sm:text-4xl lg:mt-10 lg:text-[2.75rem] xl:text-5xl">
               Connect once.
               <br />
               <span className="text-gradient">Control every playlist.</span>
             </h1>
 
-            <p className="mt-6 max-w-lg text-base leading-relaxed text-muted-foreground sm:text-lg">
+            <p className="mt-4 max-w-lg text-balance text-base leading-relaxed text-muted-foreground lg:mt-6 lg:text-lg">
               Merge playlists, clean up likes, and keep your library show-ready.
             </p>
           </section>
 
-          <section className="order-1 flex w-full justify-center lg:order-2 lg:justify-end">
-            <div className="w-full max-w-md">
-              <Card className="glass-card overflow-hidden rounded-[28px] border bg-surface/95 shadow-elevation-1">
-                <CardHeader className="border-b border-border/60 px-5 py-5 sm:px-6">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                        SoundCloud OAuth
-                      </p>
-                      <h2 className="mt-2 text-lg font-semibold text-foreground sm:text-xl">
-                        Connect your account
-                      </h2>
-                      <p className="mt-2 max-w-sm text-xs leading-5 text-muted-foreground sm:text-sm">
-                        We&apos;ll open the official SoundCloud approval screen.
-                        Your password is never stored by Track Toolkit.
-                      </p>
-                    </div>
-                    <Link
-                      href="/"
-                      className="hidden items-center gap-1 rounded-lg border border-border/70 bg-surface/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground sm:inline-flex"
-                    >
-                      Home
-                      <ArrowUpRight className="h-3.5 w-3.5" />
-                    </Link>
-                  </div>
-                </CardHeader>
+          <section aria-labelledby="sign-in-heading" className="w-full">
+            <Card className="p-6 shadow-elevation-1 sm:p-8">
+              <h2 id="sign-in-heading" className="text-xl font-semibold text-foreground">
+                Connect your account
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                We&apos;ll open the official SoundCloud approval screen. Your
+                password is never stored by Track Toolkit.
+              </p>
 
-                <CardContent className="space-y-5 px-5 py-5 sm:px-6">
-
-
-                  {apiUnreachable && (
-                    <div className="rounded-2xl border border-amber-300/70 bg-amber-50/80 p-3 text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100">
-                      <div className="text-xs font-semibold">
-                        Backend not reachable
-                      </div>
-                      <div className="mt-1 text-[11px] leading-5 opacity-90">
-                        Start the backend with{" "}
-                        <code className="rounded bg-amber-100 px-1 dark:bg-amber-900/30">
-                          npm run dev:server
-                        </code>{" "}
-                        and ensure{" "}
-                        <code className="rounded bg-amber-100 px-1 dark:bg-amber-900/30">
-                          .env
-                        </code>{" "}
-                        is set.
-                      </div>
-                      <Button nowrap
-                        variant="ghost"
-                        className="mt-2 h-8 px-2 text-[11px] text-amber-900 hover:bg-amber-100/80 dark:text-amber-50 dark:hover:bg-amber-900/60"
-                        onClick={retryAuth}
-                      >
-                        Retry connection
-                      </Button>
-                    </div>
-                  )}
-
-                  <div className="rounded-2xl border border-border/60 bg-surface/60 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-xs font-semibold text-foreground">
-                          Fastest path to your tools
-                        </p>
-                        <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
-                          One approval unlocks playlist cleanup, combining,
-                          sorting, and export workflows.
-                        </p>
-                      </div>
-                      <div className="rounded-2xl bg-primary/10 px-3 py-2 text-right">
-                        <div className="text-xl font-bold text-primary-text">
-                          10+
-                        </div>
-                        <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-                          tools
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-3">
-                    <Button
-                      type="button"
-                      onClick={prewarmAndLogin}
-                      disabled={apiUnreachable || prewarming}
-                      className="h-12 w-full rounded-lg px-6 text-sm shadow-elevation-2 hover:shadow-glow-sm sm:h-13 sm:text-base"
-                    >
-                      {prewarming ? (
-                        <span className="inline-flex items-center gap-2">
-                          <LoadingSpinner size="sm" className="text-white" />
-                          Warming up…
-                        </span>
-                      ) : (
-                        <span className="whitespace-nowrap">
-                          Continue with SoundCloud
-                        </span>
-                      )}
-                    </Button>
-                    <p className="text-center text-[11px] leading-5 text-muted-foreground">
-                      You&apos;ll be redirected to SoundCloud to approve access,
-                      then sent back here automatically.
-                    </p>
-                  </div>
-                </CardContent>
-
-                <CardFooter className="flex flex-col items-center gap-4 border-t border-border/60 px-5 py-5 sm:px-6">
-                  <p className="text-center text-[11px] leading-5 text-muted-foreground">
-                    By connecting, you agree to our{" "}
-                    <Link
-                      href="/privacy"
-                      className="font-medium text-primary-text hover:underline"
-                    >
-                      Privacy Policy
-                    </Link>
-                    .
+              {apiUnreachable && (
+                <InlineAlert variant="warning" title="Backend not reachable" className="mt-6">
+                  <p>
+                    Start the backend with <code>npm run dev:server</code> and
+                    ensure <code>.env</code> is set.
                   </p>
-                  <div className="flex items-center justify-center gap-4 text-xs text-muted-foreground">
-                    <Link
-                      className="transition-colors hover:text-primary-text"
-                      href="/privacy"
-                    >
-                      Privacy
-                    </Link>
-                    <Link
-                      className="transition-colors hover:text-primary-text"
-                      href="/terms"
-                    >
-                      Terms
-                    </Link>
-                    <SupportLink className="transition-colors hover:text-primary-text">
-                      Contact
-                    </SupportLink>
-                  </div>
-                </CardFooter>
-              </Card>
-            </div>
+                  <Button nowrap variant="ghost" className="mt-2 -ml-2 h-9 px-2" onClick={retryAuth}>
+                    Retry connection
+                  </Button>
+                </InlineAlert>
+              )}
+
+              <Button
+                type="button"
+                onClick={prewarmAndLogin}
+                disabled={apiUnreachable || prewarming}
+                className="mt-8 h-12 w-full rounded-lg px-6 text-base"
+              >
+                {prewarming ? (
+                  <span className="inline-flex items-center gap-2">
+                    <LoadingSpinner size="sm" className="text-primary-foreground" />
+                    Warming up…
+                  </span>
+                ) : (
+                  <span className="whitespace-nowrap">Continue with SoundCloud</span>
+                )}
+              </Button>
+
+              <p className="mt-4 text-center text-xs leading-5 text-muted-foreground">
+                By connecting, you agree to our{" "}
+                <Link href="/privacy" className="font-medium text-primary-text hover:underline">
+                  Privacy Policy
+                </Link>
+                .
+              </p>
+            </Card>
           </section>
         </div>
       </main>
+
+      {/* Outside the card so nothing sits beside the button, but still on the
+          page: someone who cannot sign in is who needs Contact. */}
+      <footer className="flex justify-center gap-2 px-4 pb-4 text-xs text-muted-foreground">
+        <Link href="/terms" className="inline-flex min-h-11 items-center px-2 transition-colors hover:text-primary-text">
+          Terms
+        </Link>
+        <SupportLink className="inline-flex min-h-11 items-center px-2 transition-colors hover:text-primary-text">
+          Contact
+        </SupportLink>
+      </footer>
     </div>
   );
 }
