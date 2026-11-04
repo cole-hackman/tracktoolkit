@@ -47,7 +47,15 @@ import {
   usePlaylistsQuery,
 } from "@/lib/queries";
 import { asArray } from "@/lib/api-shape";
-import { type HypedditQueueItem, downloadHypedditQueue } from "@/lib/hypeddit-queue";
+import {
+  type GateQueueItem,
+  type GateSite,
+  EXT_GATES_KEY,
+  downloadHypedditQueue,
+  extensionGateSites,
+  gateQueueItem,
+  gateSiteOf,
+} from "@/lib/gate-queue";
 
 interface Playlist {
   id: number;
@@ -135,10 +143,17 @@ export default function DownloadsPage() {
   // so a click on row 28 showed its error 27 rows out of sight.
   const [downloadError, setDownloadError] = useState<{ id: number; message: string } | null>(null);
 
-  // Hypeddit batch mode
+  // Auto-Download batch mode. The names predate Droploud and Cobrand; the
+  // tracks it holds are every `isGatePick` gate.
   const [hypedditMode, setHypedditMode] = useState(false);
   const [selectedHypedditIds, setSelectedHypedditIds] = useState<Set<number>>(new Set());
   const [extInstalled, setExtInstalled] = useState(false);
+  // Gate sites the installed extension says it can work, beyond Hypeddit.
+  const [extGates, setExtGates] = useState<Set<GateSite>>(new Set());
+  // A send that contains Droploud or Cobrand gates waits here for a yes.
+  // Which selection it is, not the tracks: the dialog is modal, so the
+  // selection cannot change under it.
+  const [confirmSend, setConfirmSend] = useState<"picked" | "auto" | null>(null);
   const [hypedditProgress, setHypedditProgress] = useState<HypedditProgress | null>(null);
   const [queueSent, setQueueSent] = useState(false);
 
@@ -197,6 +212,7 @@ export default function DownloadsPage() {
   // Detect extension and load persisted progress on mount
   useEffect(() => {
     setExtInstalled(localStorage.getItem("sc-toolkit-ext-installed") === "1.0");
+    setExtGates(extensionGateSites(localStorage.getItem(EXT_GATES_KEY)));
     const saved = localStorage.getItem("sc-toolkit-hypeddit-progress");
     if (saved) {
       try { setHypedditProgress(JSON.parse(saved)); } catch { /* ignore */ }
@@ -214,6 +230,7 @@ export default function DownloadsPage() {
   useEffect(() => {
     if (selectedSource) {
       setExtInstalled(localStorage.getItem("sc-toolkit-ext-installed") === "1.0");
+      setExtGates(extensionGateSites(localStorage.getItem(EXT_GATES_KEY)));
     }
   }, [selectedSource]);
 
@@ -246,7 +263,7 @@ export default function DownloadsPage() {
     setSelectedTrackIds(new Set());
     // Entering the mode selects every Hypeddit track, so "Queue" is ready to
     // press — it used to open on "Queue 0 tracks", disabled, until Select All.
-    setSelectedHypedditIds(entering ? new Set(hypedditTracks.map((t) => t.id)) : new Set());
+    setSelectedHypedditIds(entering ? new Set(gateTracks.map((t) => t.id)) : new Set());
     setPickedIds(new Set());
     setQueueSent(false);
     setInlineError(null);
@@ -340,12 +357,7 @@ export default function DownloadsPage() {
   };
 
   const sendGatesToExtension = (gates: Track[]) => {
-    const queue: HypedditQueueItem[] = gates.map((t) => ({
-      id: t.id,
-      title: t.title,
-      artist: t.user?.username ?? "",
-      hypedditUrl: t.purchase_url!,
-    }));
+    const queue = gates.map(gateItemOf);
     // Wrap with a timestamp so the poller always sees a changed value, even
     // when the same tracks are queued twice in a row.
     const ts = Date.now();
@@ -355,23 +367,33 @@ export default function DownloadsPage() {
   };
 
   const sendToExtension = () => {
-    sendGatesToExtension(hypedditTracks.filter((t) => selectedHypedditIds.has(t.id)));
+    sendGatesToExtension(autoSelected);
     setHypedditMode(false);
     setSelectedHypedditIds(new Set());
   };
 
-  // Export the selected Hypeddit tracks as JSON for the local runner
-  // (tools/hypeddit-runner) to import. The same selection as "Queue" — it
+  // Export the selected tracks as JSON for the local runner
+  // (tools/hypeddit-runner) to import. The same selection as "Queue", minus
+  // anything that is not a Hypeddit gate, which the runner does not do. It
   // used to export all of them when nothing was selected.
   const exportQueue = () => {
-    const toQueue = hypedditTracks.filter((t) => selectedHypedditIds.has(t.id));
-    const queue: HypedditQueueItem[] = toQueue.map((t) => ({
-      id: t.id,
-      title: t.title,
-      artist: t.user?.username ?? "",
-      hypedditUrl: t.purchase_url!,
-    }));
-    downloadHypedditQueue(queue);
+    downloadHypedditQueue(autoSelected.map(gateItemOf));
+  };
+
+  // Both ways of sending a selection to the extension come through here:
+  // Droploud and Cobrand gates act on the person's own accounts, so they are
+  // confirmed first. Hypeddit and direct downloads go straight through.
+  const askBeforeSending = (which: "picked" | "auto", gates: Track[], send: () => void) => {
+    const { droploud, cobrand } = countAccountGates(gates);
+    if (droploud + cobrand > 0) setConfirmSend(which);
+    else send();
+  };
+
+  const confirmGateSend = () => {
+    const which = confirmSend;
+    setConfirmSend(null);
+    if (which === "picked") sendPicked();
+    else if (which === "auto") sendToExtension();
   };
 
   const dismissProgress = () => {
@@ -473,27 +495,49 @@ export default function DownloadsPage() {
   };
   const startQueue = () => beginDirectQueue(directTracks);
 
-  const hypedditTracks = useMemo(
-    () => downloadableTracks.filter((t) => statusById.get(t.id)?.site === "Hypeddit"),
-    [downloadableTracks, statusById],
-  );
-
-  // What a tick can download without a click per track. A gate on any other
-  // site gets no checkbox: only Hypeddit's can be worked through automatically.
+  // What a tick can download without a click per track. Hypeddit gates always
+  // qualify; a Droploud or Cobrand gate does only when the extension lists
+  // that site in `localStorage['sc-toolkit-ext-gates']`. Any other gate gets
+  // no checkbox. The row checkboxes, the "Download N selected" bar and
+  // Auto-Download all go through this test, so they cannot disagree.
   const isDirectPick = (t: Track) => statusOf(t).kind === "direct" && !!t.download_url;
-  const isGatePick = (t: Track) => {
+  const gateSiteOfTrack = (t: Track): GateSite | null => {
     const status = statusOf(t);
-    return isFreeDownload(status) && status.site === "Hypeddit";
+    if (status.kind !== "gate" || !t.purchase_url) return null;
+    const site = gateSiteOf(status.site);
+    if (site === null) return null;
+    return site === "hypeddit" || extGates.has(site) ? site : null;
+  };
+  const isGatePick = (t: Track) => gateSiteOfTrack(t) !== null;
+  const gateItemOf = (t: Track): GateQueueItem => gateQueueItem(t, gateSiteOfTrack(t)!, t.purchase_url!);
+  const gateTracks = useMemo(
+    () => downloadableTracks.filter(isGatePick),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [downloadableTracks, statusById, extGates],
+  );
+  const autoSelected = gateTracks.filter((t) => selectedHypedditIds.has(t.id));
+  // How many of these gates act on the person's own accounts.
+  const countAccountGates = (gates: Track[]) => {
+    let droploud = 0;
+    let cobrand = 0;
+    for (const t of gates) {
+      const site = gateSiteOfTrack(t);
+      if (site === "droploud") droploud++;
+      else if (site === "cobrand") cobrand++;
+    }
+    return { droploud, cobrand };
   };
   const pickedTracks = useMemo(() => tracks.filter((t) => pickedIds.has(t.id)), [tracks, pickedIds]);
   const pickedDirect = pickedTracks.filter(isDirectPick);
   const pickedGates = pickedTracks.filter((t) => !isDirectPick(t) && isGatePick(t));
+  const confirmCounts = countAccountGates(confirmSend === "auto" ? autoSelected : pickedGates);
 
-  const downloadPicked = () => {
+  const sendPicked = () => {
     if (pickedGates.length > 0) sendGatesToExtension(pickedGates);
     if (pickedDirect.length > 0) beginDirectQueue(pickedDirect);
     setPickedIds(new Set());
   };
+  const downloadPicked = () => askBeforeSending("picked", pickedGates, sendPicked);
 
   // How many of the source's tracks are actually downloadable is the whole
   // point of the page, and nothing else says it out loud.
@@ -905,12 +949,12 @@ export default function DownloadsPage() {
                   )
                 )}
 
-                {/* Hypeddit batch mode (owner-only, only when Hypeddit tracks exist) */}
-                {isOwner && hypedditTracks.length > 0 && !selectionMode && (
+                {/* Auto-Download batch mode (owner-only, only when a gate the extension can work exists) */}
+                {isOwner && gateTracks.length > 0 && !selectionMode && (
                   !hypedditMode ? (
                     <Button onClick={toggleHypedditMode} variant="secondary">
                       <Zap className="w-4 h-4" />
-                      Auto-Download ({hypedditTracks.length})
+                      Auto-Download ({gateTracks.length})
                     </Button>
                   ) : (
                     <>
@@ -924,12 +968,12 @@ export default function DownloadsPage() {
                       </Button>
                       <Button nowrap
                         onClick={() =>
-                          setSelectedHypedditIds(new Set(hypedditTracks.map((t) => t.id)))
+                          setSelectedHypedditIds(new Set(gateTracks.map((t) => t.id)))
                         }
                         variant="secondary"
                         className="text-muted-foreground"
                       >
-                        Select All ({hypedditTracks.length})
+                        Select All ({gateTracks.length})
                       </Button>
                       {selectedHypedditIds.size > 0 && (
                         <Button nowrap
@@ -941,7 +985,7 @@ export default function DownloadsPage() {
                         </Button>
                       )}
                       <Button
-                        onClick={sendToExtension}
+                        onClick={() => askBeforeSending("auto", autoSelected, sendToExtension)}
                         disabled={selectedHypedditIds.size === 0}
                         className="bg-tone-purchase text-tone-foreground hover:bg-tone-purchase/90"
                       >
@@ -950,7 +994,7 @@ export default function DownloadsPage() {
                       </Button>
                       <Button
                         onClick={exportQueue}
-                        disabled={selectedHypedditIds.size === 0}
+                        disabled={!autoSelected.some((t) => gateSiteOfTrack(t) === "hypeddit")}
                         variant="secondary"
                         className="text-muted-foreground"
                       >
@@ -962,8 +1006,8 @@ export default function DownloadsPage() {
                         // pointer hover.
                         <p className="w-full text-xs text-muted-foreground-subtle">
                           Queueing needs the Track Toolkit browser extension.
-                          &ldquo;Export queue (JSON)&rdquo; saves the same list as a file
-                          for the local Hypeddit runner.
+                          &ldquo;Export queue (JSON)&rdquo; saves its Hypeddit gates as a
+                          file for the local Hypeddit runner.
                         </p>
                       )}
                     </>
@@ -979,7 +1023,7 @@ export default function DownloadsPage() {
                     <Skeleton key={i} className="h-16 rounded-lg" />
                   ))}
                 </div>
-              ) : (hypedditMode ? hypedditTracks : listedTracks).length === 0 ? (
+              ) : (hypedditMode ? gateTracks : listedTracks).length === 0 ? (
                 <EmptyState
                   icon={<Download className="w-12 h-12" />}
                   title={filter === "downloadable" ? "No downloadable tracks found" : `Nothing under “${FILTER_LABELS[filter]}”`}
@@ -991,7 +1035,7 @@ export default function DownloadsPage() {
                 />
               ) : (
                 <div className="space-y-2">
-                  {(hypedditMode ? hypedditTracks : listedTracks).slice(0, visibleCount).map((track, index) => {
+                  {(hypedditMode ? gateTracks : listedTracks).slice(0, visibleCount).map((track, index) => {
                     if (selectionMode) {
                       return (
                         <div key={track.id}>
@@ -1075,11 +1119,11 @@ export default function DownloadsPage() {
                       </div>
                     );
                   })}
-                  {(hypedditMode ? hypedditTracks : listedTracks).length > visibleCount && (
+                  {(hypedditMode ? gateTracks : listedTracks).length > visibleCount && (
                     <div className="pt-2 text-center">
                       <Button variant="secondary" onClick={() => setVisibleCount((n) => n + ROW_STEP)}>
-                        Show {Math.min(ROW_STEP, (hypedditMode ? hypedditTracks : listedTracks).length - visibleCount)} more of{" "}
-                        {(hypedditMode ? hypedditTracks : listedTracks).length - visibleCount}
+                        Show {Math.min(ROW_STEP, (hypedditMode ? gateTracks : listedTracks).length - visibleCount)} more of{" "}
+                        {(hypedditMode ? gateTracks : listedTracks).length - visibleCount}
                       </Button>
                     </div>
                   )}
@@ -1152,6 +1196,25 @@ export default function DownloadsPage() {
             onRetryChecked={queue.retryChecked}
           />
         )}
+
+      <ConfirmDialog
+        open={confirmSend !== null}
+        title="Send these gates to the extension?"
+        confirmLabel="Send to extension"
+        onConfirm={confirmGateSend}
+        onCancel={() => setConfirmSend(null)}
+      >
+        {confirmCounts.droploud > 0 && (
+          <p className="text-sm text-foreground">
+            {plural(confirmCounts.droploud, "Droploud gate")} will follow, like, comment and repost from your SoundCloud account.
+          </p>
+        )}
+        {confirmCounts.cobrand > 0 && (
+          <p className="text-sm text-foreground">
+            {plural(confirmCounts.cobrand, "Cobrand gate")} will sign your phone number up to artist SMS.
+          </p>
+        )}
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={showRemoveConfirm}

@@ -102,13 +102,44 @@ test("the Hypeddit queue has only gates for tracks you don't have, in the runner
   await page.getByRole("button", { name: "Export Hypeddit queue (2)" }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe("hypeddit-queue-not-in-rekordbox.json");
-  const file = JSON.parse(fs.readFileSync(await download.path(), "utf8"));
-  expect(file).toEqual({
+  const raw = fs.readFileSync(await download.path(), "utf8");
+  expect(JSON.parse(raw)).toEqual({
     queue: [
       { id: 4, title: "Gated One", artist: "Gate Artist", hypedditUrl: "https://hypeddit.com/g/four" },
       { id: 6, title: "John Summit - Lights Go Out (Gate Remix)", artist: "Gate Remixer", hypedditUrl: "https://hypeddit.com/g/six" },
     ],
   });
+  // Byte for byte what the runner has always read: four keys per item, in this order.
+  expect(raw).toBe(
+    JSON.stringify(
+      {
+        queue: [
+          { id: 4, title: "Gated One", artist: "Gate Artist", hypedditUrl: "https://hypeddit.com/g/four" },
+          { id: 6, title: "John Summit - Lights Go Out (Gate Remix)", artist: "Gate Remixer", hypedditUrl: "https://hypeddit.com/g/six" },
+        ],
+      },
+      null,
+      2,
+    ),
+  );
+});
+
+test("the Hypeddit queue stays Hypeddit-only when the extension reports Droploud and Cobrand", async ({ page }) => {
+  // Even with the flag the web app reads on /downloads set, this page's export does not widen.
+  await page.addInitScript(() => localStorage.setItem("sc-toolkit-ext-gates", "hypeddit,droploud,cobrand"));
+  const likes = [
+    ...LIKES,
+    { ...base, id: 8, title: "Droploud One", user: { username: "Drop Artist" }, permalink_url: "https://soundcloud.com/d/8", purchase_url: "https://droploud.com/x/8" },
+    { ...base, id: 9, title: "Cobrand One", user: { username: "Cobrand Artist" }, permalink_url: "https://soundcloud.com/c/9", purchase_url: "https://drop.cobrand.com/x/9", purchase_title: "FREE DOWNLOAD" },
+  ];
+  await open(page, { likes });
+  await page.getByLabel("Rekordbox collection (XML)").setInputFiles(XML);
+  await expect(page.locator("main").getByText(/Of 7 tracks/)).toBeVisible();
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export Hypeddit queue (1)" }).click();
+  const raw = fs.readFileSync(await (await downloadPromise).path(), "utf8");
+  expect(raw).toBe(JSON.stringify({ queue: [{ id: 4, title: "Gated One", artist: "Gate Artist", hypedditUrl: "https://hypeddit.com/g/four" }] }, null, 2));
 });
 
 test("work through gates: opens each gate in a new tab, remembers done and skipped across a reload", async ({ page, context }) => {
