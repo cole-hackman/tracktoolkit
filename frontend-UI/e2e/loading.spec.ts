@@ -11,15 +11,15 @@ import { mockApi } from "./fixtures/api";
  * that window as long as the assertions need.
  */
 const CASES = [
-  { label: "Combine Playlists", path: "/combine/", chunk: "combine" },
-  { label: "Like Manager", path: "/like-manager/", chunk: "like-manager" },
-  { label: "Following Manager", path: "/following-manager/", chunk: "following-manager" },
-  { label: "Grow Your Network", path: "/growth/", chunk: "growth" },
+  { label: "Combine Playlists", path: "/combine/", chunk: "combine", sheet: "Playlists" },
+  { label: "Like Manager", path: "/like-manager/", chunk: "like-manager", sheet: "Social" },
+  { label: "Following Manager", path: "/following-manager/", chunk: "following-manager", sheet: "Social" },
+  { label: "Grow Your Network", path: "/growth/", chunk: "growth", sheet: "Social" },
   // The one that cannot be reached from the dashboard: start elsewhere.
   { label: "Dashboard", path: "/dashboard/", chunk: "dashboard", from: "/like-manager/" },
 ];
 
-for (const { label, path, chunk, from } of CASES) {
+for (const { label, path, chunk, from, sheet } of CASES) {
   test(`loading skeleton is a status region and fits the viewport: ${path}`, async ({
     page,
   }, testInfo) => {
@@ -39,9 +39,12 @@ for (const { label, path, chunk, from } of CASES) {
     await page.goto(from ?? "/dashboard/");
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
 
-    // The sidebar is `hidden lg:flex`; narrow viewports go through the drawer.
-    if (testInfo.project.name !== "desktop") {
-      await page.locator('button[aria-label="Open menu"]').click();
+    // The sidebar is `hidden lg:flex`; narrow viewports go through the tab bar.
+    if (testInfo.project.name !== "desktop" && sheet) {
+      await page
+        .getByRole("navigation", { name: "Main navigation" })
+        .getByRole("button", { name: sheet, exact: true })
+        .click();
       await expect(page.locator('button[aria-label="Close menu"]')).toBeVisible();
     }
     await page.getByRole("link", { name: label, exact: true }).first().click();

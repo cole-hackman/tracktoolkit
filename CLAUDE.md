@@ -665,6 +665,19 @@ under it — the landing nav in `app/(home)/page.tsx` and the mobile header in
 dismissed. `z-40` is deliberate: above page content, below the mobile drawer
 (z-50) and every modal (z-70).
 
+**Tab bar layout contract.** Below `lg` the app's navigation is a fixed tab
+bar (`components/MobileNav.tsx`, `z-50`) with five slots: Dashboard, Playlists,
+Social, Downloads, More. `MOBILE_TABS` and `MORE_GROUPS` in `lib/nav.ts` are
+derived from `NAV`, so a new tool lands in More without touching this. Playlists
+and Social open a `Dialog` sheet of that group; More opens the account block,
+then a filter over every tool, then everything without a tab. The bar's height
+is `--mobile-nav-h` (`0px` from `lg` up, `3.5rem` plus the bottom safe area
+below it). **Anything pinned to the bottom of an app page offsets by that
+variable** (`SelectionBanner`, Growth's progress bar, `DownloadQueue`, the
+Downloads selection bar); `bottom-0` puts it under the bar. `viewport-fit=cover`
+is set in `(app)/layout.tsx` only, so `env(safe-area-inset-*)` is real there and
+zero on public pages.
+
 **Modal ordering — nothing stacks.** The rebrand modal is mounted by the
 protected route group's layout, so it fires on first arrival anywhere in the
 app, not only on the dashboard. The dashboard's "What's new" effect returns
@@ -890,8 +903,8 @@ re-introduces the defect the primitive exists to prevent.
   `Field labelHidden` when a visible label genuinely does not fit (the three
   toolbar search boxes); never a placeholder as the only label. Raw
   `<select>` → `Select`.
-- **Overlays use `Dialog`** (`components/ui/Dialog.tsx`, `variant="sheet"` /
-  `"drawer"`) — focus trap, Escape, focus return, `aria-modal` and an
+- **Overlays use `Dialog`** (`components/ui/Dialog.tsx`, `variant="sheet"`
+  for a bottom sheet on a phone) — focus trap, Escape, focus return, `aria-modal` and an
   accessible name from the heading. `ConfirmDialog` wraps it for the
   destructive-confirm case.
 - **Icon-only controls use `IconButton`** with a `label` — never a bare

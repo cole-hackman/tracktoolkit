@@ -10,6 +10,8 @@
        their `top` instead of sitting underneath the banner. 0px whenever
        there is no banner. */
     --announcement-h: 0px;
+    /* Height of the mobile tab bar. See the media query below. */
+    --mobile-nav-h: 0px;
 
     /* Monospace stack for readouts. The admin layout overrides this with a
        self-hosted JetBrains Mono (next/font); everywhere else it is the
@@ -316,6 +318,16 @@ textarea:focus-visible {
 
 .animate-fadeIn {
   animation: fadeIn 0.25s ease-out both;
+}
+
+/* The tab bar is below `lg` only, so anything anchored to the bottom of the
+   screen offsets itself by this and is correct at every width. Inside the app
+   group `viewport-fit=cover` makes the inset real; on an iPhone that is the
+   home indicator. */
+@media (max-width: 1023.98px) {
+  :root {
+    --mobile-nav-h: calc(3.5rem + env(safe-area-inset-bottom, 0px));
+  }
 }
 
 /* ─── Shimmer Button ─────────────────────────────────────── */

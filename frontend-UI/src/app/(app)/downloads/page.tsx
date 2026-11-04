@@ -1089,7 +1089,7 @@ export default function DownloadsPage() {
                   a long scroll back up from the row just ticked. */}
               {isOwner && pickedTracks.length > 0 && !selectionMode && !hypedditMode && (
                 <div
-                  className={`sticky z-30 mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-3 ${hasQueue ? "bottom-24 lg:bottom-3" : "bottom-3"}`}
+                  className={`sticky z-30 mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-3 ${hasQueue ? "bottom-[calc(var(--mobile-nav-h)+6rem)] lg:bottom-3" : "bottom-[calc(var(--mobile-nav-h)+0.75rem)]"}`}
                 >
                   <Button
                     onClick={downloadPicked}

@@ -30,8 +30,8 @@ export function SelectionBanner({
     label ?? `${count} ${entityName}${count === 1 ? "" : "s"} selected`;
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-white/95 backdrop-blur dark:bg-background/95">
-      <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6">
+    <div className="fixed inset-x-0 bottom-[var(--mobile-nav-h)] z-40 border-t border-border/60 bg-white/95 backdrop-blur dark:bg-background/95">
+      <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
         {/* The count is the only feedback a selection gives, so it is spoken. */}
         <span role="status" aria-live="polite" className="text-sm font-semibold text-primary-text">
           {selectedLabel}

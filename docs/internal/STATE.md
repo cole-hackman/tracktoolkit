@@ -480,6 +480,14 @@ ticked SoundCloud direct download on `/downloads/`.
 - **Account block lives at the top of the sidebar** (Cole, 2026-11-04):
   profile + name, theme toggle, log out, Support Me. The nav list scrolls
   inside the sidebar, never the whole page. Support Me keeps the shiny text.
+- **Mobile navigation is a bottom tab bar with sheets** (Cole, 2026-11-04):
+  Dashboard, Playlists, Social, Downloads, More, below `lg`. Playlists and
+  Social open a sheet of their group. More opens the account block first, then
+  a filter over every tool, then everything without a tab. Replaced the
+  hamburger drawer. Tab order follows the `nav.ts` groups, not usage data.
+- **On a phone the login button sits at the bottom of the screen** (Cole's ask
+  to optimize for mobile, 2026-11-04): logo and tagline at the top, a plain
+  column with no card chrome, the card returning from `sm`.
 
 ## Landmines
 - **Never fetch 1001Tracklists from the server.** A plain request (`curl`,
@@ -676,8 +684,10 @@ ticked SoundCloud direct download on `/downloads/`.
   `code: 'NOT_FOLLOWED'`; check the code, never the status. Any new
   `err.status`-based branch must assume the status may be SoundCloud's.
   `DELETE /api/playlists/:id` deliberately passes it through (#70).
+- **Anything pinned to the bottom of an app page must offset by
+  `--mobile-nav-h`**, or it lands under the tab bar. It is `0px` from `lg` up.
 - **Cole's own browser window is below `lg` on tracktoolkit.com** (seen
-  2026-10-08: hamburger header, queue as the bottom bar). Anything that lives
+  2026-10-08: mobile header, queue as the bottom bar). Anything that lives
   only in a `lg:` side column is invisible to him. Verify UI live at his
   width, not just at 1280.
 - **This checkout is shared by concurrent sessions.** On 2026-10-08 another
