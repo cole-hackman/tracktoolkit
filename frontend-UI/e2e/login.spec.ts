@@ -29,6 +29,18 @@ test("the logo and tagline stack above the button on a phone", async ({ page }, 
   expect(tagline!.y + tagline!.height).toBeLessThan(button!.y);
 });
 
+test("on a phone the button is on screen and in the lower half", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "desktop", "side by side at 1280");
+
+  const button = page.getByRole("button", { name: "Continue with SoundCloud" });
+  await expect(button).toBeInViewport({ ratio: 1 });
+
+  const box = await button.boundingBox();
+  const viewport = page.viewportSize()!;
+  expect(box!.y).toBeGreaterThan(viewport.height / 2);
+  expect(box!.height).toBeGreaterThanOrEqual(48);
+});
+
 test("the button and consent text are side by side with the tagline on desktop", async ({
   page,
 }, testInfo) => {
