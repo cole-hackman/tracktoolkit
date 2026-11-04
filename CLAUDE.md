@@ -291,11 +291,21 @@ until it is answered — "Download all" re-opens the question instead.
 
 **Row checkboxes are the everyday way to pick downloads.** For
 `canDownload` accounts, every row in the normal list with an automatic
-download (SoundCloud's own, or a Hypeddit gate) has a checkbox, and a sticky
-"Download N selected" bar sends the ticked Hypeddit gates to the extension
-and the ticked direct downloads to the queue. A gate on any other site gets
-no checkbox, because only Hypeddit's can be worked through automatically.
-Auto-Download is still there for the select-everything case.
+download (SoundCloud's own, or a supported gate) has a checkbox, and a sticky
+"Download N selected" bar sends the ticked gates to the extension and the
+ticked direct downloads to the queue. Droploud and Cobrand gates get
+checkboxes too, but only when the extension reports support for that site in
+`localStorage['sc-toolkit-ext-gates']` (a comma-separated list such as
+`hypeddit,droploud,cobrand`); Hypeddit does not depend on it. The checkboxes,
+the bar and Auto-Download all use the one `isGatePick` test, and a Cobrand
+link counts as a gate only when its button or the track's title says "free"
+(`download-status.ts`). A gate on any other site gets no checkbox. Before any
+send that contains a Droploud or Cobrand gate, a confirmation says what those
+gates will do from the person's own accounts; Cancel sends nothing, direct
+downloads in the same selection included. The queue items are
+`{ id, title, artist, site, gateUrl, hypedditUrl? }` (`lib/gate-queue.ts`),
+and the Hypeddit export for the local runner stays Hypeddit-only and
+unchanged.
 
 ### Growth & Discovery (`routes/growth.js`)
 
@@ -665,6 +675,19 @@ under it — the landing nav in `app/(home)/page.tsx` and the mobile header in
 dismissed. `z-40` is deliberate: above page content, below the mobile drawer
 (z-50) and every modal (z-70).
 
+**Tab bar layout contract.** Below `lg` the app's navigation is a fixed tab
+bar (`components/MobileNav.tsx`, `z-50`) with five slots: Dashboard, Playlists,
+Social, Downloads, More. `MOBILE_TABS` and `MORE_GROUPS` in `lib/nav.ts` are
+derived from `NAV`, so a new tool lands in More without touching this. Playlists
+and Social open a `Dialog` sheet of that group; More opens the account block,
+then a filter over every tool, then everything without a tab. The bar's height
+is `--mobile-nav-h` (`0px` from `lg` up, `3.5rem` plus the bottom safe area
+below it). **Anything pinned to the bottom of an app page offsets by that
+variable** (`SelectionBanner`, Growth's progress bar, `DownloadQueue`, the
+Downloads selection bar); `bottom-0` puts it under the bar. `viewport-fit=cover`
+is set in `(app)/layout.tsx` only, so `env(safe-area-inset-*)` is real there and
+zero on public pages.
+
 **Modal ordering — nothing stacks.** The rebrand modal is mounted by the
 protected route group's layout, so it fires on first arrival anywhere in the
 app, not only on the dashboard. The dashboard's "What's new" effect returns
@@ -822,7 +845,7 @@ clone, and every bulk write.
 | `SURVEY_CAMPAIGN_ID` | No | Campaign identifier for the (closed) vote, default `2026-rebrand-name-v1`. Only the admin read paths use it now; it no longer gates any prompt |
 | `GROWTH_AUTOCHECK` | No | Set to `false` to disable the daily growth follow-back scheduler |
 | `ADMIN_IDS` | No | Comma-separated SoundCloud numeric user IDs allowed into `/api/admin/*`. Unset or empty = **nobody** (fails closed) |
-| `DOWNLOAD_ALLOWLIST` | No | Comma-separated SoundCloud numeric user IDs (plus every admin) that get `canDownload`: the Downloads page's "Download all" queue and Hypeddit tools, and `POST /api/downloads/links`. One definition, `server/lib/download-access.js`, backs both `/api/auth/me` and `requireCanDownload`. Unset = admins only |
+| `DOWNLOAD_ALLOWLIST` | No | Comma-separated SoundCloud numeric user IDs (plus every admin) that get `canDownload`: the Downloads page's "Download all" queue and gate tools (Hypeddit always; Droploud and Cobrand gates get checkboxes when the extension reports support), and `POST /api/downloads/links`. One definition, `server/lib/download-access.js`, backs both `/api/auth/me` and `requireCanDownload`. Unset = admins only |
 | `SC_ROTATION_MEMO_TTL_MS` | No | How long the refresh-rotation memo in `soundcloud-client.js` keeps the last exchange's plaintext pair (default `60000`). It exists so a route's second SoundCloud call is not told its already-spent refresh token means "revoked". Lowering it costs an extra refused exchange per multi-call request at a token boundary; raising it keeps decrypted tokens in memory longer. It is **not** the safety net — `_resolveInvalidGrant` is — so a wrong value here degrades latency, not correctness |
 | `CHROME_EXTENSION_IDS` | No | Comma-separated extension IDs allowed as credentialed origins (CORS + `rejectUntrustedOrigin`) |
 | `SESSION_COOKIE_SAMESITE` | No | `lax`, `none` or `strict` for the session cookie. Unset keeps the historical default (`none` in production). Same-origin hosting sets `lax` |
@@ -890,8 +913,8 @@ re-introduces the defect the primitive exists to prevent.
   `Field labelHidden` when a visible label genuinely does not fit (the three
   toolbar search boxes); never a placeholder as the only label. Raw
   `<select>` → `Select`.
-- **Overlays use `Dialog`** (`components/ui/Dialog.tsx`, `variant="sheet"` /
-  `"drawer"`) — focus trap, Escape, focus return, `aria-modal` and an
+- **Overlays use `Dialog`** (`components/ui/Dialog.tsx`, `variant="sheet"`
+  for a bottom sheet on a phone) — focus trap, Escape, focus return, `aria-modal` and an
   accessible name from the heading. `ConfirmDialog` wraps it for the
   destructive-confirm case.
 - **Icon-only controls use `IconButton`** with a `label` — never a bare
@@ -987,7 +1010,7 @@ One app, one origin. The Vercel + DigitalOcean + Neon split was retired at the
 
 | Component | Platform | Notes |
 |-----------|----------|-------|
-| Frontend + backend | **Azure App Service** (`tracktoolkit`, Linux B1, Node 22) | One Express process serves `/api` and `frontend-UI/out/`. **One worker, pinned** — `capacity: 1` on the plan and `numberOfWorkers: 1` on the site (`infra/main.bicep`), because the library cache's invalidation marks are per-process (see `server/lib/social-cache.js`) |
+| Frontend + backend | **Azure App Service** (`tracktoolkit`, Linux B1, Node 22) | One Express process serves `/api` and `frontend-UI/out/`. **One worker, pinned** — `capacity: 1` on the plan and `numberOfWorkers: 1` on the site (`infra/main.bicep`), because the library cache's invalidation marks are per-process (see `server/lib/social-cache.js`). The plan's 1.75 GB is **shared** with `unfollowr-api` (resource group `rg-unfollowr`), so Node has less headroom than the SKU suggests |
 | Database | **Azure Database for PostgreSQL Flexible Server** (`tracktoolkit-pg`, PG 17, Burstable B1ms) | `DATABASE_URL` comes from Key Vault `tracktoolkit-kv` |
 | Secrets | **Azure Key Vault** (`tracktoolkit-kv`) | RBAC; the app reads by reference, so no secret is in the App Service config |
 | Infrastructure | **Bicep** (`infra/main.bicep`, `infra/deploy.sh`) | `infra/main.cutover.bicepparam` is the live parameter set |

@@ -33,6 +33,16 @@ async function parseScJson(response, { context = 'SoundCloud API', allowEmpty = 
 
 const SC_FETCH_TIMEOUT_MS = Number(process.env.SC_FETCH_TIMEOUT_MS) || 30_000;
 
+/** Re-applies params to a next_href: its contents are SoundCloud's, so a param
+ * that must hold for the whole crawl cannot rely on being carried across. */
+function withQueryParams(href, params) {
+  const entries = Object.entries(params);
+  if (entries.length === 0) return href;
+  const url = new URL(href);
+  for (const [name, value] of entries) url.searchParams.set(name, value);
+  return url.toString();
+}
+
 /** Default ceilings for a full paginate() crawl. At the 200-item page size the
  * client uses everywhere, 200 pages is 40,000 items — far beyond any real
  * library, so these bound pathological cases without truncating normal ones. */
@@ -644,7 +654,12 @@ class SoundCloudClient {
    * page slice the cached full list instead (see lib/playlist-pages.js).
    */
   async getAllPlaylists(accessToken, refreshToken, limit = 200) {
-    return this.paginate('/me/playlists', accessToken, refreshToken, limit);
+    // show_tracks defaults to true: without this, every page embeds every track
+    // of every playlist, up to 200 x 500 full track objects. Nothing reads them
+    // from the list; callers that need tracks fetch a playlist by id.
+    return this.paginate('/me/playlists', accessToken, refreshToken, limit, {
+      extraParams: { show_tracks: 'false' },
+    });
   }
 
   /**
@@ -690,6 +705,7 @@ class SoundCloudClient {
    *                 (defaults to now + SC_MAX_CRAWL_MS)
    *   max429Retries bounded Retry-After retries per page (resets each page)
    *   max401Retries bounded token refreshes for the whole crawl
+   *   extraParams   query params sent on every page of the crawl
    *
    * The defaults matter. The per-fetch AbortController deadline resets on every
    * page, so an unbounded crawl of a large library had a worst case measured in
@@ -703,6 +719,7 @@ class SoundCloudClient {
       deadlineAt = Date.now() + SC_MAX_CRAWL_MS,
       max429Retries = 3,
       max401Retries = 2,
+      extraParams = {},
     } = options;
     const allItems = [];
     let pagesFetched = 0;
@@ -710,7 +727,8 @@ class SoundCloudClient {
     // Prefer cursor-based pagination via next_href to avoid deprecated offset limits
     let nextUrl = `${this.baseUrl}${endpoint}?${new URLSearchParams({
       limit: limit.toString(),
-      linked_partitioning: '1'
+      linked_partitioning: '1',
+      ...extraParams
     }).toString()}`;
 
     let currentAccessToken = accessToken;
@@ -774,7 +792,7 @@ class SoundCloudClient {
       if (Array.isArray(data.collection)) {
         allItems.push(...data.collection);
       }
-      nextUrl = data.next_href || null;
+      nextUrl = data.next_href ? withQueryParams(data.next_href, extraParams) : null;
     }
 
     const items = maxItems === Infinity ? allItems : allItems.slice(0, maxItems);

@@ -19,6 +19,7 @@ const {
   dropInvalidationMarks, invalidationMarkCount, __resetCacheCoordinationForTests,
 } = await import('../server/lib/social-cache.js');
 const { requestCache } = await import('../server/lib/request-cache.js');
+const { default: logger } = await import('../server/lib/logger.js');
 const { deferred, flush } = await import('./helpers/deferred.js');
 
 const req = { user: { id: 'u1' } };
@@ -32,6 +33,67 @@ beforeEach(async () => {
   readSnapshot.mockReset();
   writeSnapshot.mockClear();
   invalidateSnapshot.mockClear();
+});
+
+describe('[library-load] diagnostic', () => {
+  const loadLines = (spy) => spy.mock.calls.filter(([line]) => line === '[library-load]');
+
+  test('a crawl logs its source, item count and process memory', async () => {
+    const info = jest.spyOn(logger, 'info').mockImplementation(() => {});
+    readSnapshot.mockResolvedValue(null);
+
+    await loadUserCollection(req, 'playlists', jest.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]), shape);
+
+    expect(loadLines(info)).toEqual([['[library-load]', {
+      resource: 'playlists', source: 'crawl', items: 2,
+      rssMB: expect.any(Number), heapMB: expect.any(Number),
+    }]]);
+    info.mockRestore();
+  });
+
+  test('each load logs a start line first, so a kill mid-load still names it', async () => {
+    const info = jest.spyOn(logger, 'info').mockImplementation(() => {});
+    readSnapshot.mockResolvedValue(null);
+
+    await loadUserCollection(req, 'playlists', async () => {
+      expect(info.mock.calls).toEqual(expect.arrayContaining([
+        ['[library-load] start', { resource: 'playlists', source: 'crawl' }],
+      ]));
+      return [];
+    }, shape);
+
+    expect(info.mock.calls[0]).toEqual(['[library-load] start', { resource: 'playlists', source: 'snapshot' }]);
+    info.mockRestore();
+  });
+
+  test('a snapshot read logs too, and neither line names the user', async () => {
+    const info = jest.spyOn(logger, 'info').mockImplementation(() => {});
+    readSnapshot.mockResolvedValue({
+      items: [{ id: 1 }], complete: true, stale: false, truncated: false,
+      syncedAt: new Date(), totalItems: 1,
+    });
+
+    await loadUserCollection(req, 'likes', jest.fn(), shape);
+
+    const [[, fields]] = loadLines(info);
+    expect(fields).toMatchObject({ resource: 'likes', source: 'snapshot', items: 1 });
+    expect(JSON.stringify(fields)).not.toContain('u1');
+    info.mockRestore();
+  });
+
+  test('a background refresh logs its crawl as well', async () => {
+    const info = jest.spyOn(logger, 'info').mockImplementation(() => {});
+    readSnapshot.mockResolvedValue({
+      items: [{ id: 'old' }], complete: true, stale: true, truncated: false,
+      syncedAt: new Date(Date.now() - 3_600_000), totalItems: 1,
+    });
+
+    await loadUserCollection(req, 'likes', jest.fn().mockResolvedValue([{ id: 'new' }]), shape);
+    await flush();
+
+    expect(loadLines(info).map(([, fields]) => fields.source)).toEqual(['snapshot', 'revalidate']);
+    info.mockRestore();
+  });
 });
 
 describe('memory -> Postgres -> SoundCloud tiering', () => {

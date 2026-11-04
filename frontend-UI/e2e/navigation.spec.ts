@@ -14,16 +14,28 @@ import { mockApi } from "./fixtures/api";
 
 const SIDEBAR_IS_VISIBLE = "desktop";
 
-/** The sidebar is `hidden lg:flex`; narrow viewports reach the same nav through the drawer. */
-async function openNav(page: Page, projectName: string): Promise<void> {
-  if (projectName === SIDEBAR_IS_VISIBLE) return;
-  await page.locator('button[aria-label="Open menu"]').click();
-  await expect(page.locator('button[aria-label="Close menu"]')).toBeVisible();
-}
+/** Tools these tests visit that sit in a sheet on a phone, and the tab that opens it. */
+const MOBILE_SHEET: Record<string, string> = {
+  "Like Manager": "Social",
+  "Playlist Compare": "Playlists",
+};
 
+/** The sidebar is `hidden lg:flex`; narrow viewports reach the same tree through the tab bar. */
 async function navigateTo(page: Page, projectName: string, label: string): Promise<void> {
-  await openNav(page, projectName);
-  await page.getByRole("link", { name: label, exact: true }).first().click();
+  if (projectName === SIDEBAR_IS_VISIBLE) {
+    await page.getByRole("link", { name: label, exact: true }).first().click();
+    return;
+  }
+
+  const tabs = page.getByRole("navigation", { name: "Main navigation" });
+  const sheet = MOBILE_SHEET[label];
+  if (!sheet) {
+    await tabs.getByRole("link", { name: label, exact: true }).click();
+    return;
+  }
+
+  await tabs.getByRole("button", { name: sheet, exact: true }).click();
+  await page.getByRole("dialog").getByRole("link", { name: label, exact: true }).click();
 }
 
 test.beforeEach(async ({ page }) => {

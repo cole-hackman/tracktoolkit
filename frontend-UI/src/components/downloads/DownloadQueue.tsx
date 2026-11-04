@@ -578,7 +578,7 @@ export function DownloadQueueSheet(props: Omit<PanelProps, "showHeading">) {
   }, [state.check]);
   return (
     <>
-      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card px-4 py-3 lg:hidden">
+      <div className="fixed inset-x-0 bottom-[var(--mobile-nav-h)] z-40 border-t border-border bg-card px-4 py-3 lg:hidden">
         <Button ref={triggerRef} className="w-full" variant="secondary" onClick={() => setOpen(true)}>
           Download queue ·{" "}
           {state.check

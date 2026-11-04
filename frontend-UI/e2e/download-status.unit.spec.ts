@@ -31,6 +31,34 @@ test("free-download gates are gates, named by site", () => {
   expect(downloadStatus(t({ purchase_url: "https://example-gate.net/x", purchase_title: "Free DL!" })).kind).toBe("gate");
 });
 
+test("a Cobrand link is a gate only when the button or the track says free", () => {
+  const url = "https://drop.cobrand.com/artist/tune";
+  // The button says it.
+  expect(downloadStatus(t({ purchase_url: url, purchase_title: "FREE DOWNLOAD" }))).toMatchObject({ kind: "gate", site: "Cobrand", label: "Free gate · Cobrand" });
+  expect(downloadStatus(t({ purchase_url: url, purchase_title: "Free DL" })).kind).toBe("gate");
+  // The track's title says it, whatever the button reads.
+  expect(downloadStatus(t({ title: "Tune (FREE DOWNLOAD)", purchase_url: url, purchase_title: "Sign up" })).kind).toBe("gate");
+  expect(downloadStatus(t({ title: "Tune [Free DL]", purchase_url: url })).kind).toBe("gate");
+  // Neither does: an SMS sign-up or a drop is a link, and never offered as a download.
+  for (const purchase_title of ["", "Sign up", "Listen now", "Out now"]) {
+    const status = downloadStatus(t({ purchase_url: url, purchase_title }));
+    expect(status, purchase_title).toMatchObject({ kind: "link", site: "Cobrand", href: url });
+    expect(isFreeDownload(status), purchase_title).toBe(false);
+  }
+  expect(downloadStatus(t({ purchase_url: url })).kind).toBe("link");
+  // The button's own words still win for a pre-order, and "free" still has to be a word.
+  expect(downloadStatus(t({ purchase_url: url, purchase_title: "PRE ORDER" })).kind).toBe("preorder");
+  expect(downloadStatus(t({ title: "Carefree", purchase_url: url, purchase_title: "Listen" })).kind).toBe("link");
+  // A title has to say "free download", not just "free": these are song names.
+  for (const title of ["Break Free", "Feel Free (Extended Mix)", "Free Your Mind"]) {
+    expect(downloadStatus(t({ title, purchase_url: url, purchase_title: "Sign up" })).kind, title).toBe("link");
+  }
+  // Other hosts are unchanged: Droploud and Hypeddit stay gates on a plain link.
+  expect(downloadStatus(t({ purchase_url: "https://droploud.com/x", purchase_title: "Listen" })).kind).toBe("gate");
+  expect(downloadStatus(t({ purchase_url: "https://hypeddit.com/x", purchase_title: "Listen" })).kind).toBe("gate");
+  expect(downloadStatus(t({ purchase_url: "https://cobrand.com/x" })).kind).toBe("link");
+});
+
 test("stores, pre-orders and other links are never downloads", () => {
   const beatport = downloadStatus(t({ purchase_url: "https://www.beatport.com/release/x/1", purchase_title: "Buy" }));
   expect(beatport).toMatchObject({ kind: "store", site: "Beatport", actionLabel: "Buy Tune on Beatport" });

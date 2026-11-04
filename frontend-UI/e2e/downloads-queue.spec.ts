@@ -14,6 +14,7 @@ const direct = (n: number) => ({
   download_url: `https://api.soundcloud.com/tracks/soundcloud:tracks:${n}/download`,
 });
 const TRACKS = [direct(1), direct(2), direct(3), { ...base, id: 9, title: "Gate Nine", permalink_url: "https://soundcloud.com/a/9", purchase_url: "https://hypeddit.com/a/nine" }];
+const DROPLOUD_TEN = { ...base, id: 10, title: "Droploud Ten", permalink_url: "https://soundcloud.com/a/10", purchase_url: "https://droploud.com/a/ten", purchase_title: "FREE DOWNLOAD" };
 const CDN = (n: number) => `https://cf-media.sndcdn.com/e2e-${n}.mp3?Policy=test`;
 
 type LinksAnswer = (urls: string[]) => { status: number; body: unknown };
@@ -31,6 +32,7 @@ async function open(
   page: Page,
   {
     owner = true,
+    tracks = TRACKS,
     links,
     multiOk = true,
     picker = "none",
@@ -38,6 +40,8 @@ async function open(
     files = {},
   }: {
     owner?: boolean;
+    /** What the source playlist holds. */
+    tracks?: typeof TRACKS;
     links?: LinksAnswer;
     multiOk?: boolean;
     picker?: Picker;
@@ -111,7 +115,7 @@ async function open(
   );
   await mockApi(page);
   await page.route((url) => url.pathname === "/api/playlists/1", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...FAKE_PLAYLIST_DETAIL, track_count: TRACKS.length, tracks: TRACKS }) }),
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...FAKE_PLAYLIST_DETAIL, track_count: tracks.length, tracks }) }),
   );
   await page.route((url) => url.pathname === "/api/auth/me", (route) =>
     route.fulfill({
@@ -169,6 +173,70 @@ test("Download all queues SoundCloud's own downloads only, hands each file to on
   expect(downloads).toEqual([CDN(1), CDN(2), CDN(3)]);
   expect(seen).toEqual([[1, 2, 3].map((n) => `https://api.soundcloud.com/tracks/soundcloud:tracks:${n}/download`)]);
   await expect(page.locator("#app-live-region-assertive")).toHaveText(/Download queue finished: 3 started, 0 not available, 0 failed/);
+});
+
+// postMessage is delivered in a later task than the click that sent it: let it run before reading.
+const postedMessages = (page: Page) =>
+  page.evaluate(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    return (window as unknown as { __posted: unknown[] }).__posted;
+  });
+
+test("a mixed selection goes to the right places: the direct download to the queue, the gates to the extension, nothing before the yes", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "flow test");
+  await page.addInitScript(() => {
+    localStorage.setItem("sc-toolkit-ext-installed", "1.0");
+    localStorage.setItem("sc-toolkit-ext-gates", "hypeddit,droploud");
+    const posted: unknown[] = [];
+    (window as unknown as { __posted: unknown[] }).__posted = posted;
+    window.addEventListener("message", (e) => {
+      if (e.data?.type === "sc-toolkit-queue-set") posted.push(e.data);
+    });
+  });
+  const seen = await open(page, { multiOk: false, picker: "fake", tracks: [...TRACKS, DROPLOUD_TEN] });
+  let popups = 0;
+  page.on("popup", () => popups++);
+
+  await page.getByRole("checkbox", { name: "Select Direct 1" }).check();
+  await page.getByRole("checkbox", { name: "Select Gate Nine" }).check();
+  await page.getByRole("checkbox", { name: "Select Droploud Ten" }).check();
+  await page.getByRole("button", { name: "Download 3 selected" }).click();
+
+  // The Droploud gate holds the whole selection, the direct download included.
+  const dialog = page.getByRole("dialog", { name: "Send these gates to the extension?" });
+  await expect(dialog.getByText("1 Droploud gate will follow, like, comment and repost from your SoundCloud account.")).toBeVisible();
+  await expect(dialog.getByText(/Cobrand/)).toHaveCount(0);
+  // The warning is the dialog's description, so it is read out when it opens.
+  await expect(dialog).toHaveAccessibleDescription(/1 Droploud gate will follow, like, comment and repost/);
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  // Cancel keeps the selection, so focus goes back to the button that asked.
+  await expect(page.getByRole("button", { name: "Download 3 selected" })).toBeFocused();
+  expect(seen).toEqual([]);
+  expect((await folderRecord(page)).picks).toBe(0);
+  expect(await page.evaluate(() => localStorage.getItem("sc-toolkit-hypeddit-queue"))).toBeNull();
+  expect(await postedMessages(page)).toEqual([]);
+
+  await page.getByRole("button", { name: "Download 3 selected" }).click();
+  await dialog.getByRole("button", { name: "Send to extension" }).click();
+  // Sending clears the selection and its button; focus lands somewhere real.
+  await expect(page.getByRole("button", { name: "Back to sources" })).toBeFocused();
+
+  // The direct download is the queue's: one link request, one file, no gate in it.
+  await expect(panel(page).getByText("1 saved · 0 not available · 0 failed")).toBeVisible();
+  expect(seen).toEqual([["https://api.soundcloud.com/tracks/soundcloud:tracks:1/download"]]);
+  expect(Object.keys((await folderRecord(page)).files)).toEqual(["testartist - Direct 1.mp3"]);
+  expect(popups).toBe(0);
+
+  // The gates are the extension's: the same key, wrapper and message as ever.
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("sc-toolkit-hypeddit-queue")!));
+  expect(stored.queue).toEqual([
+    { id: 9, title: "Gate Nine", artist: "testartist", site: "hypeddit", gateUrl: "https://hypeddit.com/a/nine", hypedditUrl: "https://hypeddit.com/a/nine" },
+    { id: 10, title: "Droploud Ten", artist: "testartist", site: "droploud", gateUrl: "https://droploud.com/a/ten" },
+  ]);
+  expect(typeof stored.ts).toBe("number");
+  expect(await postedMessages(page)).toEqual([
+    { type: "sc-toolkit-queue-set", queue: stored.queue, ts: stored.ts },
+  ]);
 });
 
 test("a rate limit pauses with a reason; the queue survives a reload and Resume finishes it", async ({ page }, testInfo) => {

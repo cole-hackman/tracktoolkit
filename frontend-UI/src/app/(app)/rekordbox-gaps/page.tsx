@@ -24,7 +24,7 @@ import { GateWalkthrough, type WalkthroughGate } from "@/components/downloads/Ga
 import { useLikesQuery, usePlaylistDetailQuery, usePlaylistsQuery } from "@/lib/queries";
 import { asArray } from "@/lib/api-shape";
 import { downloadCsv } from "@/lib/csv";
-import { downloadHypedditQueue } from "@/lib/hypeddit-queue";
+import { downloadHypedditQueue, gateQueueItem } from "@/lib/gate-queue";
 import { startSoundCloudDownload } from "@/lib/download";
 import { type DownloadStatus, downloadStatus } from "@/lib/download-status";
 import { type RekordboxCollection, RekordboxParseError, parseRekordboxCollection } from "@/lib/rekordbox-xml";
@@ -162,12 +162,7 @@ export default function RekordboxGapsPage() {
   // follows, likes or emails for a track already in your collection.
   const exportHypedditQueue = () => {
     downloadHypedditQueue(
-      wantedHypeddit.map((r) => ({
-        id: r.track.id,
-        title: r.track.title,
-        artist: r.track.user?.username ?? "",
-        hypedditUrl: r.track.purchase_url!,
-      })),
+      wantedHypeddit.map((r) => gateQueueItem(r.track, "hypeddit", r.track.purchase_url!)),
       "hypeddit-queue-not-in-rekordbox.json",
     );
     announce(`Saved a Hypeddit queue of ${wantedHypeddit.length.toLocaleString()} tracks`);

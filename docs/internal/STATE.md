@@ -1,21 +1,42 @@
 # STATE
 
 ## Now
-Clone private playlists + clone a user's likes is built and committed on
-`feat/clone-private` (`51e0058`, worktree `.worktrees/feat-clone-private`),
-NOT pushed or merged, so nothing is live and nothing is verified against
-SoundCloud. Server suite 1082/1082, tsc/lint/build/contrast clean, a11y,
-mobile and long-title e2e for `/playlist-cloner/` pass. Unproven: whether
-SoundCloud's `/resolve` accepts a secret-link URL and whether
-`secret_token` on `GET /playlists/{id}` returns the tracks. Main (`3452e59`)
-is otherwise as below; the Hypeddit items still stand.
+Nothing is mid-flight. Droploud and Cobrand gates are merged and live
+(2026-11-04): web PR #107 (`cf8efaa`) deployed and verified on
+`/downloads/` (Droploud and Cobrand rows get checkboxes with the new
+extension; the confirmation names what each site does; Cancel sends
+nothing). The extension's PR #1 is merged into `fix/extension-domain`
+(`6b917ca`) in the private repo, and Cole's folder is on that branch.
 
 ## Just done
-- `51e0058` (`feat/clone-private`, unmerged) — Playlist Cloner accepts your own
-  private playlists and others' secret links (`.../s-XXXX`), and a new
-  `POST /api/users/likes/clone` copies a profile's public likes, split at 500
-  through `createOrAppendTrackIds` (same logic as likes-to-playlist). Tests:
-  `tests/routes/clone-private.test.js`, `tests/secret-link.test.js`.
+- **Gate sites live run** (2026-11-04). All five gates downloaded on the
+  final code: Droploud *Never Walk Alone* (.wav), *Dynamite* (.mp3),
+  *Confession* (.aiff, on retry: no second comment, no second grant), Hypeddit
+  *Dreamin* in a mixed queue, Cobrand *Spaceship* (artist's Dropbox .wav).
+  One "fire" comment per track, reposts in place, no tab left open. The first
+  run failed all four on wrong guesses in the handoff's fixtures; fixed with
+  captured live HTML (see Landmines). Reviews: extension 12 findings and web
+  5 findings, all fixed.
+- **Extension moved to a private repo** (2026-11-04):
+  `cole-hackman/tracktoolkit-extension`, verified `PRIVATE`; `main` (original
+  import `d5cd89b`), `fix/extension-domain` (`d6573ed`) and `feat/gate-sites`
+  (`a8eae33` fixtures, `dd4a5db` plan + handoff, `ae5afa2` README) pushed.
+  The local folder stays on `fix/extension-domain`, so the loaded extension
+  and its ID are unchanged. Investigation behind the plan: 99 Droploud gates
+  read, 7 tested live, 2 run to a file; 4 Cobrand links (2 real gates), 1
+  signup run. Existing 22 extension tests pass (the suite takes about 3 min).
+- `0e39d6a` — sidebar scrolls itself and the account block moved to the top.
+  The desktop `<aside>` is sticky and viewport-tall, so the nav list scrolls
+  inside it instead of the page; profile, theme, log out and Support Me sit
+  above the list (`SidebarAccount` in `AppShell.tsx`, also at the top of the
+  mobile drawer). Support Me uses `AnimatedShinyText` (black at 75%, black
+  sweep). `drawer.spec.ts` now treats Accessibility as the last drawer link.
+  Live 2026-11-04: page scrolled 400 px, sidebar stayed at top 0, nav list
+  scrolled on its own (1338 px of content in 606). Not checked live: the
+  mobile drawer, and the shimmer animation itself. `npm run contrast` not run.
+- The deploy of `6731ad9` (PR #99, uptime worker) failed: OneDeploy Gateway
+  Timeout 504 after 13 min. `0e39d6a` deployed fine and includes its files.
+  Likely tied to the unexplained node kills in Next item 0.
 - **Uptime monitor deployed 2026-11-04** (`tools/uptime-worker/`, PR #99; the
   Worker was deployed by hand with wrangler, not by CI). Status page:
   https://tracktoolkit-uptime.tracktoolkit-uptime-worker.workers.dev/ — runs
@@ -48,32 +69,63 @@ is otherwise as below; the Hypeddit items still stand.
   reloads itself when its files change (seen working).
 
 ## Next
-### 2026-11-04 (clone-private)
-0. **Verify on a real private playlist before merging.** Merging to `main`
-   deploys. With a real secret link, run the clone from a local server and
-   check: it resolves, the tracks arrive, the copy is private, and the
-   description has no `s-` token. If `/resolve` rejects the URL, resolve the
-   playlist another way. Then merge and run /verify-deploy on `/playlist-cloner/`.
+### 2026-11-04 (clone-private, PR #103)
+0. Merged after the gate work; verify on a real private playlist on the live
+   site: it resolves, the tracks arrive, the copy is private, and the
+   description has no `s-` token. If `/resolve` rejects a secret link,
+   resolve the playlist another way.
 1. Try "Clone someone's likes" on a profile with over 500 likes and confirm
    the parts are titled `(1/n)`. A crawl cut short shows a warning
    (`stats.truncated`, 120 s crawl budget).
 2. No test calls SoundCloud for real; add one if secret links misbehave.
 
 ### 2026-11-04
-0. **Node is being killed (exit 137) repeatedly, cause unknown.** 2 kills on
-   11-03, 14 on 11-04 (13 of them 06:46-10:33 UTC, before the monitor
-   existed; 1 at 13:44). The monitor marked 6 checks down at 13:45:30, its
-   first real catch; `/health` timed out from about 13:40 and answered again
-   at 13:48. Before the 13:44 kill: `GET /api/playlists` took 45 s, and the
-   5-minute memory peak was only 425 MB, so the working-set metric does not
-   explain the kill. Not diagnosed. Also logged:
-   `ERR_ERL_INVALID_IP_ADDRESS` on a port-suffixed `req.ip`, which plan task
-   B2 covers.
+0. **Node exit 137 kills: cause unknown, quiet since #105, not proven fixed.**
+   27 kills on 11-04 and 85 since 10-08 (the earliest logged); the last was
+   11-04 15:59:53 UTC. `/health` gaps on 11-04 reached 3-9 minutes each.
+   - **Shipped:** #105 went live about 15:41 UTC after #105's own deploy hit an
+     Azure 409 and a manual dispatch of `main` succeeded. `/me/playlists` now
+     sends `show_tracks=false`. Largest `/api/playlists` response: 4.41 MB
+     compressed before, 0.67 MB after, but see the next point.
+   - **The quiet period is not a test yet.** The two heaviest clients made 34
+     `/api/playlists` requests in the 3 days before the fix and none after. Do
+     not call this fixed until a week passes with no kills and those clients
+     have returned. Check the App Service logs for `Killed`, not only Discord:
+     the monitor needs two failed runs, so a short restart can raise no alert
+     (the 15:59:53 kill raised none). The last `[library-load] start` line
+     shows which load was running.
+   - **Memory is not established as the cause.** Node reached 954 MB before
+     the fix, but the 15:59:53 kill came on the new code with Node at about
+     124 MB, plan memory 75% and CPU 35%. Plan memory also sat at 97% from
+     15:43 to 15:51 while Node reported 0 MB, so high plan memory can be a
+     result of restarts. A spike between 1-minute samples is not excluded.
+   - **Timing lead:** 53 of 58 kills came within 15 minutes of "Site started",
+     peaking broadly at 3-7 minutes. That suggests work resuming after a
+     restart rather than a timer. Unproven.
+   - **Ruled out:** the retention job (the 15:57:02 run finished in 1 s,
+     removed nothing) and the follow-back scheduler (`GROWTH_AUTOCHECK=false`
+     in production, so it never runs).
+   - **Monitor record:** Discord shows five incidents on 11-04, first failure
+     at 13:40:30, 14:30:30 (home and two redirects only), 14:55:30, 15:20:30
+     and 15:40:30 UTC, and no DOWN after that.
+   - **Measuring trap:** `curl` from a dev machine timed out around 16:00 while
+     the monitor's six requests reached the app in the 15:55, 16:00 and 16:05
+     buckets. Trust the monitor and App Service logs over a local probe.
+   - **Open options, not done:** B2 (the plan is still B1) to separate memory
+     pressure from a platform fault, and invalidating old oversized `playlists`
+     snapshots, which is a production write. Both wait for the next kill.
+   - Also logged: `ERR_ERL_INVALID_IP_ADDRESS` on a port-suffixed `req.ip`,
+     which plan task B2 covers.
 1. On Cole's next queue: confirm no step tabs stay open and Chrome stays behind
    his app at the end of each gate. If a tab stays, its site is the clue.
 2. Tick one SoundCloud direct download on `/downloads/` and confirm it queues
    alone (only the Hypeddit half was run live).
-3. Move the extension and runner to a private repo (item 3 under 2026-10-08).
+3. ~~Move the extension to a private repo~~ Done 2026-11-04 (see Just done).
+   The Hypeddit runner (`feat/hypeddit-runner`, local branch of this repo) is
+   still local and unpushed.
+4. **Gate sites:** done (see Now). Open follow-ups: decide whether the
+   extension's debug mirror (`sc-toolkit-ext-debug`) stays; Cobrand files
+   keep the artist's upload name, not "Artist - Title".
 
 ### 2026-10-08
 0. ~~After #89 and #92 merge~~ **Done 2026-10-08 (see Just done).** What
@@ -482,6 +534,38 @@ is otherwise as below; the Hypeddit items still stand.
   `src/dev-reload.js`. Wait up to a minute after an edit; don't ask him.
 - **No captcha, bot-check or `isTrusted` workarounds.** The stepper stops at a
   captcha and leaves the gate to the person.
+- **Account block lives at the top of the sidebar** (Cole, 2026-11-04):
+  profile + name, theme toggle, log out, Support Me. The nav list scrolls
+  inside the sidebar, never the whole page. Support Me keeps the shiny text.
+- **Mobile navigation is a bottom tab bar with sheets** (Cole, 2026-11-04):
+  Dashboard, Playlists, Social, Downloads, More, below `lg`. Playlists and
+  Social open a sheet of their group. More opens the account block first, then
+  a filter over every tool, then everything without a tab. Replaced the
+  hamburger drawer. Tab order follows the `nav.ts` groups, not usage data.
+- **On a phone the login button sits at the bottom of the screen** (Cole's ask
+  to optimize for mobile, 2026-11-04): logo and tagline at the top, a plain
+  column with no card chrome, the card returning from `sm`.
+
+### From the 2026-11-04 gate-sites session
+- **Cobrand gate tabs may come to the front** (Cole, 2026-11-04), an
+  exception to "a queue must not take focus": Cloudflare's Turnstile only
+  runs in a visible tab. Only the running Cobrand gate's own tab; every other
+  queue tab stays in the background.
+- **The extension lives in the private repo `cole-hackman/tracktoolkit-extension`**,
+  never in this public one. Gate automation details stay there; this file and
+  `CLAUDE.md` get one-sentence summaries.
+- **Droploud gates are full auto in the extension** (Cole, 2026-11-04),
+  performing every action the gate requires on Cole's real account. A per-run
+  cap (default 10) limits how many go in one queue.
+- **Cobrand gates are automated too** (Cole, 2026-11-04). Each signup consents
+  to that artist's marketing SMS; the web app says so before sending.
+- **No bypassing server-checked gate steps** (2026-11-04). Steps a gate
+  verifies (OAuth-run actions, a checked repost, Turnstile, phone) are done for
+  real; only honor steps the gate itself does not check are clicked through.
+  Do not build or research ways to make a gate believe an action happened.
+- **The extension ships before the web app**, and the web app shows new gate
+  sites only when the extension says it supports them
+  (`sc-toolkit-ext-gates`); the queue keeps the `sc-toolkit-hypeddit-queue` key.
 
 ### From the 2026-11-04 clone-private session
 - **A copy of a private playlist is private** (Claude's call, 2026-11-04, not
@@ -492,6 +576,12 @@ is otherwise as below; the Hypeddit items still stand.
   a followed user), takes any profile URL, and reuses `createOrAppendTrackIds`.
 
 ## Landmines
+- **Gate pages differ from guesses; capture before building** (2026-11-04).
+  Droploud serves two layouts (v1 `dtr-`, v2 `dltg-`) with different button
+  text; SoundCloud's track page is a same-origin iframe whose Repost state is
+  its `aria-label` (pressing "Unpost / Edit repost" removes it); Cobrand has no
+  `<form>`, and its Turnstile token is made after Sign Up is pressed. The
+  extension repo's `test/fixtures/` README says which fixtures are captured.
 - **Never fetch 1001Tracklists from the server.** A plain request (`curl`,
   Node `fetch`) gets HTTP 401 `www-authenticate: reCaptcha` and an image
   captcha on every tracklist page (checked 2026-11-02 on two sets); a real
@@ -686,8 +776,10 @@ is otherwise as below; the Hypeddit items still stand.
   `code: 'NOT_FOLLOWED'`; check the code, never the status. Any new
   `err.status`-based branch must assume the status may be SoundCloud's.
   `DELETE /api/playlists/:id` deliberately passes it through (#70).
+- **Anything pinned to the bottom of an app page must offset by
+  `--mobile-nav-h`**, or it lands under the tab bar. It is `0px` from `lg` up.
 - **Cole's own browser window is below `lg` on tracktoolkit.com** (seen
-  2026-10-08: hamburger header, queue as the bottom bar). Anything that lives
+  2026-10-08: mobile header, queue as the bottom bar). Anything that lives
   only in a `lg:` side column is invisible to him. Verify UI live at his
   width, not just at 1280.
 - **This checkout is shared by concurrent sessions.** On 2026-10-08 another

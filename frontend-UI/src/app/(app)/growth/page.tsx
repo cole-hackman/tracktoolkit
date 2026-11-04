@@ -1191,8 +1191,8 @@ export default function GrowthPage() {
 
               {/* Live batch progress */}
               {job && job.status === "running" && (
-                <div className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-card/95 backdrop-blur">
-                  <div className="mx-auto flex max-w-5xl flex-col gap-2 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6">
+                <div className="fixed inset-x-0 bottom-[var(--mobile-nav-h)] z-40 border-t border-border/60 bg-card/95 backdrop-blur">
+                  <div className="mx-auto flex max-w-5xl flex-col gap-2 px-4 py-3 sm:px-6">
                     <div className="flex items-center justify-between gap-4">
                       <ProgressBar
                         className="min-w-0 flex-1"

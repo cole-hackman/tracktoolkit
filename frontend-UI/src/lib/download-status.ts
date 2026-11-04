@@ -78,6 +78,7 @@ const HOSTS: Array<{ match: (host: string) => boolean; site: string; kind: HostK
 ];
 
 const FREE_TITLE = /\bfree\b|\bf\.?\s?dl\b|\bfree\s*download\b|^\s*(dl|download)\s*[!🔥]*\s*$/i;
+const FREE_DOWNLOAD_IN_TITLE = /\bfree\s*(download|dl)\b|\bf\.?\s?dl\b/i;
 const PREORDER_TITLE = /pre[-\s]?(order|save)/i;
 const BUY_TITLE = /\b(buy|purchase|beatport|bandcamp)\b/i;
 
@@ -137,6 +138,13 @@ export function downloadStatus(track: DownloadStatusTrack): DownloadStatus {
     if (PREORDER_TITLE.test(purchaseTitle)) kind = "preorder";
     else if (!known && FREE_TITLE.test(purchaseTitle)) kind = "gate";
     else if (!known && BUY_TITLE.test(purchaseTitle)) kind = "store";
+    // drop.cobrand.com also carries SMS sign-up and merch drops, not only free
+    // downloads, so it is a gate only when the button says "free" or the
+    // track's title says "free download". A bare "free" in a title is a song
+    // name ("Break Free"), and a false gate here signs a phone up for nothing.
+    else if (host === "drop.cobrand.com" && !FREE_TITLE.test(purchaseTitle) && !FREE_DOWNLOAD_IN_TITLE.test(track.title || "")) {
+      kind = "link";
+    }
 
     if (kind === "gate") {
       return {

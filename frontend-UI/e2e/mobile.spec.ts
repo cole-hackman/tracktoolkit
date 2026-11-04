@@ -447,6 +447,24 @@ test("no horizontal overflow: /genre-search/ results and add-to-playlist dialog"
   await expectNoOverflow(page);
 });
 
+/** The bars pinned to the bottom of a page have to stack on the tab bar, not under it. */
+test("the selection banner sits above the tab bar: /like-manager/", async ({
+  page,
+}, testInfo) => {
+  test.skip(!MOBILE_PROJECTS.includes(testInfo.project.name), "mobile projects only");
+
+  await mockApi(page);
+  await page.goto("/like-manager/");
+  await page.getByRole("checkbox").first().check();
+
+  const action = page.getByRole("button", { name: "Unlike Selected" });
+  await expect(action).toBeVisible();
+
+  const actionBox = await action.boundingBox();
+  const barBox = await page.getByRole("navigation", { name: "Main navigation" }).boundingBox();
+  expect(Math.round(actionBox!.y + actionBox!.height)).toBeLessThanOrEqual(Math.round(barBox!.y));
+});
+
 test("no horizontal overflow: /downloads/ track list and selection mode", async ({
   page,
 }, testInfo) => {

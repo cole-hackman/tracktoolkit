@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import fs from "node:fs";
 import { mockApi, FAKE_PLAYLIST_DETAIL } from "./fixtures/api";
 
 /**
@@ -23,7 +24,40 @@ const TRACKS = [
   { ...base, id: 5, title: "Nothing Five", permalink_url: "https://soundcloud.com/a/5" },
 ];
 
-async function open(page: Page, { owner = false } = {}) {
+// Gates on the sites the extension reports separately. Kept out of TRACKS so
+// the counts the older tests pin do not move.
+const GATE_TRACKS = [
+  { ...base, id: 6, title: "Droploud Six", permalink_url: "https://soundcloud.com/a/6", purchase_url: "https://droploud.com/a/six", purchase_title: "FREE DOWNLOAD" },
+  { ...base, id: 7, title: "Droploud Seven", permalink_url: "https://soundcloud.com/a/7", purchase_url: "https://droploud.com/a/seven", purchase_title: "FREE DOWNLOAD" },
+  { ...base, id: 8, title: "Cobrand Eight", permalink_url: "https://soundcloud.com/a/8", purchase_url: "https://drop.cobrand.com/a/eight", purchase_title: "FREE DOWNLOAD" },
+  // Not free: an SMS sign-up. A link, so it never shows in the default list.
+  { ...base, id: 9, title: "Cobrand Nine", permalink_url: "https://soundcloud.com/a/9", purchase_url: "https://drop.cobrand.com/a/nine", purchase_title: "Sign up" },
+];
+
+type Posted = { type: string; queue: Array<Record<string, unknown>>; ts: number };
+// postMessage is delivered in a later task than the click that sent it, so a
+// read straight after the click can miss it. `posted` first lets that task run.
+const posted = (page: Page) =>
+  page.evaluate(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    return (window as unknown as { __posted: Posted[] }).__posted;
+  });
+
+async function open(
+  page: Page,
+  { owner = false, tracks = TRACKS, extGates }: { owner?: boolean; tracks?: typeof TRACKS; extGates?: string } = {},
+) {
+  // What the extension leaves in the page, and a recorder for what the page
+  // sends it: the localStorage value is the last write, this is every message.
+  await page.addInitScript((flag) => {
+    if (flag !== null) localStorage.setItem("sc-toolkit-ext-gates", flag);
+    localStorage.setItem("sc-toolkit-ext-installed", "1.0");
+    const posted: unknown[] = [];
+    (window as unknown as { __posted: unknown[] }).__posted = posted;
+    window.addEventListener("message", (e) => {
+      if (e.data?.type === "sc-toolkit-queue-set") posted.push(e.data);
+    });
+  }, extGates ?? null);
   await mockApi(page);
   await page.route(
     (url) => url.pathname === "/api/playlists/1",
@@ -31,7 +65,7 @@ async function open(page: Page, { owner = false } = {}) {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ ...FAKE_PLAYLIST_DETAIL, track_count: TRACKS.length, tracks: TRACKS }),
+        body: JSON.stringify({ ...FAKE_PLAYLIST_DETAIL, track_count: tracks.length, tracks }),
       }),
   );
   if (owner) {
@@ -98,9 +132,139 @@ test("the normal list has a checkbox per automatic download, and only ticked tra
   await page.getByRole("button", { name: "Download 1 selected" }).click();
 
   const sent = await page.evaluate(() => JSON.parse(localStorage.getItem("sc-toolkit-hypeddit-queue") ?? "{}"));
-  expect(sent.queue).toEqual([{ id: 2, title: "Gate Two", artist: "testartist", hypedditUrl: "https://hypeddit.com/a/two" }]);
+  // Hypeddit items keep `hypedditUrl` so an extension from before the other sites still takes them.
+  expect(sent.queue).toEqual([
+    { id: 2, title: "Gate Two", artist: "testartist", site: "hypeddit", gateUrl: "https://hypeddit.com/a/two", hypedditUrl: "https://hypeddit.com/a/two" },
+  ]);
+  expect(await posted(page)).toEqual([{ type: "sc-toolkit-queue-set", queue: sent.queue, ts: sent.ts }]);
   await expect(gate).not.toBeChecked();
   await expect(page.getByRole("status").filter({ hasText: "Queue sent to extension" })).toBeVisible();
+});
+
+const ALL_TRACKS = [...TRACKS, ...GATE_TRACKS];
+
+const storedQueue = (page: Page) =>
+  page.evaluate(() => {
+    const raw = localStorage.getItem("sc-toolkit-hypeddit-queue");
+    return raw ? (JSON.parse(raw) as Posted) : null;
+  });
+const CONFIRM = "Send these gates to the extension?";
+const DROPLOUD_LINE = (n: number) => `${n} Droploud gates will follow, like, comment and repost from your SoundCloud account.`;
+const COBRAND_LINE = (n: number) => `${n} Cobrand gate${n === 1 ? "" : "s"} will sign your phone number up to artist SMS.`;
+
+test("Droploud and Cobrand gates get a checkbox only when the extension reports the site; Hypeddit always does", async ({ page }) => {
+  // No flag at all: an extension that predates the other sites.
+  await open(page, { owner: true, tracks: ALL_TRACKS });
+  await expect(page.getByRole("checkbox", { name: "Select Gate Two" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Select Direct One" })).toBeVisible();
+  for (const name of ["Droploud Six", "Droploud Seven", "Cobrand Eight"]) {
+    await expect(page.getByRole("button", { name: new RegExp(`^Download ${name} via`) })).toBeVisible();
+    await expect(page.getByRole("checkbox", { name: `Select ${name}` })).toHaveCount(0);
+  }
+  // Auto-Download is the same test: only the Hypeddit gate counts.
+  await expect(page.getByRole("button", { name: "Auto-Download (1)" })).toBeVisible();
+});
+
+test("a flag that lists only some sites opens only those", async ({ page }) => {
+  await open(page, { owner: true, tracks: ALL_TRACKS, extGates: " Hypeddit, DROPLOUD " });
+  await expect(page.getByRole("checkbox", { name: "Select Droploud Six" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Select Droploud Seven" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Select Cobrand Eight" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Auto-Download (3)" })).toBeVisible();
+});
+
+test("a flag without hypeddit does not take the Hypeddit checkbox away", async ({ page }) => {
+  await open(page, { owner: true, tracks: ALL_TRACKS, extGates: "droploud" });
+  await expect(page.getByRole("checkbox", { name: "Select Gate Two" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Select Droploud Six" })).toBeVisible();
+});
+
+test("a Cobrand gate that is not a free download never gets a checkbox, flag or not", async ({ page }) => {
+  await open(page, { owner: true, tracks: ALL_TRACKS, extGates: "hypeddit,droploud,cobrand" });
+  await expect(page.getByRole("checkbox", { name: "Select Cobrand Eight" })).toBeVisible();
+  await page.getByLabel("Show").selectOption("buy");
+  await expect(page.getByRole("link", { name: "Open Cobrand Nine on Cobrand" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Select Cobrand Nine" })).toHaveCount(0);
+});
+
+test("a selection with Droploud and Cobrand gates asks first, says only what applies, and Cancel sends nothing", async ({ page }) => {
+  await open(page, { owner: true, tracks: ALL_TRACKS, extGates: "hypeddit,droploud,cobrand" });
+  await page.getByRole("checkbox", { name: "Select Gate Two" }).check();
+  await page.getByRole("checkbox", { name: "Select Droploud Six" }).check();
+  await page.getByRole("checkbox", { name: "Select Droploud Seven" }).check();
+  await page.getByRole("button", { name: "Download 3 selected" }).click();
+
+  const dialog = page.getByRole("dialog", { name: CONFIRM });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText(DROPLOUD_LINE(2))).toBeVisible();
+  await expect(dialog.getByText(/Cobrand/)).toHaveCount(0);
+
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(await storedQueue(page)).toBeNull();
+  expect(await posted(page)).toEqual([]);
+  // The selection survives, so the person can adjust it.
+  await expect(page.getByRole("button", { name: "Download 3 selected" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Select Droploud Six" })).toBeChecked();
+
+  // Add Cobrand: now both lines.
+  await page.getByRole("checkbox", { name: "Select Cobrand Eight" }).check();
+  await page.getByRole("button", { name: "Download 4 selected" }).click();
+  await expect(dialog.getByText(DROPLOUD_LINE(2))).toBeVisible();
+  await expect(dialog.getByText(COBRAND_LINE(1))).toBeVisible();
+  await dialog.getByRole("button", { name: "Send to extension" }).click();
+  await expect(dialog).toHaveCount(0);
+
+  const sent = await storedQueue(page);
+  expect(sent!.queue).toEqual([
+    { id: 2, title: "Gate Two", artist: "testartist", site: "hypeddit", gateUrl: "https://hypeddit.com/a/two", hypedditUrl: "https://hypeddit.com/a/two" },
+    { id: 6, title: "Droploud Six", artist: "testartist", site: "droploud", gateUrl: "https://droploud.com/a/six" },
+    { id: 7, title: "Droploud Seven", artist: "testartist", site: "droploud", gateUrl: "https://droploud.com/a/seven" },
+    { id: 8, title: "Cobrand Eight", artist: "testartist", site: "cobrand", gateUrl: "https://drop.cobrand.com/a/eight" },
+  ]);
+  expect(await posted(page)).toEqual([{ type: "sc-toolkit-queue-set", queue: sent!.queue, ts: sent!.ts }]);
+  await expect(page.getByRole("checkbox", { name: "Select Droploud Six" })).not.toBeChecked();
+});
+
+test("a Cobrand-only selection names only Cobrand; Hypeddit and direct downloads send without asking", async ({ page }) => {
+  await open(page, { owner: true, tracks: ALL_TRACKS, extGates: "hypeddit,droploud,cobrand" });
+  await page.getByRole("checkbox", { name: "Select Cobrand Eight" }).check();
+  await page.getByRole("button", { name: "Download 1 selected" }).click();
+  const dialog = page.getByRole("dialog", { name: CONFIRM });
+  await expect(dialog.getByText(COBRAND_LINE(1))).toBeVisible();
+  await expect(dialog.getByText(/Droploud/)).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await page.getByRole("button", { name: "Clear", exact: true }).click();
+
+  await page.getByRole("checkbox", { name: "Select Gate Two" }).check();
+  await page.getByRole("button", { name: "Download 1 selected" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect((await storedQueue(page))!.queue).toHaveLength(1);
+});
+
+test("Auto-Download asks the same question, and Export (JSON) stays Hypeddit-only", async ({ page }) => {
+  await open(page, { owner: true, tracks: ALL_TRACKS, extGates: "hypeddit,droploud,cobrand" });
+  await page.getByRole("button", { name: "Auto-Download (4)" }).click();
+  await expect(page.getByRole("button", { name: "Queue 4 tracks" })).toBeEnabled();
+
+  await page.getByRole("button", { name: "Queue 4 tracks" }).click();
+  const dialog = page.getByRole("dialog", { name: CONFIRM });
+  await expect(dialog.getByText(DROPLOUD_LINE(2))).toBeVisible();
+  await expect(dialog.getByText(COBRAND_LINE(1))).toBeVisible();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  expect(await storedQueue(page)).toBeNull();
+  expect(await posted(page)).toEqual([]);
+
+  // The runner's file takes the Hypeddit gate and nothing else.
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export queue (JSON)" }).click();
+  const file = JSON.parse(fs.readFileSync(await (await downloadPromise).path(), "utf8"));
+  expect(file).toEqual({ queue: [{ id: 2, title: "Gate Two", artist: "testartist", hypedditUrl: "https://hypeddit.com/a/two" }] });
+
+  await page.getByRole("button", { name: "Queue 4 tracks" }).click();
+  await dialog.getByRole("button", { name: "Send to extension" }).click();
+  expect((await storedQueue(page))!.queue.map((q) => q.site)).toEqual(["hypeddit", "droploud", "droploud", "cobrand"]);
+  await expect(page.getByRole("button", { name: "Auto-Download (4)" })).toBeVisible();
 });
 
 test("Clear empties the selection, and a store link never gets a checkbox", async ({ page }) => {

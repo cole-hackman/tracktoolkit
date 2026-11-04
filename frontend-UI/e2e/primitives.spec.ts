@@ -78,7 +78,10 @@ test.describe("useDialog focus trap", () => {
   async function openDrawerWithHiddenFocusable(page: Page) {
     await mockApi(page);
     await page.goto("/dashboard/");
-    await page.locator('button[aria-label="Open menu"]').click();
+    await page
+      .getByRole("navigation", { name: "Main navigation" })
+      .getByRole("button", { name: "More", exact: true })
+      .click();
     await expect(page.locator('[role="dialog"]')).toBeVisible();
 
     await page.evaluate((id) => {
