@@ -655,9 +655,11 @@ class SoundCloudClient {
    * counts them. `allAccess` asks for all three levels; anything that will
    * write the list back must use it (see readPlaylistForRewrite).
    */
-  async getPlaylistWithTracks(accessToken, refreshToken, playlistId, { allAccess = false } = {}) {
+  async getPlaylistWithTracks(accessToken, refreshToken, playlistId, { allAccess = false, secretToken } = {}) {
     const access = allAccess ? '&access=playable,preview,blocked' : '';
-    return this.scRequest(`/playlists/${playlistId}?show_tracks=true${access}`, accessToken, refreshToken);
+    // A private playlist shared by link is readable only with its secret token.
+    const secret = secretToken ? `&secret_token=${encodeURIComponent(secretToken)}` : '';
+    return this.scRequest(`/playlists/${playlistId}?show_tracks=true${access}${secret}`, accessToken, refreshToken);
   }
 
   /**
@@ -803,12 +805,12 @@ class SoundCloudClient {
   /**
    * Create a new playlist
    */
-  async createPlaylist(accessToken, refreshToken, title, description, trackIds = []) {
+  async createPlaylist(accessToken, refreshToken, title, description, trackIds = [], { sharing = 'public' } = {}) {
     const payload = {
       playlist: {
         title,
         description: description || '',
-        sharing: 'public',
+        sharing,
         ...(trackIds.length > 0 ? { tracks: trackIds.map(id => ({ urn: `soundcloud:tracks:${id}` })) } : {})
       }
     };

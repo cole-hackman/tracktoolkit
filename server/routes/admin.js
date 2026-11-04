@@ -45,6 +45,7 @@ const ACTION_NAMES = {
   'auth-logout': 'Logout',
   'followed-likes-to-playlist': "Followed User's Likes → Playlist",
   'followed-playlist-clone': "Followed User's Playlist Clone",
+  'clone-user-likes': "Clone a User's Likes",
   'admin-re-resolve': 'Admin: Re-resolve catalog tracks',
 };
 
@@ -75,6 +76,7 @@ const ACTION_COLORS = {
   'auth-logout': '#64748B',
   'followed-likes-to-playlist': '#0D9488',
   'followed-playlist-clone': '#0D9488',
+  'clone-user-likes': '#0D9488',
   'admin-re-resolve': '#64748B',
 };
 

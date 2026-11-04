@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, FormEvent } from "react";
-import { CopyPlus, ArrowRight, Music, Link as LinkIcon, Loader2, Link2 } from "lucide-react";
+import { CopyPlus, ArrowRight, Music, Link as LinkIcon, Loader2, Link2, Heart } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { apiFetch, errorMessageFromBody } from "@/lib/api";
 import { invalidatePlaylistCaches } from "@/lib/queries";
@@ -38,6 +38,14 @@ export default function PlaylistClonerPage() {
   // next keystroke.
   const [urlError, setUrlError] = useState<string | null>(null);
   const urlRef = useRef<HTMLInputElement>(null);
+
+  // "Clone someone's likes" — a second form on this page that shares the
+  // error and result areas below, so only one outcome is ever on screen.
+  const [likesUrl, setLikesUrl] = useState("");
+  const [likesTitle, setLikesTitle] = useState("");
+  const [likesUrlError, setLikesUrlError] = useState<string | null>(null);
+  const [isCloningLikes, setIsCloningLikes] = useState(false);
+  const likesUrlRef = useRef<HTMLInputElement>(null);
 
   // Results
   const [resultPlaylists, setResultPlaylists] = useState<ClonedPlaylist[]>([]);
@@ -105,11 +113,61 @@ export default function PlaylistClonerPage() {
     }
   };
 
+  const handleCloneLikes = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!likesUrl.trim()) {
+      setLikesUrlError("Paste the link to the profile whose likes you want to clone.");
+      likesUrlRef.current?.focus();
+      return;
+    }
+
+    setLikesUrlError(null);
+    setIsCloningLikes(true);
+    setError(null);
+    setResultPlaylists([]);
+    setStats(null);
+
+    try {
+      const body: Record<string, string> = { url: likesUrl.trim() };
+      if (likesTitle.trim()) body.title = likesTitle.trim();
+
+      const res = await apiFetch("/api/users/likes/clone", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setError(errorMessageFromBody(data, "Failed to clone liked tracks"));
+        if (res.status === 502 && data?.code === "SOUNDCLOUD_UNAVAILABLE") {
+          void invalidatePlaylistCaches(queryClient);
+        }
+        return;
+      }
+      if (!data) throw new Error("Failed to clone liked tracks");
+
+      const created: ClonedPlaylist[] = data.playlists ? data.playlists : [data.playlist];
+      setResultPlaylists(created);
+      setStats(data.stats);
+      setLikesUrl("");
+      setLikesTitle("");
+      void invalidatePlaylistCaches(queryClient);
+      announce(
+        `Cloned ${data.stats?.totalTracks ?? 0} liked tracks into ${created.length} playlist${created.length === 1 ? "" : "s"}.`,
+      );
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "An unexpected error occurred");
+    } finally {
+      setIsCloningLikes(false);
+    }
+  };
+
   return (
     <PageContainer maxWidth="narrow">
       <PageHeader
         title="Playlist Cloner"
-        description="Paste a public playlist link to clone it into your own account."
+        description="Clone a playlist, or all of someone's likes, into your own account."
       />
 
       <Card className="mb-8">
@@ -117,7 +175,7 @@ export default function PlaylistClonerPage() {
           <SectionHeading className="text-base">
             <span className="flex items-center gap-2">
               <Link2 aria-hidden="true" className="h-4 w-4 text-primary" />
-              Clone a public playlist
+              Clone a playlist
             </span>
           </SectionHeading>
         </CardHeader>
@@ -127,7 +185,7 @@ export default function PlaylistClonerPage() {
           <div className="space-y-4">
             <Field
               label="Original playlist URL"
-              hint="Paste a public playlist link."
+              hint="A public playlist, one of your own private playlists, or a private playlist's secret link (ends in /s-…). Copies of private playlists stay private."
               error={urlError ?? undefined}
               required
             >
@@ -167,7 +225,7 @@ export default function PlaylistClonerPage() {
             </Field>
           </div>
 
-          <Button type="submit" disabled={isCloning} className="w-full sm:w-auto">
+          <Button type="submit" disabled={isCloning || isCloningLikes} className="w-full sm:w-auto">
             {isCloning ? (
               <>
                 <Loader2 aria-hidden="true" className="w-4 h-4 animate-spin" />
@@ -190,6 +248,77 @@ export default function PlaylistClonerPage() {
         </CardContent>
       </Card>
 
+      <Card className="mb-8">
+        <CardHeader>
+          <SectionHeading className="text-base">
+            <span className="flex items-center gap-2">
+              <Heart aria-hidden="true" className="h-4 w-4 text-primary" />
+              Clone someone&apos;s likes
+            </span>
+          </SectionHeading>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleCloneLikes} noValidate className="space-y-6">
+            <div className="space-y-4">
+              <Field
+                label="Profile URL"
+                hint="Copies every public like into playlists on your account. Over 500 tracks, it splits into parts."
+                error={likesUrlError ?? undefined}
+                required
+              >
+                {(field) => (
+                  <div className="relative">
+                    <LinkIcon
+                      aria-hidden="true"
+                      className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground"
+                    />
+                    <Input
+                      {...field}
+                      ref={likesUrlRef}
+                      type="url"
+                      inputMode="url"
+                      placeholder="https://soundcloud.com/username"
+                      value={likesUrl}
+                      onChange={(e) => {
+                        setLikesUrl(e.target.value);
+                        if (likesUrlError) setLikesUrlError(null);
+                      }}
+                      className="pl-9"
+                    />
+                  </div>
+                )}
+              </Field>
+
+              <Field label="Custom name (optional)">
+                {(field) => (
+                  <Input
+                    {...field}
+                    type="text"
+                    placeholder="Leave blank to use '[Username] Likes'"
+                    value={likesTitle}
+                    onChange={(e) => setLikesTitle(e.target.value)}
+                  />
+                )}
+              </Field>
+            </div>
+
+            <Button type="submit" disabled={isCloningLikes || isCloning} className="w-full sm:w-auto">
+              {isCloningLikes ? (
+                <>
+                  <Loader2 aria-hidden="true" className="w-4 h-4 animate-spin" />
+                  Cloning likes...
+                </>
+              ) : (
+                <>
+                  <Heart aria-hidden="true" className="w-4 h-4" />
+                  Clone Likes
+                </>
+              )}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+
       {resultPlaylists.length > 0 && (
         <ResultPanel
           title="Cloning Complete"
@@ -197,6 +326,16 @@ export default function PlaylistClonerPage() {
           className="animate-in fade-in slide-in-from-bottom-4 duration-500"
         >
           <div className="space-y-6">
+            {stats?.truncated === true && (
+              <InlineAlert variant="warning">
+                SoundCloud took too long to list every like, so this is only part of them. Run it again later for the rest.
+              </InlineAlert>
+            )}
+            {stats?.private === true && (
+              <InlineAlert variant="info">
+                The original is private, so the copy was created as a private playlist.
+              </InlineAlert>
+            )}
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <Card className="flex items-center gap-4 p-4">
                 <div aria-hidden="true" className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-orange-500/10 text-orange-500">

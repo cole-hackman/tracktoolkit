@@ -76,6 +76,7 @@ import {
   validateBulkUnrepost,
   validateClonePlaylist,
   validateCloneFollowedPlaylists,
+  validateCloneUserLikes,
   validateCreateFromFollowedLikes,
   validateFollowedUserLibraryPagination,
   validateFollowingUserId,
@@ -90,6 +91,7 @@ import {
   validateSetlistPlaylist,
 } from '../middleware/validation.js';
 import { buildSetlistDescription, dedupeTracks } from '../lib/setlist.js';
+import { extractSecretToken, stripSecretToken } from '../lib/secret-link.js';
 const router = express.Router();
 
 // The domain moves with the Azure cutover (docs/internal/MIGRATION.md work item 4): the
@@ -702,6 +704,11 @@ router.post('/playlists/clone', authenticateUser, heavyOperationRateLimiter, val
   try {
     const { url, title } = req.body;
     const cleaned = sanitizeUrl(url);
+    // A private playlist shared by link carries `s-…`. It is a credential: it
+    // goes to SoundCloud as `secret_token` and nowhere else, so everything we
+    // store or publish uses `publicUrl`.
+    const secretToken = extractSecretToken(cleaned);
+    const publicUrl = stripSecretToken(cleaned);
 
     // 1. Resolve URL
     let resource;
@@ -725,8 +732,13 @@ router.post('/playlists/clone', authenticateUser, heavyOperationRateLimiter, val
     const playlist = await soundcloudClient.getPlaylistWithTracks(
       req.accessToken,
       req.refreshToken,
-      sourceId
+      sourceId,
+      secretToken ? { secretToken } : undefined
     ).catch(tagSourceStep);
+
+    // A copy of a private playlist must not be public: that would publish
+    // something its owner chose to share only by link (or not at all).
+    const cloneOptions = (secretToken || playlist.sharing === 'private') ? { sharing: 'private' } : null;
 
     const all = Array.isArray(playlist.tracks) ? playlist.tracks : [];
     const filtered = all.filter(t => t && !t.blocked_at && t.streamable !== false);
@@ -761,8 +773,9 @@ router.post('/playlists/clone', authenticateUser, heavyOperationRateLimiter, val
           req.accessToken,
           req.refreshToken,
           playlistTitle,
-          playlistDescriptionWithToolkit(`Cloned from ${cleaned}`),
-          initialBatch
+          playlistDescriptionWithToolkit(`Cloned from ${publicUrl}`),
+          initialBatch,
+          ...(cloneOptions ? [cloneOptions] : [])
         );
 
         await sleep(SC_PLAYLIST_PACING_MS);
@@ -806,6 +819,7 @@ router.post('/playlists/clone', authenticateUser, heavyOperationRateLimiter, val
         stats: {
           totalTracks: trackIdsArray.length,
           numPlaylistsCreated: numPlaylists,
+          ...(cloneOptions ? { private: true } : {}),
         }
       });
     } else {
@@ -816,8 +830,9 @@ router.post('/playlists/clone', authenticateUser, heavyOperationRateLimiter, val
         req.accessToken,
         req.refreshToken,
         baseTitle,
-        playlistDescriptionWithToolkit(`Cloned from ${cleaned}`),
-        initialBatch
+        playlistDescriptionWithToolkit(`Cloned from ${publicUrl}`),
+        initialBatch,
+        ...(cloneOptions ? [cloneOptions] : [])
       );
 
       await sleep(SC_PLAYLIST_PACING_MS);
@@ -850,6 +865,7 @@ router.post('/playlists/clone', authenticateUser, heavyOperationRateLimiter, val
         playlist: newPlaylist,
         stats: {
           totalTracks: trackIdsArray.length,
+          ...(cloneOptions ? { private: true } : {}),
         }
       });
     }
@@ -873,6 +889,107 @@ router.post('/playlists/clone', authenticateUser, heavyOperationRateLimiter, val
     const mapped = scErrorResponse(classified, { writeAttempted });
     if (mapped) return res.status(mapped.status).json(mapped.body);
     res.status(500).json({ error: 'Failed to clone playlist' });
+  }
+});
+
+/**
+ * POST /api/users/likes/clone
+ * Copy every public like of any SoundCloud user (pasted profile link) into
+ * playlists on the caller's account. Splits at 500 tracks exactly like
+ * likes-to-playlist, because it goes through the same createOrAppendTrackIds.
+ */
+router.post('/users/likes/clone', authenticateUser, heavyOperationRateLimiter, validateCloneUserLikes, async (req, res) => {
+  let writeAttempted = false;
+  const tagSourceStep = (err) => {
+    if (err && typeof err === 'object') err.cloneSourceStep = true;
+    throw err;
+  };
+  try {
+    const cleaned = sanitizeUrl(req.body.url);
+
+    let resource;
+    try {
+      resource = await soundcloudClient.resolveAny(req.accessToken, req.refreshToken, cleaned);
+    } catch (e) {
+      if (String(e?.message).includes('401')) {
+        resource = await soundcloudClient.resolvePublic(cleaned).catch(tagSourceStep);
+      } else {
+        tagSourceStep(e);
+      }
+    }
+
+    if (resource?.kind !== 'user') {
+      return res.status(400).json({ error: 'URL must point to a SoundCloud profile.' });
+    }
+    const sourceUserId = extractNumericId(resource.id || resource.urn);
+    if (!sourceUserId) {
+      return res.status(400).json({ error: 'URL must point to a SoundCloud profile.' });
+    }
+    const sourceName = resource.username || 'SoundCloud user';
+
+    const tracks = await soundcloudClient
+      .getUserLikedTracks(req.accessToken, req.refreshToken, sourceUserId, 200)
+      .catch(tagSourceStep);
+    const fetchedTotal = tracks.length;
+    // The crawl is bounded (pages and wall clock). A cut-short crawl is a
+    // subset of the likes, so say so rather than present it as all of them.
+    const truncated = Boolean(tracks.truncated);
+    const trackIds = getPlayableTrackIds(tracks);
+    harvestTracks(tracks);
+
+    if (trackIds.length === 0) {
+      return res.status(400).json({ error: 'No public streamable liked tracks were available to clone.' });
+    }
+
+    const title = req.body.title?.trim() || `${sourceName} Likes`;
+    writeAttempted = true;
+    const result = await createOrAppendTrackIds({
+      accessToken: req.accessToken,
+      refreshToken: req.refreshToken,
+      trackIds,
+      title,
+      description: `Playlist created from ${sourceName}'s public liked tracks`,
+    });
+
+    logOperation({
+      req,
+      action: 'clone-user-likes',
+      trackCount: trackIds.length,
+      status: result.playlists && result.playlists.length > 1 ? 'split' : 'success',
+      trackIds,
+      playlistIds: result.playlists
+        ? result.playlists.map((p) => p.id)
+        : [result.playlist?.id].filter(Boolean),
+      targetUserIds: [sourceUserId],
+      metadata: { truncated },
+    });
+    invalidatePlaylistState(req.user.id);
+    res.json({
+      ...result,
+      stats: {
+        sourceUserId,
+        sourceUsername: sourceName,
+        fetchedTotal,
+        acceptedTotal: trackIds.length,
+        totalTracks: trackIds.length,
+        numPlaylistsCreated: result.playlists ? result.playlists.length : 1,
+        truncated,
+      },
+    });
+  } catch (error) {
+    if (writeAttempted) invalidatePlaylistState(req.user.id);
+    logger.error('Clone user likes error:', safeError(error));
+    let classified = error;
+    if (error?.cloneSourceStep && error.status == null) {
+      const fromMessage = /^Resolve (?:follow )?error: (\d{3})$/.exec(String(error.message));
+      if (fromMessage) classified = { status: Number(fromMessage[1]) };
+    }
+    if (error?.cloneSourceStep && classifyScError(classified) === 'not_found') {
+      return res.status(404).json({ code: 'USER_NOT_FOUND', error: 'That profile was not found.' });
+    }
+    const mapped = scErrorResponse(classified, { writeAttempted });
+    if (mapped) return res.status(mapped.status).json(mapped.body);
+    res.status(500).json({ error: 'Failed to clone liked tracks' });
   }
 });
 
@@ -2020,14 +2137,15 @@ const MAX_TRACKS_PER_PLAYLIST = 500;
  * Create a single playlist from track IDs using 100-track batches (SoundCloud API limit).
  * @param {string} operationDescription - Summary only; Track Toolkit footer is appended automatically.
  */
-async function createPlaylistFromTrackIds(accessToken, refreshToken, trackIds, title, operationDescription) {
+async function createPlaylistFromTrackIds(accessToken, refreshToken, trackIds, title, operationDescription, { sharing } = {}) {
   const initialBatch = trackIds.slice(0, BATCH_SIZE_PLAYLIST_TRACKS);
   const newPlaylist = await soundcloudClient.createPlaylist(
     accessToken,
     refreshToken,
     title,
     playlistDescriptionWithToolkit(operationDescription),
-    initialBatch
+    initialBatch,
+    ...(sharing === 'private' ? [{ sharing }] : [])
   );
 
   // Length of the last write that succeeded. If a later PUT throws, the

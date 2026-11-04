@@ -464,6 +464,28 @@ export const validateClonePlaylist = [
 ];
 
 /**
+ * Validate clone-a-user's-likes request. `.isString()` leads (array bypass);
+ * the title is plain text, never `.escape()`.
+ */
+export const validateCloneUserLikes = [
+  body('url')
+    .isString()
+    .trim()
+    .isLength({ min: 1, max: 2048 })
+    .withMessage('url must be a valid SoundCloud profile URL')
+    .custom((value) => validateSoundCloudUrl(value)),
+  body('title')
+    .optional()
+    .isString()
+    .withMessage('Title must be text')
+    .customSanitizer((value) => stripControlChars(value))
+    .trim()
+    .isLength({ min: 1, max: 200 })
+    .withMessage('Title must be between 1 and 200 characters'),
+  handleValidationErrors
+];
+
+/**
  * Validate activities request
  */
 export const validateActivities = [
