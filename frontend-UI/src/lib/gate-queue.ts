@@ -54,6 +54,9 @@ export function gateQueueItem(
 /** Where the extension records the sites it can work, e.g. "hypeddit,droploud,cobrand". */
 export const EXT_GATES_KEY = "sc-toolkit-ext-gates";
 
+/** The extension's default per-queue limit for Droploud and Cobrand gates (its `hdRunCap`). */
+export const EXT_RUN_CAP_DEFAULT = 10;
+
 /**
  * The sites the installed extension says it supports. Empty when the flag is
  * absent, which is what keeps a new gate site off the page until an extension

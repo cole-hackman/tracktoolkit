@@ -291,7 +291,7 @@ until it is answered — "Download all" re-opens the question instead.
 
 **Row checkboxes are the everyday way to pick downloads.** For
 `canDownload` accounts, every row in the normal list with an automatic
-download (SoundCloud's own, or a Hypeddit gate) has a checkbox, and a sticky
+download (SoundCloud's own, or a supported gate) has a checkbox, and a sticky
 "Download N selected" bar sends the ticked gates to the extension and the
 ticked direct downloads to the queue. Droploud and Cobrand gates get
 checkboxes too, but only when the extension reports support for that site in

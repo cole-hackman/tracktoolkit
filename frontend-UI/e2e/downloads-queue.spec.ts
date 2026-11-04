@@ -206,7 +206,11 @@ test("a mixed selection goes to the right places: the direct download to the que
   const dialog = page.getByRole("dialog", { name: "Send these gates to the extension?" });
   await expect(dialog.getByText("1 Droploud gate will follow, like, comment and repost from your SoundCloud account.")).toBeVisible();
   await expect(dialog.getByText(/Cobrand/)).toHaveCount(0);
+  // The warning is the dialog's description, so it is read out when it opens.
+  await expect(dialog).toHaveAccessibleDescription(/1 Droploud gate will follow, like, comment and repost/);
   await dialog.getByRole("button", { name: "Cancel" }).click();
+  // Cancel keeps the selection, so focus goes back to the button that asked.
+  await expect(page.getByRole("button", { name: "Download 3 selected" })).toBeFocused();
   expect(seen).toEqual([]);
   expect((await folderRecord(page)).picks).toBe(0);
   expect(await page.evaluate(() => localStorage.getItem("sc-toolkit-hypeddit-queue"))).toBeNull();
@@ -214,6 +218,8 @@ test("a mixed selection goes to the right places: the direct download to the que
 
   await page.getByRole("button", { name: "Download 3 selected" }).click();
   await dialog.getByRole("button", { name: "Send to extension" }).click();
+  // Sending clears the selection and its button; focus lands somewhere real.
+  await expect(page.getByRole("button", { name: "Back to sources" })).toBeFocused();
 
   // The direct download is the queue's: one link request, one file, no gate in it.
   await expect(panel(page).getByText("1 saved · 0 not available · 0 failed")).toBeVisible();

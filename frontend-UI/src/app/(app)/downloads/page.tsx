@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { ArrowLeft, Download, Heart, ListMusic, Trash2, X, CheckSquare, Search, Zap } from "lucide-react";
@@ -52,6 +52,7 @@ import {
   type GateSite,
   EXT_GATES_KEY,
   downloadHypedditQueue,
+  EXT_RUN_CAP_DEFAULT,
   extensionGateSites,
   gateQueueItem,
   gateSiteOf,
@@ -150,6 +151,7 @@ export default function DownloadsPage() {
   const [extInstalled, setExtInstalled] = useState(false);
   // Gate sites the installed extension says it can work, beyond Hypeddit.
   const [extGates, setExtGates] = useState<Set<GateSite>>(new Set());
+  const backToSourcesRef = useRef<HTMLButtonElement>(null);
   // A send that contains Droploud or Cobrand gates waits here for a yes.
   // Which selection it is, not the tracks: the dialog is modal, so the
   // selection cannot change under it.
@@ -224,6 +226,23 @@ export default function DownloadsPage() {
     };
     window.addEventListener("sc-toolkit-progress-update", handler);
     return () => window.removeEventListener("sc-toolkit-progress-update", handler);
+  }, []);
+
+  // The extension's content script can write its flags after this page
+  // mounts, or a newer extension can be loaded while the page is open, so the
+  // flags are read again whenever the tab comes back into view.
+  useEffect(() => {
+    const reread = () => {
+      if (document.visibilityState !== "visible") return;
+      setExtInstalled(localStorage.getItem("sc-toolkit-ext-installed") === "1.0");
+      setExtGates(extensionGateSites(localStorage.getItem(EXT_GATES_KEY)));
+    };
+    window.addEventListener("focus", reread);
+    document.addEventListener("visibilitychange", reread);
+    return () => {
+      window.removeEventListener("focus", reread);
+      document.removeEventListener("visibilitychange", reread);
+    };
   }, []);
 
   // Re-check extension presence whenever a source is selected
@@ -394,6 +413,10 @@ export default function DownloadsPage() {
     setConfirmSend(null);
     if (which === "picked") sendPicked();
     else if (which === "auto") sendToExtension();
+    // Sending clears the selection, which unmounts the button that opened the
+    // dialog, so focus would fall to the body. Cancel keeps that button, and
+    // the dialog returns focus to it as usual.
+    requestAnimationFrame(() => backToSourcesRef.current?.focus());
   };
 
   const dismissProgress = () => {
@@ -764,6 +787,7 @@ export default function DownloadsPage() {
           /* Track List */
           <div>
             <Button
+              ref={backToSourcesRef}
               variant="ghost"
               size="sm"
               onClick={() => {
@@ -1148,7 +1172,7 @@ export default function DownloadsPage() {
                   </Button>
                   {pickedGates.length > 0 && !extInstalled && (
                     <p className="w-full text-xs text-muted-foreground-subtle">
-                      Hypeddit tracks need the Track Toolkit browser extension.
+                      Gates need the Track Toolkit browser extension.
                     </p>
                   )}
                 </div>
@@ -1197,24 +1221,35 @@ export default function DownloadsPage() {
           />
         )}
 
+      {/* The lines go in `description`, not children: that is what the dialog
+          names in aria-describedby, so a screen reader reads them on open.
+          After a send, confirmGateSend moves focus to "Back to sources". */}
       <ConfirmDialog
         open={confirmSend !== null}
         title="Send these gates to the extension?"
         confirmLabel="Send to extension"
         onConfirm={confirmGateSend}
         onCancel={() => setConfirmSend(null)}
-      >
-        {confirmCounts.droploud > 0 && (
-          <p className="text-sm text-foreground">
-            {plural(confirmCounts.droploud, "Droploud gate")} will follow, like, comment and repost from your SoundCloud account.
-          </p>
-        )}
-        {confirmCounts.cobrand > 0 && (
-          <p className="text-sm text-foreground">
-            {plural(confirmCounts.cobrand, "Cobrand gate")} will sign your phone number up to artist SMS.
-          </p>
-        )}
-      </ConfirmDialog>
+        description={
+          <div className="space-y-2 text-foreground">
+            {confirmCounts.droploud > 0 && (
+              <p>
+                {plural(confirmCounts.droploud, "Droploud gate")} will follow, like, comment and repost from your SoundCloud account.
+              </p>
+            )}
+            {confirmCounts.cobrand > 0 && (
+              <p>
+                {plural(confirmCounts.cobrand, "Cobrand gate")} will sign your phone number up to artist SMS.
+              </p>
+            )}
+            {confirmCounts.droploud + confirmCounts.cobrand > EXT_RUN_CAP_DEFAULT && (
+              <p className="text-muted-foreground">
+                The extension runs at most {EXT_RUN_CAP_DEFAULT} of these per queue unless you raise the limit in its options; the rest are left for the next run.
+              </p>
+            )}
+          </div>
+        }
+      />
 
       <ConfirmDialog
         open={showRemoveConfirm}
