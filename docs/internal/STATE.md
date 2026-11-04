@@ -69,6 +69,16 @@ nothing). The extension's PR #1 is merged into `fix/extension-domain`
   reloads itself when its files change (seen working).
 
 ## Next
+### 2026-11-04 (clone-private, PR #103)
+0. Merged after the gate work; verify on a real private playlist on the live
+   site: it resolves, the tracks arrive, the copy is private, and the
+   description has no `s-` token. If `/resolve` rejects a secret link,
+   resolve the playlist another way.
+1. Try "Clone someone's likes" on a profile with over 500 likes and confirm
+   the parts are titled `(1/n)`. A crawl cut short shows a warning
+   (`stats.truncated`, 120 s crawl budget).
+2. No test calls SoundCloud for real; add one if secret links misbehave.
+
 ### 2026-11-04
 0. **Node exit 137 kills: cause unknown, quiet since #105, not proven fixed.**
    27 kills on 11-04 and 85 since 10-08 (the earliest logged); the last was
@@ -557,6 +567,20 @@ nothing). The extension's PR #1 is merged into `fix/extension-domain`
   sites only when the extension says it supports them
   (`sc-toolkit-ext-gates`); the queue keeps the `sc-toolkit-hypeddit-queue` key.
 
+### From the 2026-11-04 clone-private session
+- **A copy of a private playlist is private** (confirmed by Cole, 2026-11-04):
+  a secret link or `sharing: 'private'` source makes every cloned part
+  `sharing: 'private'`. Cloning used to hard-code public.
+- **Clone a user's likes keeps the follow gate** (Cole, 2026-11-04): it works
+  only for a profile the caller follows (or their own), checked with
+  `assertFollowedUser` before any crawl; otherwise 403 `NOT_FOLLOWED`. It
+  reuses `createOrAppendTrackIds`.
+- **A secret-link token never leaves the request**: not stored, not in the
+  description, not logged (`redactSecretToken` in `scRequest`), not in the
+  catalog (secret-link sources are not harvested). Share-menu tracking
+  (`ref`, `si`, `utm_*`) is dropped before `/resolve`; a short link's token
+  comes back from the resolve redirect as a non-enumerable `secretToken`.
+
 ## Landmines
 - **Gate pages differ from guesses; capture before building** (2026-11-04).
   Droploud serves two layouts (v1 `dtr-`, v2 `dltg-`) with different button
@@ -788,3 +812,6 @@ nothing). The extension's PR #1 is merged into `fix/extension-domain`
 - **Closing the lid interrupts gate downloads.** They need Resume in
   `chrome://downloads`, and a signed link lasted about 100 minutes. The queue
   reports a track done when its download starts, not when the file lands.
+- **A secret link's `s-…` token is a credential.** It goes to SoundCloud only as
+  `secret_token`; the clone description uses `stripSecretToken`. Never log the
+  raw URL or put it in `OperationLog` metadata.

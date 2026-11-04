@@ -76,6 +76,7 @@ import {
   validateBulkUnrepost,
   validateClonePlaylist,
   validateCloneFollowedPlaylists,
+  validateCloneUserLikes,
   validateCreateFromFollowedLikes,
   validateFollowedUserLibraryPagination,
   validateFollowingUserId,
@@ -90,6 +91,7 @@ import {
   validateSetlistPlaylist,
 } from '../middleware/validation.js';
 import { buildSetlistDescription, dedupeTracks } from '../lib/setlist.js';
+import { canonicalSoundCloudUrl, extractSecretToken, stripSecretToken } from '../lib/secret-link.js';
 const router = express.Router();
 
 // The domain moves with the Azure cutover (docs/internal/MIGRATION.md work item 4): the
@@ -170,6 +172,18 @@ function getPlayableTrackIds(tracks = []) {
     ids.push(id);
   }
   return ids;
+}
+
+/** SoundCloud user id of whoever owns a track or playlist, or null. */
+function ownerIdOf(item) {
+  return extractNumericId(item?.user?.id ?? item?.user?.urn ?? item?.user_id ?? item?.user_urn);
+}
+
+/** A private track or playlist that belongs to someone other than `callerScId`. */
+function isOthersPrivate(item, callerScId) {
+  if (item?.sharing !== 'private') return false;
+  const owner = ownerIdOf(item);
+  return owner == null || Number(owner) !== Number(callerScId);
 }
 
 async function assertFollowedUser(req, targetUserId) {
@@ -686,10 +700,32 @@ router.get('/playlists', authenticateUser, instrumentRead('playlists'), async (r
 });
 
 /**
+ * What to tell the user when SoundCloud refuses to resolve or read the source
+ * playlist. Only for errors from those two steps (tagged `cloneSourceStep`).
+ * 401/403 there means "not yours to read": without a secret token the fix is
+ * to paste the secret link; with one, the link itself was refused. Never
+ * answers 401, which the client treats as a dead session.
+ */
+function sourceRefusalResponse(err, { secretToken }) {
+  const status = err?.status;
+  if (status === 401 || status === 403) {
+    return secretToken
+      ? { status: 403, body: { code: 'SECRET_LINK_REFUSED', error: 'SoundCloud refused that secret link — it may have been reset by the owner.' } }
+      : { status: 403, body: { code: 'PLAYLIST_PRIVATE', error: 'This playlist is private. Paste its secret link (it ends in /s-…).' } };
+  }
+  if (classifyScError(err) === 'not_found') {
+    return secretToken
+      ? { status: 404, body: { code: 'PLAYLIST_NOT_FOUND', error: 'SoundCloud could not open that secret link — the playlist may have been deleted, or the owner reset the link.' } }
+      : { status: 404, body: { code: 'PLAYLIST_NOT_FOUND', error: 'Source playlist not found or private.' } };
+  }
+  return null;
+}
+
+/**
  * POST /api/playlists/clone
  * Clones another user's playlist to the current user's account
  */
-router.post('/playlists/clone', authenticateUser, heavyOperationRateLimiter, validateClonePlaylist, async (req, res) => {
+router.post('/playlists/clone', authenticateUser, validateClonePlaylist, heavyOperationRateLimiter, async (req, res) => {
   // Set immediately BEFORE each create or PUT: a write that timed out or came
   // back 502 may still have landed, so this is what picks the 502 wording.
   let writeAttempted = false;
@@ -699,25 +735,44 @@ router.post('/playlists/clone', authenticateUser, heavyOperationRateLimiter, val
     if (err && typeof err === 'object') err.cloneSourceStep = true;
     throw err;
   };
+  // Hoisted so the catch can tell "private, no link" from "link refused".
+  let secretToken = null;
   try {
     const { url, title } = req.body;
-    const cleaned = sanitizeUrl(url);
+    // A link from SoundCloud's share menu carries ref/p/c/si/utm_* tracking;
+    // `canonical` drops the whole query, so none of it is sent to /resolve or
+    // written into the description.
+    const canonical = canonicalSoundCloudUrl(sanitizeUrl(url));
+    // A private playlist shared by link carries `s-…`. It is a credential: it
+    // goes to SoundCloud as `secret_token` and nowhere else, so everything we
+    // store or publish uses `publicUrl`. A short link (on.soundcloud.com)
+    // hides it until the resolve, so `secretToken` may be filled in below.
+    secretToken = extractSecretToken(canonical);
+    const isShortLink = canonical.startsWith('https://on.soundcloud.com/');
 
     // 1. Resolve URL
     let resource;
     try {
-      resource = await soundcloudClient.resolveAny(req.accessToken, req.refreshToken, cleaned);
+      resource = await soundcloudClient.resolveAny(req.accessToken, req.refreshToken, canonical);
     } catch (e) {
       if (String(e?.message).includes('401')) {
-        resource = await soundcloudClient.resolvePublic(cleaned).catch(tagSourceStep);
+        resource = await soundcloudClient.resolvePublic(canonical).catch(tagSourceStep);
       } else {
         tagSourceStep(e);
       }
     }
 
-    if (resource.kind !== 'playlist') {
+    if (resource?.kind !== 'playlist') {
       return res.status(400).json({ error: 'URL must point to a playlist.' });
     }
+    // Non-enumerable, set by the client from the resolve redirect: how a
+    // short link's token reaches the playlist read without being logged.
+    if (!secretToken && resource.secretToken) secretToken = resource.secretToken;
+    // A short link to a secret playlist is itself a way in, so it is never
+    // written into the copy: describe it by its public permalink instead.
+    const publicUrl = isShortLink
+      ? stripSecretToken(canonicalSoundCloudUrl(resource.permalink_url)) || 'a SoundCloud share link'
+      : stripSecretToken(canonical);
 
     const sourceId = extractNumericId(resource.id || resource.urn);
 
@@ -725,134 +780,87 @@ router.post('/playlists/clone', authenticateUser, heavyOperationRateLimiter, val
     const playlist = await soundcloudClient.getPlaylistWithTracks(
       req.accessToken,
       req.refreshToken,
-      sourceId
+      sourceId,
+      secretToken ? { secretToken } : undefined
     ).catch(tagSourceStep);
+
+    // A copy of a private playlist must not be public: that would publish
+    // something its owner chose to share only by link (or not at all).
+    const cloneOptions = (secretToken || playlist.sharing === 'private') ? { sharing: 'private' } : null;
 
     const all = Array.isArray(playlist.tracks) ? playlist.tracks : [];
     const filtered = all.filter(t => t && !t.blocked_at && t.streamable !== false);
-    harvestTracks(all);
-    harvestPlaylists([playlist]);
+    // The catalog is ours, kept past the request; someone else's private
+    // content does not go into it. A secret-link source is skipped whole
+    // (its owner shared it by link, not with us), and otherwise private
+    // tracks owned by somebody other than the caller are left out.
+    if (!secretToken) {
+      harvestTracks(all.filter((t) => !isOthersPrivate(t, req.user.soundcloudId)));
+      if (!isOthersPrivate(playlist, req.user.soundcloudId)) harvestPlaylists([playlist]);
+    }
     const trackIdsArray = filtered.map(t => t.id).filter(id => id != null);
+    // Someone else's private tracks inside a shared playlist: readable to us
+    // through the secret link, but SoundCloud may refuse them in a playlist
+    // the caller owns. Tried first; dropped on a refusal (writeClonePlaylists).
+    const excludable = new Set(
+      filtered.filter((t) => isOthersPrivate(t, req.user.soundcloudId)).map((t) => t.id),
+    );
 
     if (trackIdsArray.length === 0) {
       return res.status(400).json({ error: 'Playlist has no streamable tracks to clone.' });
     }
 
-    // Helper to slow down between API calls
     const baseTitle = title || `Clone of ${playlist.title}`;
 
-    if (trackIdsArray.length > 500) {
-      const numPlaylists = Math.ceil(trackIdsArray.length / 500);
-      const createdPlaylists = [];
+    // One writer for one part or many: every part goes through
+    // createPlaylistFromTrackIds with the same `sharing`, so a private source
+    // can never produce a public part on any path.
+    writeAttempted = true;
+    const { parts, skippedPrivate } = await writeClonePlaylists({
+      accessToken: req.accessToken,
+      refreshToken: req.refreshToken,
+      trackIds: trackIdsArray,
+      title: baseTitle,
+      description: `Cloned from ${publicUrl}`,
+      sharing: cloneOptions ? 'private' : undefined,
+      excludable,
+    });
+    const split = parts.length > 1;
+    const writtenIds = parts.flatMap((p) => p.trackIds);
 
-      for (let i = 0; i < numPlaylists; i++) {
-        const startIdx = i * 500;
-        const endIdx = Math.min(startIdx + 500, trackIdsArray.length);
-        const batch = trackIdsArray.slice(startIdx, endIdx);
-        
-        const playlistTitle = numPlaylists > 1 
-          ? `${baseTitle} (${i + 1}/${numPlaylists})`
-          : baseTitle;
+    // Read the copies back: what SoundCloud kept, against what the source
+    // holds (its track_count also counts entries the read could not show).
+    const landed = await countLandedTracks(req.accessToken, req.refreshToken, parts);
+    const sourceTracks = Number.isInteger(playlist.track_count) ? playlist.track_count : all.length;
 
-        const mergeBatchSize = 100;
-        const initialBatch = batch.slice(0, mergeBatchSize);
-        writeAttempted = true;
-        const newPlaylist = await soundcloudClient.createPlaylist(
-          req.accessToken,
-          req.refreshToken,
-          playlistTitle,
-          playlistDescriptionWithToolkit(`Cloned from ${cleaned}`),
-          initialBatch
-        );
-
-        await sleep(SC_PLAYLIST_PACING_MS);
-
-        let addIndex = mergeBatchSize;
-        while (addIndex < batch.length) {
-          await sleep(SC_WRITE_PACING_MS);
-          const addBatch = batch.slice(0, addIndex + mergeBatchSize);
-          writeAttempted = true;
-          await soundcloudClient.addTracksToPlaylist(
-            req.accessToken,
-            req.refreshToken,
-            newPlaylist.id,
-            addBatch
-          );
-          addIndex += mergeBatchSize;
-        }
-
-        createdPlaylists.push({
-          playlist: newPlaylist,
-          partNumber: i + 1
-        });
-
-        if (i < numPlaylists - 1) {
-          await sleep(SC_PLAYLIST_PACING_MS);
-        }
-      }
-
-      logOperation({
-        req,
-        action: 'clone',
-        playlistIds: [sourceId, ...createdPlaylists.map((p) => p.playlist.id)],
-        trackIds: trackIdsArray,
-        trackCount: trackIdsArray.length,
-        status: 'split',
-        metadata: { sourcePlaylistId: sourceId, numPlaylistsCreated: numPlaylists },
-      });
-      invalidatePlaylistState(req.user.id);
-      res.json({
-        playlists: createdPlaylists.map(p => p.playlist),
-        stats: {
-          totalTracks: trackIdsArray.length,
-          numPlaylistsCreated: numPlaylists,
-        }
-      });
-    } else {
-      const mergeBatchSize = 100;
-      const initialBatch = trackIdsArray.slice(0, mergeBatchSize);
-      writeAttempted = true;
-      const newPlaylist = await soundcloudClient.createPlaylist(
-        req.accessToken,
-        req.refreshToken,
-        baseTitle,
-        playlistDescriptionWithToolkit(`Cloned from ${cleaned}`),
-        initialBatch
-      );
-
-      await sleep(SC_PLAYLIST_PACING_MS);
-
-      let addIndex = mergeBatchSize;
-      while (addIndex < trackIdsArray.length) {
-        await sleep(SC_WRITE_PACING_MS);
-        const addBatch = trackIdsArray.slice(0, addIndex + mergeBatchSize);
-        writeAttempted = true;
-        await soundcloudClient.addTracksToPlaylist(
-          req.accessToken,
-          req.refreshToken,
-          newPlaylist.id,
-          addBatch
-        );
-        addIndex += mergeBatchSize;
-      }
-
-      logOperation({
-        req,
-        action: 'clone',
-        playlistIds: [sourceId, newPlaylist.id],
-        trackIds: trackIdsArray,
-        trackCount: trackIdsArray.length,
-        status: 'success',
-        metadata: { sourcePlaylistId: sourceId, createdPlaylistId: newPlaylist.id },
-      });
-      invalidatePlaylistState(req.user.id);
-      res.json({
-        playlist: newPlaylist,
-        stats: {
-          totalTracks: trackIdsArray.length,
-        }
-      });
-    }
+    logOperation({
+      req,
+      action: 'clone',
+      playlistIds: [sourceId, ...parts.map((p) => p.playlist.id)],
+      trackIds: writtenIds,
+      trackCount: writtenIds.length,
+      status: split ? 'split' : 'success',
+      metadata: {
+        sourcePlaylistId: sourceId,
+        ...(split ? { numPlaylistsCreated: parts.length } : { createdPlaylistId: parts[0].playlist.id }),
+        sourceTracks,
+        copiedTracks: landed,
+        ...(skippedPrivate > 0 ? { skippedPrivate } : {}),
+      },
+    });
+    invalidatePlaylistState(req.user.id);
+    res.json({
+      ...(split ? { playlists: parts.map((p) => p.playlist) } : { playlist: parts[0].playlist }),
+      stats: {
+        totalTracks: writtenIds.length,
+        ...(split ? { numPlaylistsCreated: parts.length } : {}),
+        ...(cloneOptions ? { private: true } : {}),
+        sourceTracks,
+        copiedTracks: landed ?? writtenIds.length,
+        verified: landed != null,
+        ...(skippedPrivate > 0 ? { skippedPrivate } : {}),
+      },
+    });
   } catch (error) {
     // A write that failed or timed out may still have landed; do not serve a
     // stale list while telling the user to go check it.
@@ -867,12 +875,133 @@ router.post('/playlists/clone', authenticateUser, heavyOperationRateLimiter, val
       const fromMessage = /^Resolve (?:follow )?error: (\d{3})$/.exec(String(error.message));
       if (fromMessage) classified = { status: Number(fromMessage[1]) };
     }
-    if (error?.cloneSourceStep && classifyScError(classified) === 'not_found') {
-      return res.status(404).json({ code: 'PLAYLIST_NOT_FOUND', error: 'Source playlist not found or private.' });
+    if (error?.cloneSourceStep) {
+      const response = sourceRefusalResponse(classified, { secretToken });
+      if (response) return res.status(response.status).json(response.body);
     }
+    const partial = partialCreateResponse(error, { writeAttempted });
+    if (partial) return res.status(partial.status).json(partial.body);
     const mapped = scErrorResponse(classified, { writeAttempted });
     if (mapped) return res.status(mapped.status).json(mapped.body);
     res.status(500).json({ error: 'Failed to clone playlist' });
+  }
+});
+
+/**
+ * POST /api/users/likes/clone
+ * Copy every public like of a SoundCloud user the caller follows (or the
+ * caller's own profile), pasted as a profile link, into playlists on the
+ * caller's account. Splits at 500 tracks exactly like
+ * likes-to-playlist, because it goes through the same createOrAppendTrackIds.
+ */
+router.post('/users/likes/clone', authenticateUser, validateCloneUserLikes, heavyOperationRateLimiter, async (req, res) => {
+  let writeAttempted = false;
+  const tagSourceStep = (err) => {
+    if (err && typeof err === 'object') err.cloneSourceStep = true;
+    throw err;
+  };
+  try {
+    const cleaned = canonicalSoundCloudUrl(sanitizeUrl(req.body.url));
+
+    let resource;
+    try {
+      resource = await soundcloudClient.resolveAny(req.accessToken, req.refreshToken, cleaned);
+    } catch (e) {
+      if (String(e?.message).includes('401')) {
+        resource = await soundcloudClient.resolvePublic(cleaned).catch(tagSourceStep);
+      } else {
+        tagSourceStep(e);
+      }
+    }
+
+    if (resource?.kind !== 'user') {
+      return res.status(400).json({ error: 'URL must point to a SoundCloud profile.' });
+    }
+    const sourceUserId = extractNumericId(resource.id || resource.urn);
+    if (!sourceUserId) {
+      return res.status(400).json({ error: 'URL must point to a SoundCloud profile.' });
+    }
+    const sourceName = resource.username || 'SoundCloud user';
+
+    // Same rule as the followed-library routes (STATE.md, decision kept by
+    // Cole): this crawls another account, so it is limited to accounts the
+    // caller follows. Your own profile needs no follow. Checked before the
+    // crawl, so a refused request costs SoundCloud nothing past the resolve.
+    if (Number(sourceUserId) !== Number(req.user.soundcloudId)) {
+      await assertFollowedUser(req, sourceUserId);
+    }
+
+    const tracks = await soundcloudClient
+      .getUserLikedTracks(req.accessToken, req.refreshToken, sourceUserId, 200)
+      .catch(tagSourceStep);
+    const fetchedTotal = tracks.length;
+    // The crawl is bounded (pages and wall clock). A cut-short crawl is a
+    // subset of the likes, so say so rather than present it as all of them.
+    const truncated = Boolean(tracks.truncated);
+    const trackIds = getPlayableTrackIds(tracks);
+    harvestTracks(tracks.filter((t) => !isOthersPrivate(t, req.user.soundcloudId)));
+
+    if (trackIds.length === 0) {
+      return res.status(400).json({ error: 'No public streamable liked tracks were available to clone.' });
+    }
+
+    const title = req.body.title?.trim() || `${sourceName} Likes`;
+    writeAttempted = true;
+    const result = await createOrAppendTrackIds({
+      accessToken: req.accessToken,
+      refreshToken: req.refreshToken,
+      trackIds,
+      title,
+      description: `Playlist created from ${sourceName}'s public liked tracks`,
+    });
+
+    logOperation({
+      req,
+      action: 'clone-user-likes',
+      trackCount: trackIds.length,
+      status: result.playlists && result.playlists.length > 1 ? 'split' : 'success',
+      trackIds,
+      playlistIds: result.playlists
+        ? result.playlists.map((p) => p.id)
+        : [result.playlist?.id].filter(Boolean),
+      targetUserIds: [sourceUserId],
+      metadata: { truncated },
+    });
+    invalidatePlaylistState(req.user.id);
+    res.json({
+      ...result,
+      stats: {
+        sourceUserId,
+        sourceUsername: sourceName,
+        fetchedTotal,
+        acceptedTotal: trackIds.length,
+        totalTracks: trackIds.length,
+        numPlaylistsCreated: result.playlists ? result.playlists.length : 1,
+        truncated,
+      },
+    });
+  } catch (error) {
+    if (error?.code === 'NOT_FOLLOWED') {
+      return res.status(403).json({
+        code: 'NOT_FOLLOWED',
+        error: "You can only clone the likes of someone you follow. Follow them on SoundCloud, then try again.",
+      });
+    }
+    if (writeAttempted) invalidatePlaylistState(req.user.id);
+    logger.error('Clone user likes error:', safeError(error));
+    let classified = error;
+    if (error?.cloneSourceStep && error.status == null) {
+      const fromMessage = /^Resolve (?:follow )?error: (\d{3})$/.exec(String(error.message));
+      if (fromMessage) classified = { status: Number(fromMessage[1]) };
+    }
+    if (error?.cloneSourceStep && classifyScError(classified) === 'not_found') {
+      return res.status(404).json({ code: 'USER_NOT_FOUND', error: 'That profile was not found.' });
+    }
+    const partial = partialCreateResponse(error, { writeAttempted });
+    if (partial) return res.status(partial.status).json(partial.body);
+    const mapped = scErrorResponse(classified, { writeAttempted });
+    if (mapped) return res.status(mapped.status).json(mapped.body);
+    res.status(500).json({ error: 'Failed to clone liked tracks' });
   }
 });
 
@@ -2020,14 +2149,15 @@ const MAX_TRACKS_PER_PLAYLIST = 500;
  * Create a single playlist from track IDs using 100-track batches (SoundCloud API limit).
  * @param {string} operationDescription - Summary only; Track Toolkit footer is appended automatically.
  */
-async function createPlaylistFromTrackIds(accessToken, refreshToken, trackIds, title, operationDescription) {
+async function createPlaylistFromTrackIds(accessToken, refreshToken, trackIds, title, operationDescription, { sharing } = {}) {
   const initialBatch = trackIds.slice(0, BATCH_SIZE_PLAYLIST_TRACKS);
   const newPlaylist = await soundcloudClient.createPlaylist(
     accessToken,
     refreshToken,
     title,
     playlistDescriptionWithToolkit(operationDescription),
-    initialBatch
+    initialBatch,
+    ...(sharing === 'private' ? [{ sharing }] : [])
   );
 
   // Length of the last write that succeeded. If a later PUT throws, the
@@ -2062,6 +2192,187 @@ async function createPlaylistFromTrackIds(accessToken, refreshToken, trackIds, t
   }
 
   return newPlaylist;
+}
+
+/**
+ * A write SoundCloud refused on its merits (a 4xx), as opposed to auth (401,
+ * which scRequest handles), a timeout (408) or the rate limit (429).
+ */
+function isWriteRejection(err) {
+  const status = err?.status;
+  return Number.isInteger(status) && status >= 400 && status < 500 && ![401, 408, 429].includes(status);
+}
+
+/**
+ * Write `trackIds` into new playlists of at most 500 tracks each, titled
+ * "<title> (i/n)" when there is more than one. Every part is created by
+ * createPlaylistFromTrackIds with the same `sharing`.
+ *
+ * `excludable` is the ids of private tracks owned by someone other than the
+ * caller. They are tried first; SoundCloud may refuse a playlist that holds
+ * them. If a write is refused with a 4xx while the part being written holds
+ * one, the write is retried ONCE with every excludable id dropped from what
+ * is left to write — onto the same playlist if it was already created (a PUT
+ * replaces its list), so the retry makes no extra playlist. Parts already
+ * finished keep what SoundCloud accepted. `skippedPrivate` counts the ids
+ * dropped. Any other failure carries the playlists made so far
+ * (withCreatedParts).
+ * @returns {Promise<{ parts: Array<{ playlist: object, title: string, trackIds: number[] }>, skippedPrivate: number }>}
+ */
+async function writeClonePlaylists({ accessToken, refreshToken, trackIds, title, description, sharing, excludable = new Set() }) {
+  const partsFor = (n) => Math.max(1, Math.ceil(n / MAX_TRACKS_PER_PLAYLIST));
+  let remaining = [...trackIds];
+  let totalParts = partsFor(remaining.length);
+  let canRetry = excludable.size > 0;
+  let skippedPrivate = 0;
+  // A part created before its fill was refused; the retry refills it.
+  let reuse = null;
+  const parts = [];
+
+  while (remaining.length > 0) {
+    const chunk = remaining.slice(0, MAX_TRACKS_PER_PLAYLIST);
+    const partTitle = reuse
+      ? reuse.title
+      : (totalParts > 1 ? `${title} (${parts.length + 1}/${totalParts})` : title);
+    let playlist;
+    try {
+      if (reuse) {
+        const target = reuse;
+        let written = 0;
+        try {
+          await sleep(SC_WRITE_PACING_MS);
+          await writeGrowingPrefix({
+            ids: chunk,
+            floor: 0,
+            batchSize: BATCH_SIZE_PLAYLIST_TRACKS,
+            write: async (prefix) => {
+              await soundcloudClient.addTracksToPlaylist(accessToken, refreshToken, target.playlist.id, prefix);
+              written = prefix.length;
+            },
+          });
+        } catch (err) {
+          if (err && typeof err === 'object') {
+            err.partialPlaylist = {
+              id: target.playlist.id,
+              permalink_url: target.playlist.permalink_url,
+              title: target.title,
+              tracksWritten: written || target.tracksWritten,
+            };
+          }
+          throw err;
+        }
+        playlist = target.playlist;
+      } else {
+        if (parts.length > 0) await sleep(SC_PLAYLIST_PACING_MS);
+        playlist = await createPlaylistFromTrackIds(
+          accessToken, refreshToken, chunk, partTitle, description, { sharing },
+        );
+      }
+    } catch (err) {
+      const holdsExcludable = chunk.some((id) => excludable.has(id));
+      if (canRetry && isWriteRejection(err) && holdsExcludable) {
+        const kept = remaining.filter((id) => !excludable.has(id));
+        if (kept.length > 0) {
+          canRetry = false;
+          skippedPrivate = remaining.length - kept.length;
+          remaining = kept;
+          totalParts = parts.length + partsFor(remaining.length);
+          const partial = err.partialPlaylist;
+          reuse = partial
+            ? {
+              playlist: { id: partial.id, permalink_url: partial.permalink_url, title: partial.title },
+              title: partial.title,
+              tracksWritten: partial.tracksWritten,
+            }
+            : null;
+          continue;
+        }
+      }
+      throw withCreatedParts(err, parts.map(describeCreatedPart), totalParts);
+    }
+    parts.push({ playlist, title: partTitle, trackIds: chunk });
+    remaining = remaining.slice(chunk.length);
+    reuse = null;
+  }
+  return { parts, skippedPrivate };
+}
+
+/**
+ * How many tracks each new playlist really holds, read back from SoundCloud
+ * (it can drop entries it accepted in the write). `null` when any read fails:
+ * an unknown count is reported as unknown, not as the number we sent.
+ */
+async function countLandedTracks(accessToken, refreshToken, parts) {
+  let landed = 0;
+  for (const part of parts) {
+    try {
+      const read = await soundcloudClient.getPlaylistWithTracks(accessToken, refreshToken, part.playlist.id);
+      const count = Number.isInteger(read?.track_count)
+        ? read.track_count
+        : (Array.isArray(read?.tracks) ? read.tracks.length : null);
+      if (count == null) return null;
+      landed += count;
+    } catch {
+      return null;
+    }
+  }
+  return landed;
+}
+
+function describeCreatedPart({ playlist, title, trackIds }) {
+  return { id: playlist.id, title, permalink_url: playlist.permalink_url, trackCount: trackIds.length };
+}
+
+/**
+ * Attach to a write error every playlist that already exists because of this
+ * operation — finished parts plus the half-filled one createPlaylistFromTrackIds
+ * reports as `partialPlaylist` — so the route can list them instead of a bare
+ * 500 that invites a retry into duplicates. Additive: same error object.
+ */
+function withCreatedParts(err, finished, totalParts) {
+  if (!err || typeof err !== 'object') return err;
+  const created = [...finished];
+  if (err.partialPlaylist) {
+    const { id, title, permalink_url, tracksWritten } = err.partialPlaylist;
+    created.push({ id, title, permalink_url, trackCount: tracksWritten, incomplete: true });
+  }
+  err.createdParts = created;
+  err.totalParts = totalParts;
+  return err;
+}
+
+/**
+ * The response for a create-and-split write that failed after at least one
+ * playlist exists: what is on the user's account now, and that running it
+ * again starts a new full copy. Null when nothing was created, so the caller
+ * falls through to its usual mapping.
+ */
+function partialCreateResponse(error, { writeAttempted }) {
+  const created = Array.isArray(error?.createdParts) ? error.createdParts : [];
+  if (created.length === 0) return null;
+  const kind = classifyScError(error);
+  const mapped = scErrorResponse(error, { writeAttempted });
+  const status = kind === 'rate_limited' ? 429 : (mapped ? mapped.status : 500);
+  const reason = kind === 'rate_limited'
+    ? "SoundCloud's rate limit stopped the copy partway through."
+    : (mapped ? mapped.body.error : 'The copy stopped partway through.');
+  const list = created
+    .map((p) => `"${p.title}" (${p.trackCount} track${p.trackCount === 1 ? '' : 's'}${p.incomplete ? ', unfinished' : ''})`)
+    .join(', ');
+  return {
+    status,
+    body: {
+      code: 'CLONE_PARTIAL',
+      error: `${reason} Already on your account: ${list}. Running it again makes a new full copy, so check these first.`,
+      playlists: created,
+      stats: {
+        partial: true,
+        totalTracks: created.reduce((n, p) => n + (Number(p.trackCount) || 0), 0),
+        numPlaylistsCreated: created.length,
+        ...(error.totalParts ? { totalParts: error.totalParts } : {}),
+      },
+    },
+  };
 }
 
 function uniquePositiveIds(ids = []) {
@@ -2131,7 +2442,8 @@ async function createOrAppendTrackIds({ accessToken, refreshToken, trackIds, tit
   }
 
   if (uniqueTrackIds.length <= MAX_TRACKS_PER_PLAYLIST) {
-    const newPlaylist = await createPlaylistFromTrackIds(accessToken, refreshToken, uniqueTrackIds, title, description);
+    const newPlaylist = await createPlaylistFromTrackIds(accessToken, refreshToken, uniqueTrackIds, title, description)
+      .catch((err) => { throw withCreatedParts(err, [], 1); });
     return {
       playlistId: newPlaylist.id,
       permalink_url: newPlaylist.permalink_url,
@@ -2151,7 +2463,7 @@ async function createOrAppendTrackIds({ accessToken, refreshToken, trackIds, tit
       chunks[i],
       playlistTitle,
       `${description}${partSuffix}`
-    );
+    ).catch((err) => { throw withCreatedParts(err, playlists, chunks.length); });
     playlists.push({
       id: newPlaylist.id,
       title: playlistTitle,

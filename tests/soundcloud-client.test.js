@@ -389,3 +389,117 @@ describe('paginate crawl bounds', () => {
     expect(refreshCalls.length).toBeLessThanOrEqual(2);
   });
 });
+
+describe('paginate stopped by a 429', () => {
+  beforeEach(() => {
+    global.fetch = jest.fn();
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  test('a Retry-After past the deadline ends the crawl and marks it truncated', async () => {
+    fetch
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        collection: [{ id: 1 }, { id: 2 }],
+        next_href: 'https://api.soundcloud.com/users/9/likes/tracks?cursor=abc',
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response('', { status: 429, headers: { 'Retry-After': '600' } }));
+
+    const items = await soundcloudClient.paginate('/users/9/likes/tracks', 'a', 'r', 200, {
+      deadlineAt: Date.now() + 60_000,
+    });
+
+    expect(items.map((t) => t.id)).toEqual([1, 2]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(items.truncated).toBe(true);
+    expect(items.truncatedReason).toBe('rate-limited');
+  });
+
+  test('a crawl that reaches the end is not truncated', async () => {
+    fetch.mockResolvedValueOnce(new Response(JSON.stringify({ collection: [{ id: 1 }], next_href: null }), { status: 200 }));
+    const items = await soundcloudClient.paginate('/users/9/likes/tracks', 'a', 'r', 200);
+    expect(items.truncated).toBeUndefined();
+  });
+});
+
+describe('a secret_token never reaches a log line or an error', () => {
+  const TOKEN = 's-AbC123xyz';
+  let logged;
+
+  beforeEach(async () => {
+    global.fetch = jest.fn();
+    const { default: logger } = await import('../server/lib/logger.js');
+    logged = [];
+    for (const level of ['debug', 'info', 'warn', 'error']) {
+      jest.spyOn(logger, level).mockImplementation((...args) => { logged.push(args); });
+    }
+    for (const level of ['log', 'info', 'warn', 'error']) {
+      jest.spyOn(console, level).mockImplementation((...args) => { logged.push(args); });
+    }
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  const everything = (err) => JSON.stringify([logged.map((a) => a.map(String)), err?.message, err?.endpoint]);
+
+  test('a non-JSON body on a secret playlist read', async () => {
+    fetch.mockResolvedValueOnce(new Response(`<html>try https://soundcloud.com/u/sets/m/${TOKEN}</html>`, { status: 200 }));
+    const err = await soundcloudClient
+      .getPlaylistWithTracks('a', 'r', 555, { secretToken: TOKEN })
+      .catch((e) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect(fetch.mock.calls[0][0]).toContain(`secret_token=${TOKEN}`); // it still goes to SoundCloud
+    expect(logged.length).toBeGreaterThan(0);
+    expect(everything(err)).not.toContain('AbC123xyz');
+  });
+
+  test('a refused secret playlist read', async () => {
+    fetch.mockResolvedValueOnce(new Response('', { status: 403 }));
+    const err = await soundcloudClient
+      .getPlaylistWithTracks('a', 'r', 555, { secretToken: TOKEN })
+      .catch((e) => e);
+
+    expect(err.status).toBe(403);
+    expect(err.endpoint).toContain('secret_token=[redacted]');
+    expect(everything(err)).not.toContain('AbC123xyz');
+  });
+});
+
+describe('resolveAny on a short link to a secret playlist', () => {
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  test('the token in the redirect Location rides back, non-enumerable and unlogged', async () => {
+    const { default: logger } = await import('../server/lib/logger.js');
+    const logged = [];
+    for (const level of ['debug', 'info', 'warn', 'error']) {
+      jest.spyOn(logger, level).mockImplementation((...args) => { logged.push(args); });
+    }
+    fetch
+      .mockResolvedValueOnce(new Response('', {
+        status: 302,
+        headers: { Location: 'https://api.soundcloud.com/playlists/soundcloud:playlists:555?secret_token=s-AbC123xyz' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        kind: 'playlist', id: 555, permalink_url: 'https://soundcloud.com/someone/sets/hidden-mix',
+      }), { status: 200 }));
+
+    const resource = await soundcloudClient.resolveAny('a', 'r', 'https://on.soundcloud.com/AbCd1234');
+
+    expect(fetch.mock.calls[0][0]).toContain(encodeURIComponent('https://on.soundcloud.com/AbCd1234'));
+    expect(resource.secretToken).toBe('s-AbC123xyz');
+    expect(Object.keys(resource)).not.toContain('secretToken');
+    expect(JSON.stringify(resource)).not.toContain('AbC123xyz');
+    expect(JSON.stringify(logged)).not.toContain('AbC123xyz');
+  });
+
+  test('a public resolve carries no token', async () => {
+    fetch
+      .mockResolvedValueOnce(new Response('', { status: 302, headers: { Location: 'https://api.soundcloud.com/playlists/7' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ kind: 'playlist', id: 7 }), { status: 200 }));
+    const resource = await soundcloudClient.resolveAny('a', 'r', 'https://soundcloud.com/u/sets/open');
+    expect(resource.secretToken).toBeUndefined();
+  });
+});

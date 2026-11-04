@@ -7,6 +7,7 @@ import { getTokenContext, countScCall } from './token-context.js';
 import { invalidateCachedAuth } from './auth-cache.js';
 import { isAllowedDownloadUrl } from './download-utils.js';
 import { cursorEndpoint } from './sc-cursor.js';
+import { extractSecretToken, redactSecretToken } from './secret-link.js';
 
 /**
  * Safely parse a fetch Response body as JSON.
@@ -25,10 +26,28 @@ async function parseScJson(response, { context = 'SoundCloud API', allowEmpty = 
   try {
     return JSON.parse(text);
   } catch {
-    const snippet = text.length > 200 ? `${text.slice(0, 200)}…` : text;
+    // A body can echo the request (a secret_uri, an error page quoting the
+    // URL), so the snippet is redacted like the context.
+    const snippet = redactSecretToken(text.length > 200 ? `${text.slice(0, 200)}…` : text);
     logger.warn(`[${context}] non-JSON response (status ${response.status}): ${snippet}`);
     throw new Error(`${context}: invalid JSON response (status ${response.status})`);
   }
+}
+
+/**
+ * Attach the secret token a resolve revealed — from the redirect Location, or
+ * failing that the resource's own `secret_uri`/`uri` — as a non-enumerable
+ * `secretToken`, so JSON.stringify and spreads never carry it anywhere.
+ */
+function withSecretToken(resource, location) {
+  if (!resource || typeof resource !== 'object') return resource;
+  const token = extractSecretToken(location)
+    || extractSecretToken(resource.secret_uri)
+    || extractSecretToken(resource.uri);
+  if (token) {
+    Object.defineProperty(resource, 'secretToken', { value: token, enumerable: false, configurable: true });
+  }
+  return resource;
 }
 
 const SC_FETCH_TIMEOUT_MS = Number(process.env.SC_FETCH_TIMEOUT_MS) || 30_000;
@@ -569,6 +588,9 @@ class SoundCloudClient {
   async scRequest(endpoint, accessToken, refreshToken, options = {}) {
     const { max429Retries = 3, retryAttempt = 0, ...fetchOptions } = options;
     const url = `${this.baseUrl}${endpoint}`;
+    // What log lines and error objects may say about this call: a private
+    // playlist read carries `secret_token=s-…`, a credential, in the endpoint.
+    const logEndpoint = redactSecretToken(endpoint);
     
     const response = await fetchWithGatewayRetry(url, {
       ...fetchOptions,
@@ -600,7 +622,7 @@ class SoundCloudClient {
           throw new Error(`API request failed after token refresh: ${retryResponse.status}`);
         }
 
-        return parseScJson(retryResponse, { context: endpoint });
+        return parseScJson(retryResponse, { context: logEndpoint });
       } catch (refreshError) {
         // Don't expose refresh error details
         throw new Error(`Token refresh failed`);
@@ -629,12 +651,12 @@ class SoundCloudClient {
       // Don't include response body in error message to prevent secret leakage
       throw Object.assign(new Error(`API request failed: ${response.status}`), {
         status: response.status,
-        endpoint,
+        endpoint: logEndpoint,
         method: String(fetchOptions.method || 'GET').toUpperCase(),
       });
     }
 
-    return parseScJson(response, { context: endpoint });
+    return parseScJson(response, { context: logEndpoint });
   }
 
   /**
@@ -670,9 +692,11 @@ class SoundCloudClient {
    * counts them. `allAccess` asks for all three levels; anything that will
    * write the list back must use it (see readPlaylistForRewrite).
    */
-  async getPlaylistWithTracks(accessToken, refreshToken, playlistId, { allAccess = false } = {}) {
+  async getPlaylistWithTracks(accessToken, refreshToken, playlistId, { allAccess = false, secretToken } = {}) {
     const access = allAccess ? '&access=playable,preview,blocked' : '';
-    return this.scRequest(`/playlists/${playlistId}?show_tracks=true${access}`, accessToken, refreshToken);
+    // A private playlist shared by link is readable only with its secret token.
+    const secret = secretToken ? `&secret_token=${encodeURIComponent(secretToken)}` : '';
+    return this.scRequest(`/playlists/${playlistId}?show_tracks=true${access}${secret}`, accessToken, refreshToken);
   }
 
   /**
@@ -731,6 +755,10 @@ class SoundCloudClient {
 
     let currentAccessToken = accessToken;
     let retries429 = 0;
+    // Set when a 429 ends the crawl early (its Retry-After would outlast the
+    // deadline). The loop exits with time still on the clock, so the deadline
+    // test below would not see it, and a partial list would pass as whole.
+    let stoppedOn429 = false;
 
     while (
       nextUrl
@@ -767,6 +795,7 @@ class SoundCloudClient {
         const delay = retryAfter ? parseInt(retryAfter) * 1000 : 1000;
         // Sleeping past the deadline is worse than a partial crawl
         if (deadlineAt !== null && Date.now() + delay >= deadlineAt) {
+          stoppedOn429 = true;
           break;
         }
         await new Promise(resolve => setTimeout(resolve, delay));
@@ -803,16 +832,17 @@ class SoundCloudClient {
     // callers that care can read `.truncated`.
     const hitPageCap = pagesFetched >= maxPages && Boolean(nextUrl);
     const hitDeadline = deadlineAt !== null && Date.now() >= deadlineAt && Boolean(nextUrl);
-    if (hitPageCap || hitDeadline) {
+    const hitRateLimit = stoppedOn429 && Boolean(nextUrl);
+    if (hitPageCap || hitDeadline || hitRateLimit) {
+      const reason = hitPageCap ? 'page-cap' : (hitRateLimit ? 'rate-limited' : 'deadline');
       Object.defineProperty(items, 'truncated', {
         value: true, enumerable: false, configurable: true,
       });
       Object.defineProperty(items, 'truncatedReason', {
-        value: hitPageCap ? 'page-cap' : 'deadline', enumerable: false, configurable: true,
+        value: reason, enumerable: false, configurable: true,
       });
       logger.warn('SoundCloud crawl truncated', {
-        endpoint, pagesFetched, collected: items.length,
-        reason: hitPageCap ? 'page-cap' : 'deadline',
+        endpoint, pagesFetched, collected: items.length, reason,
       });
     }
     return items;
@@ -821,12 +851,12 @@ class SoundCloudClient {
   /**
    * Create a new playlist
    */
-  async createPlaylist(accessToken, refreshToken, title, description, trackIds = []) {
+  async createPlaylist(accessToken, refreshToken, title, description, trackIds = [], { sharing = 'public' } = {}) {
     const payload = {
       playlist: {
         title,
         description: description || '',
-        sharing: 'public',
+        sharing,
         ...(trackIds.length > 0 ? { tracks: trackIds.map(id => ({ urn: `soundcloud:tracks:${id}` })) } : {})
       }
     };
@@ -872,7 +902,14 @@ class SoundCloudClient {
   }
 
   /**
-   * Resolve URL with explicit 302 handling
+   * Resolve URL with explicit 302 handling.
+   *
+   * A secret link — including an `on.soundcloud.com` short link, whose token
+   * is not in the URL the user pasted — resolves to an API Location carrying
+   * `?secret_token=s-…`. That token is what later reads the playlist, so it
+   * rides back on the result as a NON-enumerable `secretToken`: callers that
+   * want it read it, and it can never be serialized into a response, a cache
+   * entry or a log line by accident. Nothing here logs the Location.
    */
   async resolveAny(accessToken, refreshToken, targetUrl) {
     const doFetch = async (token) => {
@@ -897,13 +934,13 @@ class SoundCloudClient {
           // Don't include response body in error message
           throw new Error(`Resolve follow error: ${res2.status}`);
         }
-        return parseScJson(res2, { context: 'resolve' });
+        return withSecretToken(await parseScJson(res2, { context: 'resolve' }), location);
       }
       if (!res.ok) {
         // Don't include response body in error message
         throw new Error(`Resolve error: ${res.status}`);
       }
-      return parseScJson(res, { context: 'resolve' });
+      return withSecretToken(await parseScJson(res, { context: 'resolve' }));
     };
 
     try {
@@ -933,13 +970,13 @@ class SoundCloudClient {
         // Don't include response body in error message
         throw new Error(`Resolve follow error: ${res2.status}`);
       }
-      return parseScJson(res2, { context: 'resolve (public)' });
+      return withSecretToken(await parseScJson(res2, { context: 'resolve (public)' }), location);
     }
     if (!res.ok) {
       // Don't include response body in error message
       throw new Error(`Resolve error: ${res.status}`);
     }
-    return parseScJson(res, { context: 'resolve (public)' });
+    return withSecretToken(await parseScJson(res, { context: 'resolve (public)' }));
   }
 
   buildPagedEndpoint(endpoint, { limit = 50, next, extraParams = {} } = {}) {
