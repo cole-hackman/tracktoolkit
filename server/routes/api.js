@@ -174,6 +174,18 @@ function getPlayableTrackIds(tracks = []) {
   return ids;
 }
 
+/** SoundCloud user id of whoever owns a track or playlist, or null. */
+function ownerIdOf(item) {
+  return extractNumericId(item?.user?.id ?? item?.user?.urn ?? item?.user_id ?? item?.user_urn);
+}
+
+/** A private track or playlist that belongs to someone other than `callerScId`. */
+function isOthersPrivate(item, callerScId) {
+  if (item?.sharing !== 'private') return false;
+  const owner = ownerIdOf(item);
+  return owner == null || Number(owner) !== Number(callerScId);
+}
+
 async function assertFollowedUser(req, targetUserId) {
   // Must go through the cache, not the raw client: this authorization check
   // runs before EVERY followed-library page fetch, and a raw call re-crawls
@@ -778,8 +790,14 @@ router.post('/playlists/clone', authenticateUser, validateClonePlaylist, heavyOp
 
     const all = Array.isArray(playlist.tracks) ? playlist.tracks : [];
     const filtered = all.filter(t => t && !t.blocked_at && t.streamable !== false);
-    harvestTracks(all);
-    harvestPlaylists([playlist]);
+    // The catalog is ours, kept past the request; someone else's private
+    // content does not go into it. A secret-link source is skipped whole
+    // (its owner shared it by link, not with us), and otherwise private
+    // tracks owned by somebody other than the caller are left out.
+    if (!secretToken) {
+      harvestTracks(all.filter((t) => !isOthersPrivate(t, req.user.soundcloudId)));
+      if (!isOthersPrivate(playlist, req.user.soundcloudId)) harvestPlaylists([playlist]);
+    }
     const trackIdsArray = filtered.map(t => t.id).filter(id => id != null);
 
     if (trackIdsArray.length === 0) {
@@ -981,7 +999,7 @@ router.post('/users/likes/clone', authenticateUser, validateCloneUserLikes, heav
     // subset of the likes, so say so rather than present it as all of them.
     const truncated = Boolean(tracks.truncated);
     const trackIds = getPlayableTrackIds(tracks);
-    harvestTracks(tracks);
+    harvestTracks(tracks.filter((t) => !isOthersPrivate(t, req.user.soundcloudId)));
 
     if (trackIds.length === 0) {
       return res.status(400).json({ error: 'No public streamable liked tracks were available to clone.' });

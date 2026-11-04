@@ -55,6 +55,11 @@ jest.unstable_mockModule('../../server/middleware/auth.js', () => ({
   },
 }));
 
+const actualCatalog = await import('../../server/lib/catalog.js');
+const harvestTracks = jest.fn();
+const harvestPlaylists = jest.fn();
+jest.unstable_mockModule('../../server/lib/catalog.js', () => ({ ...actualCatalog, harvestTracks, harvestPlaylists }));
+
 const { default: apiRoutes } = await import('../../server/routes/api.js');
 const { heavyOperationRateLimiter } = await import('../../server/middleware/rateLimiter.js');
 // Not mocked: the follow check reads the real per-user cache, so each test
@@ -80,6 +85,8 @@ beforeEach(() => {
   getPlaylistWithTracks.mockReset();
   getUserLikedTracks.mockReset();
   logOperation.mockClear();
+  harvestTracks.mockClear();
+  harvestPlaylists.mockClear();
   let next = 90;
   createPlaylist.mockReset().mockImplementation(async (at, rt, title) => {
     const id = next++;
@@ -251,6 +258,46 @@ describe('POST /api/playlists/clone when SoundCloud refuses the source', () => {
     createPlaylist.mockRejectedValue(scError(403));
     const res = await clone('https://soundcloud.com/a/sets/open');
     expect(res.body.code).not.toBe('PLAYLIST_PRIVATE');
+  });
+});
+
+describe('the catalog never takes in someone else\'s private content', () => {
+  const others = { id: 1, streamable: true, sharing: 'private', user: { id: 999 } };
+  const mine = { id: 2, streamable: true, sharing: 'private', user: { id: 111 } };
+  const open = { id: 3, streamable: true, sharing: 'public', user: { id: 999 } };
+
+  test('a secret-link source is not harvested at all', async () => {
+    resolveAny.mockResolvedValue({ kind: 'playlist', id: 555 });
+    getPlaylistWithTracks.mockResolvedValue({ id: 555, title: 'Hidden', sharing: 'private', user: { id: 999 }, tracks: [others, open] });
+    const res = await request(app).post('/api/playlists/clone').send({ url: SECRET_URL });
+
+    expect(res.status).toBe(200);
+    expect(harvestTracks).not.toHaveBeenCalled();
+    expect(harvestPlaylists).not.toHaveBeenCalled();
+  });
+
+  test('without a token, other people\'s private tracks are left out; your own and public ones go in', async () => {
+    resolveAny.mockResolvedValue({ kind: 'playlist', id: 7 });
+    getPlaylistWithTracks.mockResolvedValue({ id: 7, title: 'Mine', sharing: 'private', user: { id: 111 }, tracks: [others, mine, open] });
+    const res = await request(app).post('/api/playlists/clone').send({ url: 'https://soundcloud.com/me/sets/mine' });
+
+    expect(res.status).toBe(200);
+    expect(harvestTracks).toHaveBeenCalledWith([mine, open]);
+    expect(harvestPlaylists).toHaveBeenCalledTimes(1);
+  });
+
+  test('someone else\'s private playlist read without a token is not harvested', async () => {
+    resolveAny.mockResolvedValue({ kind: 'playlist', id: 9 });
+    getPlaylistWithTracks.mockResolvedValue({ id: 9, title: 'Theirs', sharing: 'private', user: { id: 999 }, tracks: [open] });
+    await request(app).post('/api/playlists/clone').send({ url: 'https://soundcloud.com/x/sets/theirs' });
+    expect(harvestPlaylists).not.toHaveBeenCalled();
+  });
+
+  test('cloned likes leave out private tracks that are not the caller\'s', async () => {
+    resolveAny.mockResolvedValue({ kind: 'user', id: 321, username: 'Some DJ' });
+    getUserLikedTracks.mockResolvedValue([others, open]);
+    await request(app).post('/api/users/likes/clone').send({ url: 'https://soundcloud.com/some-dj' });
+    expect(harvestTracks).toHaveBeenCalledWith([open]);
   });
 });
 
