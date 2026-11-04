@@ -87,6 +87,39 @@ test("a track with nothing on offer says why and where to look", async ({ page }
   await expect(beatport).toHaveAttribute("href", "https://www.beatport.com/search?q=testartist%20Nothing%20Five");
 });
 
+test("the normal list has a checkbox per automatic download, and only ticked tracks are queued", async ({ page }) => {
+  await open(page, { owner: true });
+  await expect(page.getByRole("checkbox", { name: "Select Direct One" })).toBeVisible();
+  const gate = page.getByRole("checkbox", { name: "Select Gate Two" });
+  await expect(gate).not.toBeChecked();
+  await expect(page.getByRole("button", { name: /selected$/ })).toHaveCount(0);
+
+  await gate.check();
+  await page.getByRole("button", { name: "Download 1 selected" }).click();
+
+  const sent = await page.evaluate(() => JSON.parse(localStorage.getItem("sc-toolkit-hypeddit-queue") ?? "{}"));
+  expect(sent.queue).toEqual([{ id: 2, title: "Gate Two", artist: "testartist", hypedditUrl: "https://hypeddit.com/a/two" }]);
+  await expect(gate).not.toBeChecked();
+  await expect(page.getByRole("status").filter({ hasText: "Queue sent to extension" })).toBeVisible();
+});
+
+test("Clear empties the selection, and a store link never gets a checkbox", async ({ page }) => {
+  await open(page, { owner: true });
+  await page.getByRole("checkbox", { name: "Select Gate Two" }).check();
+  await page.getByRole("button", { name: "Clear", exact: true }).click();
+  await expect(page.getByRole("button", { name: /selected$/ })).toHaveCount(0);
+
+  await page.getByLabel("Show").selectOption("buy");
+  await expect(page.getByRole("link", { name: "Buy Store Three on Beatport" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Select Store Three" })).toHaveCount(0);
+});
+
+test("without download access there are no checkboxes", async ({ page }) => {
+  await open(page);
+  await expect(page.getByRole("button", { name: "Download Gate Two via Hypeddit" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /^Select / })).toHaveCount(0);
+});
+
 test("Auto-Download opens with every Hypeddit track selected, and Export follows the selection", async ({ page }) => {
   await open(page, { owner: true });
   await page.getByRole("button", { name: "Auto-Download (1)" }).click();
