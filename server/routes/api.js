@@ -688,6 +688,28 @@ router.get('/playlists', authenticateUser, instrumentRead('playlists'), async (r
 });
 
 /**
+ * What to tell the user when SoundCloud refuses to resolve or read the source
+ * playlist. Only for errors from those two steps (tagged `cloneSourceStep`).
+ * 401/403 there means "not yours to read": without a secret token the fix is
+ * to paste the secret link; with one, the link itself was refused. Never
+ * answers 401, which the client treats as a dead session.
+ */
+function sourceRefusalResponse(err, { secretToken }) {
+  const status = err?.status;
+  if (status === 401 || status === 403) {
+    return secretToken
+      ? { status: 403, body: { code: 'SECRET_LINK_REFUSED', error: 'SoundCloud refused that secret link — it may have been reset by the owner.' } }
+      : { status: 403, body: { code: 'PLAYLIST_PRIVATE', error: 'This playlist is private. Paste its secret link (it ends in /s-…).' } };
+  }
+  if (classifyScError(err) === 'not_found') {
+    return secretToken
+      ? { status: 404, body: { code: 'PLAYLIST_NOT_FOUND', error: 'SoundCloud could not open that secret link — the playlist may have been deleted, or the owner reset the link.' } }
+      : { status: 404, body: { code: 'PLAYLIST_NOT_FOUND', error: 'Source playlist not found or private.' } };
+  }
+  return null;
+}
+
+/**
  * POST /api/playlists/clone
  * Clones another user's playlist to the current user's account
  */
@@ -701,6 +723,8 @@ router.post('/playlists/clone', authenticateUser, validateClonePlaylist, heavyOp
     if (err && typeof err === 'object') err.cloneSourceStep = true;
     throw err;
   };
+  // Hoisted so the catch can tell "private, no link" from "link refused".
+  let secretToken = null;
   try {
     const { url, title } = req.body;
     // A link from SoundCloud's share menu carries ref/p/c/si/utm_* tracking;
@@ -711,7 +735,7 @@ router.post('/playlists/clone', authenticateUser, validateClonePlaylist, heavyOp
     // goes to SoundCloud as `secret_token` and nowhere else, so everything we
     // store or publish uses `publicUrl`. A short link (on.soundcloud.com)
     // hides it until the resolve, so `secretToken` may be filled in below.
-    let secretToken = extractSecretToken(canonical);
+    secretToken = extractSecretToken(canonical);
     const isShortLink = canonical.startsWith('https://on.soundcloud.com/');
 
     // 1. Resolve URL
@@ -895,8 +919,9 @@ router.post('/playlists/clone', authenticateUser, validateClonePlaylist, heavyOp
       const fromMessage = /^Resolve (?:follow )?error: (\d{3})$/.exec(String(error.message));
       if (fromMessage) classified = { status: Number(fromMessage[1]) };
     }
-    if (error?.cloneSourceStep && classifyScError(classified) === 'not_found') {
-      return res.status(404).json({ code: 'PLAYLIST_NOT_FOUND', error: 'Source playlist not found or private.' });
+    if (error?.cloneSourceStep) {
+      const response = sourceRefusalResponse(classified, { secretToken });
+      if (response) return res.status(response.status).json(response.body);
     }
     const mapped = scErrorResponse(classified, { writeAttempted });
     if (mapped) return res.status(mapped.status).json(mapped.body);

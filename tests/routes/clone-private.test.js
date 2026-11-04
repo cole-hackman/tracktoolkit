@@ -204,6 +204,56 @@ describe('POST /api/playlists/clone with an on.soundcloud.com short link', () =>
   });
 });
 
+describe('POST /api/playlists/clone when SoundCloud refuses the source', () => {
+  const scError = (status) => Object.assign(new Error(`API request failed: ${status}`), { status });
+  const clone = (url) => request(app).post('/api/playlists/clone').send({ url });
+
+  test.each([401, 403])('a %i read without a token asks for the secret link', async (status) => {
+    resolveAny.mockResolvedValue({ kind: 'playlist', id: 7 });
+    getPlaylistWithTracks.mockRejectedValue(scError(status));
+    const res = await clone('https://soundcloud.com/someone/sets/hidden-mix');
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ code: 'PLAYLIST_PRIVATE', error: 'This playlist is private. Paste its secret link (it ends in /s-…).' });
+    expect(createPlaylist).not.toHaveBeenCalled();
+  });
+
+  test('a 403 from the resolve step (no status on the error) is read off the message', async () => {
+    resolveAny.mockRejectedValue(new Error('Resolve error: 403'));
+    const res = await clone('https://soundcloud.com/someone/sets/hidden-mix');
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('PLAYLIST_PRIVATE');
+  });
+
+  test.each([401, 403])('a %i read with a token says the link was refused', async (status) => {
+    resolveAny.mockResolvedValue({ kind: 'playlist', id: 555 });
+    getPlaylistWithTracks.mockRejectedValue(scError(status));
+    const res = await clone(SECRET_URL);
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ code: 'SECRET_LINK_REFUSED', error: 'SoundCloud refused that secret link — it may have been reset by the owner.' });
+    expect(JSON.stringify(res.body)).not.toContain('AbC123xyz');
+    expect(createPlaylist).not.toHaveBeenCalled();
+  });
+
+  test('a 404 with a token names the deleted-or-reset cause', async () => {
+    resolveAny.mockResolvedValue({ kind: 'playlist', id: 555 });
+    getPlaylistWithTracks.mockRejectedValue(scError(404));
+    const res = await clone(SECRET_URL);
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('PLAYLIST_NOT_FOUND');
+    expect(res.body.error).toMatch(/reset the link/);
+  });
+
+  test('a 403 on a write is not mistaken for a private source', async () => {
+    resolveAny.mockResolvedValue({ kind: 'playlist', id: 8 });
+    getPlaylistWithTracks.mockResolvedValue({ id: 8, title: 'Open', sharing: 'public', tracks: toTracks(range(3)) });
+    createPlaylist.mockRejectedValue(scError(403));
+    const res = await clone('https://soundcloud.com/a/sets/open');
+    expect(res.body.code).not.toBe('PLAYLIST_PRIVATE');
+  });
+});
+
 describe('POST /api/playlists/clone of your own private playlist', () => {
   test('no token needed; the copy stays private', async () => {
     resolveAny.mockResolvedValue({ kind: 'playlist', id: 7 });
