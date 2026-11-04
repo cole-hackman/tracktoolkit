@@ -568,12 +568,18 @@ nothing). The extension's PR #1 is merged into `fix/extension-domain`
   (`sc-toolkit-ext-gates`); the queue keeps the `sc-toolkit-hypeddit-queue` key.
 
 ### From the 2026-11-04 clone-private session
-- **A copy of a private playlist is private** (Claude's call, 2026-11-04, not
-  yet reviewed by Cole): a secret link or `sharing: 'private'` source makes
-  every cloned part `sharing: 'private'`. Cloning used to hard-code public.
-  Revisit only by asking Cole.
-- **Clone a user's likes** is a separate route from followed-likes (which needs
-  a followed user), takes any profile URL, and reuses `createOrAppendTrackIds`.
+- **A copy of a private playlist is private** (confirmed by Cole, 2026-11-04):
+  a secret link or `sharing: 'private'` source makes every cloned part
+  `sharing: 'private'`. Cloning used to hard-code public.
+- **Clone a user's likes keeps the follow gate** (Cole, 2026-11-04): it works
+  only for a profile the caller follows (or their own), checked with
+  `assertFollowedUser` before any crawl; otherwise 403 `NOT_FOLLOWED`. It
+  reuses `createOrAppendTrackIds`.
+- **A secret-link token never leaves the request**: not stored, not in the
+  description, not logged (`redactSecretToken` in `scRequest`), not in the
+  catalog (secret-link sources are not harvested). Share-menu tracking
+  (`ref`, `si`, `utm_*`) is dropped before `/resolve`; a short link's token
+  comes back from the resolve redirect as a non-enumerable `secretToken`.
 
 ## Landmines
 - **Gate pages differ from guesses; capture before building** (2026-11-04).
