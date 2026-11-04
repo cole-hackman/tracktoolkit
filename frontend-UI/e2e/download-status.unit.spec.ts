@@ -49,6 +49,10 @@ test("a Cobrand link is a gate only when the button or the track says free", () 
   // The button's own words still win for a pre-order, and "free" still has to be a word.
   expect(downloadStatus(t({ purchase_url: url, purchase_title: "PRE ORDER" })).kind).toBe("preorder");
   expect(downloadStatus(t({ title: "Carefree", purchase_url: url, purchase_title: "Listen" })).kind).toBe("link");
+  // A title has to say "free download", not just "free": these are song names.
+  for (const title of ["Break Free", "Feel Free (Extended Mix)", "Free Your Mind"]) {
+    expect(downloadStatus(t({ title, purchase_url: url, purchase_title: "Sign up" })).kind, title).toBe("link");
+  }
   // Other hosts are unchanged: Droploud and Hypeddit stay gates on a plain link.
   expect(downloadStatus(t({ purchase_url: "https://droploud.com/x", purchase_title: "Listen" })).kind).toBe("gate");
   expect(downloadStatus(t({ purchase_url: "https://hypeddit.com/x", purchase_title: "Listen" })).kind).toBe("gate");
