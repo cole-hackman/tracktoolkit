@@ -1,7 +1,7 @@
 # STATE
 
 ## Now
-Nothing is mid-flight. `main` is at `3452e59` and live. The Hypeddit extension
+Nothing is mid-flight. `main` is at `0e39d6a` and live (sidebar change below). The Hypeddit extension
 (`~/Developer/tracktoolkit-extension-work`, branch `fix/extension-domain`,
 local only, head `d6573ed`) is committed and loads itself. Three things are
 unproven live: step tabs closing after a run (`d6573ed` passes 22 tests but
@@ -10,6 +10,18 @@ last seconds of a gate (the one full run happened on a locked screen), and a
 ticked SoundCloud direct download on `/downloads/`.
 
 ## Just done
+- `0e39d6a` — sidebar scrolls itself and the account block moved to the top.
+  The desktop `<aside>` is sticky and viewport-tall, so the nav list scrolls
+  inside it instead of the page; profile, theme, log out and Support Me sit
+  above the list (`SidebarAccount` in `AppShell.tsx`, also at the top of the
+  mobile drawer). Support Me uses `AnimatedShinyText` (black at 75%, black
+  sweep). `drawer.spec.ts` now treats Accessibility as the last drawer link.
+  Live 2026-11-04: page scrolled 400 px, sidebar stayed at top 0, nav list
+  scrolled on its own (1338 px of content in 606). Not checked live: the
+  mobile drawer, and the shimmer animation itself. `npm run contrast` not run.
+- The deploy of `6731ad9` (PR #99, uptime worker) failed: OneDeploy Gateway
+  Timeout 504 after 13 min. `0e39d6a` deployed fine and includes its files.
+  Likely tied to the unexplained node kills in Next item 0.
 - **Uptime monitor deployed 2026-11-04** (`tools/uptime-worker/`, PR #99; the
   Worker was deployed by hand with wrangler, not by CI). Status page:
   https://tracktoolkit-uptime.tracktoolkit-uptime-worker.workers.dev/ — runs
@@ -465,6 +477,9 @@ ticked SoundCloud direct download on `/downloads/`.
   `src/dev-reload.js`. Wait up to a minute after an edit; don't ask him.
 - **No captcha, bot-check or `isTrusted` workarounds.** The stepper stops at a
   captcha and leaves the gate to the person.
+- **Account block lives at the top of the sidebar** (Cole, 2026-11-04):
+  profile + name, theme toggle, log out, Support Me. The nav list scrolls
+  inside the sidebar, never the whole page. Support Me keeps the shiny text.
 
 ## Landmines
 - **Never fetch 1001Tracklists from the server.** A plain request (`curl`,
