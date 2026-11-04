@@ -302,6 +302,26 @@ describe('the catalog never takes in someone else\'s private content', () => {
 });
 
 describe('POST /api/playlists/clone of your own private playlist', () => {
+  test('over 500 tracks, every part is private and the growing writes go to those parts', async () => {
+    resolveAny.mockResolvedValue({ kind: 'playlist', id: 7 });
+    getPlaylistWithTracks.mockResolvedValue({ id: 7, title: 'Mine', sharing: 'private', tracks: toTracks(range(1100)) });
+
+    const res = await request(app).post('/api/playlists/clone').send({ url: 'https://soundcloud.com/me/sets/mine' });
+
+    expect(res.status).toBe(200);
+    expect(createPlaylist.mock.calls.map((c) => [c[2], c[4].length, c[5]])).toEqual([
+      ['Clone of Mine (1/3)', 100, { sharing: 'private' }],
+      ['Clone of Mine (2/3)', 100, { sharing: 'private' }],
+      ['Clone of Mine (3/3)', 100, { sharing: 'private' }],
+    ]);
+    // A PUT carries tracks only, so it cannot flip a part back to public.
+    const lastWrite = (id) => addTracksToPlaylist.mock.calls.filter((c) => c[2] === id).at(-1)[3];
+    expect([lastWrite(90).length, lastWrite(91).length]).toEqual([500, 500]);
+    expect(addTracksToPlaylist.mock.calls.some((c) => c[2] === 92)).toBe(false); // 100 fit in the create
+    expect(res.body.playlists).toHaveLength(3);
+    expect(res.body.stats).toMatchObject({ totalTracks: 1100, numPlaylistsCreated: 3, private: true });
+  });
+
   test('no token needed; the copy stays private', async () => {
     resolveAny.mockResolvedValue({ kind: 'playlist', id: 7 });
     getPlaylistWithTracks.mockResolvedValue({ id: 7, title: 'Mine', sharing: 'private', tracks: toTracks(range(5)) });

@@ -804,125 +804,42 @@ router.post('/playlists/clone', authenticateUser, validateClonePlaylist, heavyOp
       return res.status(400).json({ error: 'Playlist has no streamable tracks to clone.' });
     }
 
-    // Helper to slow down between API calls
     const baseTitle = title || `Clone of ${playlist.title}`;
 
-    if (trackIdsArray.length > 500) {
-      const numPlaylists = Math.ceil(trackIdsArray.length / 500);
-      const createdPlaylists = [];
+    // One writer for one part or many: every part goes through
+    // createPlaylistFromTrackIds with the same `sharing`, so a private source
+    // can never produce a public part on any path.
+    writeAttempted = true;
+    const parts = await writeClonePlaylists({
+      accessToken: req.accessToken,
+      refreshToken: req.refreshToken,
+      trackIds: trackIdsArray,
+      title: baseTitle,
+      description: `Cloned from ${publicUrl}`,
+      sharing: cloneOptions ? 'private' : undefined,
+    });
+    const split = parts.length > 1;
 
-      for (let i = 0; i < numPlaylists; i++) {
-        const startIdx = i * 500;
-        const endIdx = Math.min(startIdx + 500, trackIdsArray.length);
-        const batch = trackIdsArray.slice(startIdx, endIdx);
-        
-        const playlistTitle = numPlaylists > 1 
-          ? `${baseTitle} (${i + 1}/${numPlaylists})`
-          : baseTitle;
-
-        const mergeBatchSize = 100;
-        const initialBatch = batch.slice(0, mergeBatchSize);
-        writeAttempted = true;
-        const newPlaylist = await soundcloudClient.createPlaylist(
-          req.accessToken,
-          req.refreshToken,
-          playlistTitle,
-          playlistDescriptionWithToolkit(`Cloned from ${publicUrl}`),
-          initialBatch,
-          ...(cloneOptions ? [cloneOptions] : [])
-        );
-
-        await sleep(SC_PLAYLIST_PACING_MS);
-
-        let addIndex = mergeBatchSize;
-        while (addIndex < batch.length) {
-          await sleep(SC_WRITE_PACING_MS);
-          const addBatch = batch.slice(0, addIndex + mergeBatchSize);
-          writeAttempted = true;
-          await soundcloudClient.addTracksToPlaylist(
-            req.accessToken,
-            req.refreshToken,
-            newPlaylist.id,
-            addBatch
-          );
-          addIndex += mergeBatchSize;
-        }
-
-        createdPlaylists.push({
-          playlist: newPlaylist,
-          partNumber: i + 1
-        });
-
-        if (i < numPlaylists - 1) {
-          await sleep(SC_PLAYLIST_PACING_MS);
-        }
-      }
-
-      logOperation({
-        req,
-        action: 'clone',
-        playlistIds: [sourceId, ...createdPlaylists.map((p) => p.playlist.id)],
-        trackIds: trackIdsArray,
-        trackCount: trackIdsArray.length,
-        status: 'split',
-        metadata: { sourcePlaylistId: sourceId, numPlaylistsCreated: numPlaylists },
-      });
-      invalidatePlaylistState(req.user.id);
-      res.json({
-        playlists: createdPlaylists.map(p => p.playlist),
-        stats: {
-          totalTracks: trackIdsArray.length,
-          numPlaylistsCreated: numPlaylists,
-          ...(cloneOptions ? { private: true } : {}),
-        }
-      });
-    } else {
-      const mergeBatchSize = 100;
-      const initialBatch = trackIdsArray.slice(0, mergeBatchSize);
-      writeAttempted = true;
-      const newPlaylist = await soundcloudClient.createPlaylist(
-        req.accessToken,
-        req.refreshToken,
-        baseTitle,
-        playlistDescriptionWithToolkit(`Cloned from ${publicUrl}`),
-        initialBatch,
-        ...(cloneOptions ? [cloneOptions] : [])
-      );
-
-      await sleep(SC_PLAYLIST_PACING_MS);
-
-      let addIndex = mergeBatchSize;
-      while (addIndex < trackIdsArray.length) {
-        await sleep(SC_WRITE_PACING_MS);
-        const addBatch = trackIdsArray.slice(0, addIndex + mergeBatchSize);
-        writeAttempted = true;
-        await soundcloudClient.addTracksToPlaylist(
-          req.accessToken,
-          req.refreshToken,
-          newPlaylist.id,
-          addBatch
-        );
-        addIndex += mergeBatchSize;
-      }
-
-      logOperation({
-        req,
-        action: 'clone',
-        playlistIds: [sourceId, newPlaylist.id],
-        trackIds: trackIdsArray,
-        trackCount: trackIdsArray.length,
-        status: 'success',
-        metadata: { sourcePlaylistId: sourceId, createdPlaylistId: newPlaylist.id },
-      });
-      invalidatePlaylistState(req.user.id);
-      res.json({
-        playlist: newPlaylist,
-        stats: {
-          totalTracks: trackIdsArray.length,
-          ...(cloneOptions ? { private: true } : {}),
-        }
-      });
-    }
+    logOperation({
+      req,
+      action: 'clone',
+      playlistIds: [sourceId, ...parts.map((p) => p.playlist.id)],
+      trackIds: trackIdsArray,
+      trackCount: trackIdsArray.length,
+      status: split ? 'split' : 'success',
+      metadata: split
+        ? { sourcePlaylistId: sourceId, numPlaylistsCreated: parts.length }
+        : { sourcePlaylistId: sourceId, createdPlaylistId: parts[0].playlist.id },
+    });
+    invalidatePlaylistState(req.user.id);
+    res.json({
+      ...(split ? { playlists: parts.map((p) => p.playlist) } : { playlist: parts[0].playlist }),
+      stats: {
+        totalTracks: trackIdsArray.length,
+        ...(split ? { numPlaylistsCreated: parts.length } : {}),
+        ...(cloneOptions ? { private: true } : {}),
+      },
+    });
   } catch (error) {
     // A write that failed or timed out may still have landed; do not serve a
     // stale list while telling the user to go check it.
@@ -2250,6 +2167,26 @@ async function createPlaylistFromTrackIds(accessToken, refreshToken, trackIds, t
   }
 
   return newPlaylist;
+}
+
+/**
+ * Write `trackIds` into new playlists of at most 500 tracks each, titled
+ * "<title> (i/n)" when there is more than one. Every part is created by
+ * createPlaylistFromTrackIds with the same `sharing`.
+ * @returns {Promise<Array<{ playlist: object, title: string, trackIds: number[] }>>}
+ */
+async function writeClonePlaylists({ accessToken, refreshToken, trackIds, title, description, sharing }) {
+  const chunks = splitIntoChunks(trackIds, MAX_TRACKS_PER_PLAYLIST);
+  const parts = [];
+  for (let i = 0; i < chunks.length; i++) {
+    if (i > 0) await sleep(SC_PLAYLIST_PACING_MS);
+    const partTitle = chunks.length > 1 ? `${title} (${i + 1}/${chunks.length})` : title;
+    const playlist = await createPlaylistFromTrackIds(
+      accessToken, refreshToken, chunks[i], partTitle, description, { sharing },
+    );
+    parts.push({ playlist, title: partTitle, trackIds: chunks[i] });
+  }
+  return parts;
 }
 
 function uniquePositiveIds(ids = []) {
