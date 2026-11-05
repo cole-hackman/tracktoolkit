@@ -44,7 +44,7 @@ test("a free download sends the fixture's URN-form URL and opens the CDN link it
   const seen = await mockProxyDownload(page, () => ({ status: 200, body: { url: CDN } }));
 
   await page.goto("/downloads/");
-  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
 
   const popupPromise = page.waitForEvent("popup");
   await page.getByRole("button", { name: "Download Sample Track 1 (free download)" }).click();
@@ -63,7 +63,7 @@ test("a refused download is reported in its own row, named, and the empty tab is
   }));
 
   await page.goto("/downloads/");
-  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
 
   const popupPromise = page.waitForEvent("popup");
   await page.getByRole("button", { name: "Download Sample Track 1 (free download)" }).click();

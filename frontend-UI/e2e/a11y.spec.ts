@@ -388,7 +388,7 @@ test("has no serious/critical violations: /downloads/ track list and selection m
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/downloads/");
 
-  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
 
   // Each download control names its track and its route, so a column of them
   // is not four buttons all called "Download".

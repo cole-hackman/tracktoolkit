@@ -80,7 +80,7 @@ async function open(
     );
   }
   await page.goto("/downloads/");
-  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
 }
 
 test("counts are honest and the default view lists only real downloads", async ({ page }) => {
@@ -138,7 +138,7 @@ test("the normal list has a checkbox per automatic download, and only ticked tra
   ]);
   expect(await posted(page)).toEqual([{ type: "sc-toolkit-queue-set", queue: sent.queue, ts: sent.ts }]);
   await expect(gate).not.toBeChecked();
-  await expect(page.getByRole("status").filter({ hasText: "Queue sent to extension" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Queue sent to extension" })).toBeFocused();
 });
 
 const ALL_TRACKS = [...TRACKS, ...GATE_TRACKS];
@@ -305,4 +305,51 @@ test("every view is axe-clean and does not overflow", async ({ page }) => {
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow, view).toBeLessThanOrEqual(0);
   }
+});
+
+test("the track search narrows the list only: Download all, picks and Auto-Download still cover the whole source", async ({ page }) => {
+  await open(page, { owner: true });
+  const main = page.locator("main");
+  const search = page.getByRole("searchbox", { name: "Search tracks" });
+  await page.getByRole("checkbox", { name: "Select Direct One" }).check();
+
+  await search.fill("gate");
+  await expect(main.getByText("Showing 1 of 2 tracks")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download Gate Two via Hypeddit" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download Direct One (free download)" })).toHaveCount(0);
+  // A hidden row is still in the source: Download all is every direct
+  // download there, and a pick made before the search is still picked.
+  await expect(page.getByRole("button", { name: "Download all (1)" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download 1 selected" })).toBeVisible();
+
+  // Title and artist both count, and every word has to match.
+  await search.fill("testartist direct");
+  await expect(main.getByText("Showing 1 of 2 tracks")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download Direct One (free download)" })).toBeVisible();
+
+  await search.fill("nothing like this");
+  await expect(main.getByText("No tracks match your search")).toBeVisible();
+
+  // Auto-Download still selects every gate, whatever the search shows.
+  await page.getByRole("button", { name: "Auto-Download (1)" }).click();
+  await expect(page.getByRole("button", { name: "Queue 1 track" })).toBeEnabled();
+  await expect(main.getByText("No tracks match your search")).toBeVisible();
+  await search.fill("");
+  await expect(page.getByRole("checkbox", { name: "Gate Two" })).toBeChecked();
+});
+
+test("the source picker searches playlists, keeps Liked Tracks in reach, and stays up to switch source", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/downloads/");
+  const liked = page.getByRole("radio", { name: "Liked Tracks" });
+  await page.getByRole("searchbox", { name: "Search playlists" }).fill("playlist 2");
+  await expect(page.getByRole("radio", { name: /Sample Playlist 1/ })).toHaveCount(0);
+  await expect(liked).toBeVisible();
+
+  await page.getByRole("radio", { name: /Sample Playlist 2/ }).check();
+  await expect(page.getByRole("region", { name: /Sample Playlist 2/ })).toBeVisible();
+  // Switching is one click on the same picker; Liked Tracks takes over.
+  await liked.check();
+  await expect(page.getByRole("region", { name: /Liked Tracks/ })).toBeVisible();
+  await expect(page.getByRole("radio", { name: /Sample Playlist 2/ })).not.toBeChecked();
 });

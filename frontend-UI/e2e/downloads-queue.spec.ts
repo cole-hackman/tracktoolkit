@@ -151,7 +151,7 @@ async function open(
     }),
   );
   await page.goto("/downloads/");
-  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
   return seen;
 }
 
@@ -218,8 +218,9 @@ test("a mixed selection goes to the right places: the direct download to the que
 
   await page.getByRole("button", { name: "Download 3 selected" }).click();
   await dialog.getByRole("button", { name: "Send to extension" }).click();
-  // Sending clears the selection and its button; focus lands somewhere real.
-  await expect(page.getByRole("button", { name: "Back to sources" })).toBeFocused();
+  // Sending clears the selection and its button; focus lands on the result
+  // that says the queue went to the extension.
+  await expect(page.getByRole("region", { name: "Queue sent to extension" })).toBeFocused();
 
   // The direct download is the queue's: one link request, one file, no gate in it.
   await expect(panel(page).getByText("1 saved · 0 not available · 0 failed")).toBeVisible();
@@ -497,7 +498,7 @@ test("unticking Save into a folder keeps the browser-download flow, check includ
   await page.reload();
   await expect(checkDialog(page)).toBeVisible();
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
   await expect(page.getByRole("checkbox", { name: /Save into a folder/ })).not.toBeChecked();
 });
 

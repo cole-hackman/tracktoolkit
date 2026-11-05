@@ -59,7 +59,7 @@ export const READY: Record<string, ReadyLocator> = {
   // The track list, from `/api/activities`.
   "/activity-to-playlist/": (page) => page.getByRole("checkbox", { name: "Sample Track 1" }),
   // Opens on a source chooser, from `/api/playlists`.
-  "/downloads/": (page) => page.getByRole("button", { name: /Sample Playlist 1/ }),
+  "/downloads/": (page) => page.getByRole("radio", { name: /Sample Playlist 1/ }),
   "/rekordbox-gaps/": (page) => page.getByText("Not available on this account"),
   // The "no search yet" empty state is not what this page is: the toolbar,
   // the match rows and their badges only exist after a search, so run one.

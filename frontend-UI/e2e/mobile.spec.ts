@@ -472,7 +472,7 @@ test("no horizontal overflow: /downloads/ track list and selection mode", async 
 
   await mockApi(page);
   await page.goto("/downloads/");
-  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
   await expect(
     page.getByRole("button", { name: "Download Sample Track 1 (free download)" }),
   ).toBeVisible();
@@ -523,7 +523,7 @@ test("no clipped controls with a long title: /downloads/", async ({ page }, test
   );
 
   await page.goto("/downloads/");
-  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
 
   const plainRowDownload = page.getByRole("button", { name: /^Download An extremely long/ });
   await expect(plainRowDownload).toBeVisible();
