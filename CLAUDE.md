@@ -45,7 +45,9 @@ dependency list. What they do not tell you:
 ## Where things live that you would not guess
 
 - `docs/internal/` — STATE.md (session state + decisions — read first),
-  MIGRATION.md, ANALYSIS.md, DATA-COLLECTION.md, NOTES.md, TERMS-CHECK.md.
+  MIGRATION.md, ANALYSIS.md, DATA-COLLECTION.md, NOTES.md, TERMS-CHECK.md,
+  DESIGN-SYSTEM.md (page structure, results, picker and search rules for
+  every tool page) and TOOL-CONSOLIDATION.md.
 - `server/routes/` is **six** files, not one: `api.js`, `growth.js`,
   `admin.js`, `auth.js`, `feedback.js` (which also holds the retired rebrand
   vote) and `stats.js` (the public README-badge figures).
@@ -927,6 +929,13 @@ re-introduces the defect the primitive exists to prevent.
   selectable things are `SelectableRow`/`SelectableList` (a real checkbox,
   `min-w-0` on the root); page chrome is `PageContainer` + `PageHeader`, which
   owns the single `h1`.
+
+Above the primitives sits the page layer in `docs/internal/DESIGN-SYSTEM.md`:
+`PageContainer kind`, `Panel`, `ToolLayout`, `ActionBar`, `ListSearch` /
+`useListSearch`, `ResultPanel status=` for a run's outcome (under the
+header, focused, announced), and `PlaylistPicker` / `PlaylistChooser` for
+every playlist choice (pick-one rows are buttons, never radios). The
+dashboard's order is `TOOL_RANKING` in `lib/tool-ranking.ts`.
 
 Colours go through the HSL tokens in `globals.css` — never a raw hex (except
 the brand gradient) and never an alpha-modified text colour
