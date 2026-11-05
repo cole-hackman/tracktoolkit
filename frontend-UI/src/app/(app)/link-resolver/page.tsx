@@ -1,18 +1,18 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import NextLink from "next/link";
 import { Link as LinkIcon, Search, ExternalLink, Copy, Download, ShoppingBag, Users } from "lucide-react";
 import {
   Button,
-  Card,
   Field,
   InlineAlert,
   Input,
   LoadingSpinner,
   PageContainer,
   PageHeader,
+  Panel,
   ResultPanel,
   SectionHeading,
   useAnnounce,
@@ -124,6 +124,8 @@ function LinkResolverContent() {
   const [copyError, setCopyError] = useState("");
   const [downloadError, setDownloadError] = useState("");
   const [downloading, setDownloading] = useState(false);
+  // Per-run key so a repeated failure mounts a fresh result panel (focus + announcement).
+  const runCount = useRef(0);
   const { loading, error, result, setResult, setError, resolve } = useSingleResolver();
 
   useEffect(() => {
@@ -140,6 +142,7 @@ function LinkResolverContent() {
   }, [copied]);
 
   const resolveLink = async () => {
+    runCount.current += 1;
     setResult(null);
     setDownloadError("");
     setError("");
@@ -208,14 +211,27 @@ function LinkResolverContent() {
   };
 
   return (
-    <PageContainer maxWidth="narrow">
+    <PageContainer kind="form">
         <PageHeader
           title="Link Resolver"
           description="Get detailed information from any SoundCloud URL."
         />
 
+        <div className="space-y-6">
+        {/* A failed resolve is the outcome of the run; the resolved metadata
+            below is query output and stays content. */}
+        {error && (
+          <ResultPanel
+            key={runCount.current}
+            status="error"
+            title="Could not resolve link"
+            description={error}
+            onDismiss={() => setError("")}
+          />
+        )}
+
         {/* Input */}
-        <Card className="p-4 sm:p-6 mb-8">
+        <Panel>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
             <Field label="SoundCloud URL" className="flex-1">
               {(field) => (
@@ -251,12 +267,7 @@ function LinkResolverContent() {
               Resolve
             </Button>
           </div>
-          {error && (
-            <InlineAlert variant="error" className="mt-4" onDismiss={() => setError("")}>
-              {error}
-            </InlineAlert>
-          )}
-        </Card>
+        </Panel>
 
         {/* Result */}
         {result && resource && (
@@ -462,6 +473,7 @@ function LinkResolverContent() {
             </details>
           </ResultPanel>
         )}
+        </div>
     </PageContainer>
   );
 }
