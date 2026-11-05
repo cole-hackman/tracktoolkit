@@ -29,3 +29,4 @@ export { ActionBar } from "./ActionBar";
 export { ListSearch } from "./ListSearch";
 export type { ResultStatus } from "./ResultPanel";
 export type { PageKind } from "./PageContainer";
+export { SegmentedControl } from "./SegmentedControl";

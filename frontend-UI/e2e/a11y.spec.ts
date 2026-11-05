@@ -579,10 +579,12 @@ test("combine: the target-playlist picker is the shared Dialog", async ({ page }
   // <button> node across the "Choose a target playlist…" / "Change" ternary —
   // add a `key` or a wrapper and `returnFocusRef` would point at a detached
   // node and focus would fall to <body>. Pinned here so that stays true.
+  // The rows are the shared PlaylistPicker's radios now (one picker for the
+  // whole app), so the option is a radio rather than an aria-pressed button.
   await trigger.focus();
   await trigger.press("Enter");
   await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await dialog.getByRole("radio", { name: /Sample Playlist 1/ }).click();
   await expect(dialog).toBeHidden();
   await expect(page.getByRole("button", { name: /Change/ })).toBeFocused();
 });

@@ -58,6 +58,7 @@ export function PlaylistChooser<P extends PickerPlaylist>({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const labelId = useId();
   const valueId = useId();
+  const changeId = useId();
 
   const available = playlists.filter((p) => !disabledReasons?.has(Number(p.id)));
 
@@ -81,7 +82,7 @@ export function PlaylistChooser<P extends PickerPlaylist>({
           ref={triggerRef}
           type="button"
           aria-haspopup="dialog"
-          aria-labelledby={`${labelId} ${valueId}`}
+          aria-labelledby={value ? `${labelId} ${valueId} ${changeId}` : `${labelId} ${valueId}`}
           onClick={() => setOpen(true)}
           className={cn(
             "flex min-h-11 w-full items-center gap-3 rounded-xl border-2 p-3 text-left transition",
@@ -108,7 +109,7 @@ export function PlaylistChooser<P extends PickerPlaylist>({
                   <span className="block text-xs text-muted-foreground">{value.track_count} tracks</span>
                 ) : null}
               </span>
-              <span aria-hidden="true" className="shrink-0 text-xs font-medium text-primary-text">
+              <span id={changeId} className="shrink-0 text-xs font-medium text-primary-text">
                 Change
               </span>
             </>
