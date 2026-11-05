@@ -72,6 +72,9 @@ test("compare: a 404 PLAYLIST_NOT_FOUND shows the server text, clears the select
   await expect.poll(() => listGets).toBeGreaterThan(before);
   await expect(b).toContainText("Choose a playlist...");
   await b.click();
+  // The refetched list has rendered (another row is there) before the
+  // missing one is asserted absent, so the count cannot pass on an empty dialog.
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Sample Playlist 3", exact: true })).toBeVisible();
   await expect(page.getByRole("dialog").getByRole("button", { name: "Sample Playlist 2", exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
   // Compare reads React state, not the DOM: it is disabled only if B was cleared.
