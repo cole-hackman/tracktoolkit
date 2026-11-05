@@ -1,26 +1,25 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useState, useMemo, useRef, useSyncExternalStore } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Users, Search, UserMinus, Loader2, ExternalLink } from "lucide-react";
+import { Users, UserMinus, Loader2, ExternalLink } from "lucide-react";
 import {
   Button,
   ConfirmDialog,
   BulkReviewDetails,
   EmptyState,
-  Field,
   InlineAlert,
+  ListSearch,
   PageContainer,
   PageHeader,
+  Panel,
   ProgressBar,
-  SectionHeading,
+  ResultPanel,
   Select,
   SelectableRow,
   SelectionBanner,
   Skeleton,
-  Card,
-  Input
 } from "@/components/ui";
 import { ProgressiveBlur } from "@/components/ui/ProgressiveBlur";
 import { apiFetch } from "@/lib/api";
@@ -73,7 +72,19 @@ export default function FollowingManagerPage() {
   const [filterMode, setFilterMode] = useState<"all" | "not-following-back">("all");
   const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
   const [showUnfollowConfirm, setShowUnfollowConfirm] = useState(false);
-  const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  // The outcome of the last bulk run, shown in the result slot under the
+  // header. `id` is a fresh key per run so each outcome mounts a new panel.
+  const [outcome, setOutcome] = useState<{
+    id: number;
+    status: "success" | "partial" | "error";
+    title: string;
+    text: string;
+  } | null>(null);
+  const runCounter = useRef(0);
+  const showOutcome = (status: "success" | "partial" | "error", title: string, text: string) => {
+    runCounter.current += 1;
+    setOutcome({ id: runCounter.current, status, title, text });
+  };
 
   const followingsState = useProgressiveFollowings<Following>();
   const followersState = useProgressiveFollowers<Following>();
@@ -84,12 +95,6 @@ export default function FollowingManagerPage() {
     [followersState.items],
   );
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
-
-  useEffect(() => {
-    if (followingsState.error) {
-      setNotice({ type: "error", text: `Couldn't load who you follow: ${followingsState.error.message}` });
-    }
-  }, [followingsState.error]);
 
   const toggleUser = (id: number, index: number, currentFilteredFollowings: Following[], event?: React.MouseEvent | React.KeyboardEvent) => {
     const isShiftKey = event && 'shiftKey' in event && event.shiftKey;
@@ -133,7 +138,7 @@ export default function FollowingManagerPage() {
     setShowUnfollowConfirm(false);
     setRemoving(true);
     setProgress({ current: 0, total: selected.size });
-    setNotice(null);
+    setOutcome(null);
     
     // Chunk size for bulk operations (SoundCloud API limit usually 50-100)
     // We use smaller chunks to be safe and show progress
@@ -182,23 +187,25 @@ export default function FollowingManagerPage() {
         });
 
         if (successfullyRemoved.size < allUserIds.length) {
-          setNotice({
-            type: "error",
-            text: `Unfollowed ${successfullyRemoved.size} of ${allUserIds.length} users. Some failed.`,
-          });
+          showOutcome(
+            "partial",
+            "Some users could not be unfollowed",
+            `Unfollowed ${successfullyRemoved.size} of ${allUserIds.length} users. Some failed.`,
+          );
         } else {
-          setNotice({
-            type: "success",
-            text: `Unfollowed ${successfullyRemoved.size} user${successfullyRemoved.size === 1 ? "" : "s"}.`,
-          });
+          showOutcome(
+            "success",
+            "Users unfollowed",
+            `Unfollowed ${successfullyRemoved.size} user${successfullyRemoved.size === 1 ? "" : "s"}.`,
+          );
         }
       } else {
-        setNotice({ type: "error", text: "Bulk unfollow failed. Please try again." });
+        showOutcome("error", "Unfollow failed", "Bulk unfollow failed. Please try again.");
       }
 
     } catch (error) {
       console.error("Bulk unfollow error:", error);
-      setNotice({ type: "error", text: "An error occurred during bulk unfollow." });
+      showOutcome("error", "Unfollow failed", "An error occurred during bulk unfollow.");
     } finally {
       setRemoving(false);
       setProgress(null);
@@ -311,26 +318,34 @@ export default function FollowingManagerPage() {
     hasActiveFilter ? { filteredCount: filteredFollowings.length } : {},
   );
 
-  return (
-    <PageContainer maxWidth="wide" className="pb-28">
-        <PageHeader
-          title="Following Manager"
-          description="Browse and manage who you follow. Unfollow accounts in bulk."
-        />
+  const loadError = followingsState.error ? (
+    <InlineAlert variant="error" className="mb-4">
+      {`Couldn't load who you follow: ${followingsState.error.message}`}
+    </InlineAlert>
+  ) : null;
 
-        {notice && (
-          <InlineAlert
-            variant={notice.type}
-            className="mb-6"
-            onDismiss={() => setNotice(null)}
-          >
-            {notice.text}
-          </InlineAlert>
-        )}
+  return (
+    <PageContainer kind="list" className="pb-28">
+      <PageHeader
+        title="Following Manager"
+        description="Browse and manage who you follow. Unfollow accounts in bulk."
+      />
+
+      <div className="space-y-6">
+        {outcome ? (
+          <ResultPanel
+            key={outcome.id}
+            status={outcome.status}
+            title={outcome.title}
+            description={outcome.text}
+            announcement={outcome.text}
+            onDismiss={() => setOutcome(null)}
+          />
+        ) : null}
 
         {removing && progress && (
           <ProgressBar
-            className="mb-6 rounded-lg border-2 border-border bg-secondary/10 p-4"
+            className="rounded-lg border border-border bg-secondary/10 p-4"
             label="Unfollowing users"
             value={progress.current}
             max={progress.total}
@@ -338,123 +353,119 @@ export default function FollowingManagerPage() {
         )}
 
         {followingsState.isLoadingFirstPage ? (
-          <Card className="p-6">
-            <div className="flex items-center gap-3 mb-4 flex-wrap">
-              <Skeleton className="h-10 flex-1 min-w-[200px] rounded-lg" />
+          <Panel>
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <Skeleton className="h-10 min-w-[200px] flex-1 rounded-lg" />
               <Skeleton className="h-10 w-32 rounded-lg" />
-              <div className="flex p-1 rounded-lg">
+              <div className="flex rounded-lg p-1">
                 <Skeleton className="h-9 w-16" />
                 <Skeleton className="h-9 w-32" />
               </div>
               <Skeleton className="h-6 w-20" />
             </div>
-            <Skeleton className="h-4 w-32 mb-2" />
-            <div className="grid md:grid-cols-2 gap-3">
+            <Skeleton className="mb-2 h-4 w-32" />
+            <div className="grid gap-3 md:grid-cols-2">
               {Array.from({ length: 8 }).map((_, i) => (
                 <Skeleton key={i} className="h-[76px] w-full rounded-xl" />
               ))}
             </div>
-          </Card>
+          </Panel>
         ) : followings.length === 0 ? (
-          <Card className="p-8">
-            <EmptyState
-              icon={<Users className="w-12 h-12" />}
-              title="Not following anyone"
-              description="You don't follow any users yet."
-            />
-          </Card>
+          <Panel>
+            {loadError ?? (
+              <EmptyState
+                icon={<Users className="h-12 w-12" />}
+                title="Not following anyone"
+                description="You don't follow any users yet."
+              />
+            )}
+          </Panel>
         ) : (
-          <Card className="p-6">
-            <SectionHeading className="mb-3">Followings</SectionHeading>
-
-            {/* Controls */}
-            <div className="grid grid-cols-1 gap-2 mb-4 sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-end">
-              <Field
-                label="Search followings"
-                className="lg:min-w-[200px] lg:flex-1 [&>label]:sr-only"
-              >
-                {(field) => (
-                  <div className="relative">
-                    <Search
-                      aria-hidden="true"
-                      className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground"
-                    />
-                    <Input
-                      {...field}
-                      type="text"
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                      placeholder="Search followings..."
-                      className="h-11 pl-9 bg-secondary/20 border-border"
-                    />
-                  </div>
-                )}
-              </Field>
-              <Select
-                label="Sort"
-                value={sort}
-                onChange={(e) => setSort(e.target.value as SortOption)}
-                className="bg-secondary/20"
-              >
-                <option value="alpha">A → Z</option>
-                <option value="followers">Most Followers</option>
-                <option value="tracks">Most Tracks</option>
-                <option value="reposts">Most Reposts</option>
-                <option value="last_modified">Recently Active</option>
-              </Select>
-
-              <div className="sm:col-span-2 lg:col-span-1">
-                <div
-                  role="group"
-                  aria-label="Filter"
-                  className="flex bg-secondary/20 p-1 rounded-lg border-2 border-border/50"
-                >
-                  <button
-                    type="button"
-                    onClick={() => setFilterMode("all")}
-                    aria-pressed={filterMode === "all"}
-                    className={`min-h-11 flex-1 px-3 rounded-md text-sm font-medium transition-all ${
-                      filterMode === "all" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    All
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => followersReady && setFilterMode("not-following-back")}
-                    disabled={!followersReady}
-                    aria-pressed={filterMode === "not-following-back"}
-                    className={`min-h-11 flex-1 px-3 rounded-md text-sm font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
-                      filterMode === "not-following-back" ? "bg-card text-primary-text shadow-sm" : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    Not Following Back
-                  </button>
-                </div>
-                {/* The reason the filter is unavailable is helper text, not a
-                    `title`: a tooltip never reaches a keyboard or touch user,
-                    and this is the only explanation of a disabled control. */}
-                {!followersReady && (
-                  <p
-                    role="status"
-                    className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground-subtle"
-                  >
-                    <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" />
-                    Loading followers — who follows you back isn&apos;t known yet.
-                  </p>
-                )}
-              </div>
-
+          <Panel
+            title="Followings"
+            actions={
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={selectAll}
-                className="whitespace-nowrap text-primary-text sm:col-span-2 lg:col-span-1"
+                className="whitespace-nowrap text-primary-text"
               >
                 {selected.size === filteredFollowings.length
                   ? "Deselect All"
                   : selectAllLabel(followingsState, filteredFollowings.length)}
               </Button>
+            }
+          >
+            {loadError}
+
+            {/* Controls */}
+            <div className="mb-3 space-y-3">
+              <ListSearch
+                label="Search followings"
+                value={search}
+                onChange={setSearch}
+                shown={filteredFollowings.length}
+                total={followings.length}
+                noun={followings.length === 1 ? "following" : "followings"}
+                placeholder="Search followings..."
+                pendingNote={followingsState.isComplete ? undefined : "still loading, search covers loaded followings only"}
+              />
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:items-start">
+                <Select
+                  label="Sort"
+                  value={sort}
+                  onChange={(e) => setSort(e.target.value as SortOption)}
+                  className="bg-secondary/20"
+                >
+                  <option value="alpha">A → Z</option>
+                  <option value="followers">Most Followers</option>
+                  <option value="tracks">Most Tracks</option>
+                  <option value="reposts">Most Reposts</option>
+                  <option value="last_modified">Recently Active</option>
+                </Select>
+
+                <div>
+                  <div
+                    role="group"
+                    aria-label="Filter"
+                    className="flex rounded-lg border border-border/50 bg-secondary/20 p-1"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setFilterMode("all")}
+                      aria-pressed={filterMode === "all"}
+                      className={`min-h-11 flex-1 px-3 rounded-md text-sm font-medium transition-all ${
+                        filterMode === "all" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => followersReady && setFilterMode("not-following-back")}
+                      disabled={!followersReady}
+                      aria-pressed={filterMode === "not-following-back"}
+                      className={`min-h-11 flex-1 px-3 rounded-md text-sm font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                        filterMode === "not-following-back" ? "bg-card text-primary-text shadow-sm" : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      Not Following Back
+                    </button>
+                  </div>
+                  {/* The reason the filter is unavailable is helper text, not a
+                      `title`: a tooltip never reaches a keyboard or touch user,
+                      and this is the only explanation of a disabled control. */}
+                  {!followersReady && (
+                    <p
+                      role="status"
+                      className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground-subtle"
+                    >
+                      <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" />
+                      Loading followers — who follows you back isn&apos;t known yet.
+                    </p>
+                  )}
+                </div>
+              </div>
             </div>
 
             {followingsStatus && (
@@ -580,8 +591,9 @@ export default function FollowingManagerPage() {
                 Loading more…
               </div>
             )}
-          </Card>
+          </Panel>
         )}
+      </div>
       <SelectionBanner
         count={selected.size}
         entityName="user"
