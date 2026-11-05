@@ -82,7 +82,7 @@ export const READY: Record<string, ReadyLocator> = {
     return page.getByText(/^[\d,]+ tracks? ready$/);
   },
   "/export/playlists/": async (page) => {
-    await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+    await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
     await page.getByRole("button", { name: "Load playlist tracks" }).click();
     return page.getByText(/^[\d,]+ tracks? ready$/);
   },

@@ -18,7 +18,7 @@ export default function ExportFollowingsPage() {
   };
 
   return (
-    <PageContainer maxWidth="narrow">
+    <PageContainer kind="form">
       <ExportBackLink />
       <PageHeader
         title="Export Followings"

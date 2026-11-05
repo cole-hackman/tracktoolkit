@@ -18,7 +18,7 @@ export default function ExportRepostsPage() {
   };
 
   return (
-    <PageContainer maxWidth="narrow">
+    <PageContainer kind="form">
       <ExportBackLink />
       <PageHeader
         title="Export Reposts"

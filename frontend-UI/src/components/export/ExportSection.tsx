@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Card } from "@/components/ui";
+import { Panel } from "@/components/ui";
 
 interface ExportSectionProps {
   icon: ReactNode;
@@ -19,21 +19,24 @@ export function ExportSection({
   children,
 }: ExportSectionProps) {
   return (
-    <Card className="p-6">
-      <div className="flex items-start gap-3">
-        <div
-          aria-hidden="true"
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10"
-        >
-          {icon}
-        </div>
-        <div className="min-w-0">
-          <h2 className="text-lg font-semibold text-foreground">{title}</h2>
-          <p className="text-sm text-muted-foreground">{subtitle}</p>
-        </div>
-      </div>
-      <p className="mt-4 text-sm leading-relaxed text-muted-foreground">{description}</p>
+    <Panel
+      title={
+        <span className="flex items-center gap-3">
+          <span
+            aria-hidden="true"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10"
+          >
+            {icon}
+          </span>
+          {title}
+        </span>
+      }
+      description={subtitle || undefined}
+    >
+      {description ? (
+        <p className="text-sm leading-relaxed text-muted-foreground">{description}</p>
+      ) : null}
       {children}
-    </Card>
+    </Panel>
   );
 }

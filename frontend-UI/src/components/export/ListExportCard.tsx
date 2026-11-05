@@ -5,11 +5,11 @@ import Link from "next/link";
 import { Download, Loader2 } from "lucide-react";
 import {
   Button,
-  Card,
+  ActionBar,
   EmptyState,
   InlineAlert,
   LoadingSpinner,
-  SectionHeading,
+  Panel,
   Select,
   useAnnounce,
 } from "@/components/ui";
@@ -137,7 +137,7 @@ export function ListExportCard({
       )}
 
       {phase === "empty" && (
-        <div className="mt-6">
+        <div className="mt-4">
           <EmptyState
             icon={icon}
             title={emptyTitle}
@@ -188,7 +188,7 @@ export function ListExportCard({
       )}
 
       {isLoading && (
-        <div role="status" className="mt-6 flex flex-col items-center gap-3 py-6">
+        <div role="status" className="mt-4 flex flex-col items-center gap-3 py-6">
           <LoadingSpinner />
           <p className="max-w-sm text-center text-sm text-muted-foreground">
             Fetching… This may take a while for large lists.
@@ -196,7 +196,7 @@ export function ListExportCard({
         </div>
       )}
 
-      <div className="mt-6 flex flex-wrap gap-3">
+      <ActionBar>
         <Button onClick={fetchAndPrepare} disabled={isLoading} className="gap-2">
           {isLoading ? (
             <>
@@ -222,7 +222,7 @@ export function ListExportCard({
             Retry
           </Button>
         )}
-      </div>
+      </ActionBar>
     </>
   );
 
@@ -231,10 +231,7 @@ export function ListExportCard({
     // page — leaving the sub-page's `<h1>` with nothing under it. Put the
     // heading back.
     return (
-      <Card className="p-6">
-        <SectionHeading>{title}</SectionHeading>
-        {body}
-      </Card>
+      <Panel title={title}>{body}</Panel>
     );
   }
 

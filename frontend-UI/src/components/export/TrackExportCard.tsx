@@ -5,11 +5,11 @@ import Link from "next/link";
 import { Download, Loader2 } from "lucide-react";
 import {
   Button,
-  Card,
+  ActionBar,
   EmptyState,
   InlineAlert,
   LoadingSpinner,
-  SectionHeading,
+  Panel,
   Select,
   useAnnounce,
 } from "@/components/ui";
@@ -147,7 +147,7 @@ export function TrackExportCard({
       )}
 
       {phase === "empty" && (
-        <div className="mt-6">
+        <div className="mt-4">
           <EmptyState
             icon={icon}
             title={emptyTitle}
@@ -203,7 +203,7 @@ export function TrackExportCard({
       )}
 
       {isLoading && (
-        <div role="status" className="mt-6 flex flex-col items-center gap-3 py-6">
+        <div role="status" className="mt-4 flex flex-col items-center gap-3 py-6">
           <LoadingSpinner />
           <p className="max-w-sm text-center text-sm text-muted-foreground">
             Fetching… This may take a while for large libraries.
@@ -211,7 +211,7 @@ export function TrackExportCard({
         </div>
       )}
 
-      <div className="mt-6 flex flex-wrap gap-3">
+      <ActionBar>
         <Button onClick={fetchAndPrepare} disabled={isLoading || fetchDisabled} className="gap-2">
           {isLoading ? (
             <>
@@ -237,7 +237,7 @@ export function TrackExportCard({
             Retry
           </Button>
         )}
-      </div>
+      </ActionBar>
     </>
   );
 
@@ -259,9 +259,6 @@ export function TrackExportCard({
  */
 function EmbeddedPanel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <Card className="p-6">
-      <SectionHeading>{title}</SectionHeading>
-      {children}
-    </Card>
+    <Panel title={title}>{children}</Panel>
   );
 }
