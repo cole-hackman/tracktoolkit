@@ -34,8 +34,9 @@ import {
   Select,
   Skeleton,
   type ResultStatus,
+  SelectableList,
 } from "@/components/ui";
-import { PlaylistPicker } from "@/components/playlists/PlaylistPicker";
+import { PlaylistChoiceRow, PlaylistPicker } from "@/components/playlists/PlaylistPicker";
 import { useListSearch } from "@/lib/list-search";
 import { apiFetch, errorMessageFromBody } from "@/lib/api";
 import { startSoundCloudDownload } from "@/lib/download";
@@ -599,27 +600,23 @@ export default function PlaylistModifierPage() {
 
   const showEditor = selectedPlaylist !== null || isLikedTracksView;
 
+  // The same pressable row as the playlists under it (and as Downloads'
+  // Liked Tracks), outside the picker so a playlist search never hides it.
   const likedEntry = (
-    <button
-      type="button"
-      onClick={selectLikedTracks}
-      aria-pressed={isLikedTracksView}
-      className={`flex min-h-16 w-full items-center gap-3 rounded-xl border p-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/80 focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
-        isLikedTracksView
-          ? "border-primary bg-primary/10"
-          : "border-border bg-secondary/20 hover:border-primary"
-      }`}
-    >
-      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-[#FF5500] to-[#E64A00]">
-        <Heart className="h-6 w-6 text-white" aria-hidden="true" />
-      </div>
-      <div className="min-w-0">
-        <div className="font-semibold text-foreground">Liked Tracks</div>
-        <div className="text-sm text-muted-foreground">
-          Browse and add liked tracks to your playlists
-        </div>
-      </div>
-    </button>
+    <SelectableList>
+      <PlaylistChoiceRow
+        label="Liked Tracks"
+        title="Liked Tracks"
+        subtitle="Browse and add liked tracks to your playlists"
+        artwork={
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-[#FF5500] to-[#E64A00] text-primary-foreground">
+            <Heart className="h-6 w-6" fill="currentColor" aria-hidden="true" />
+          </span>
+        }
+        selected={isLikedTracksView}
+        onChoose={selectLikedTracks}
+      />
+    </SelectableList>
   );
 
   const playlistPicker = (
