@@ -1,28 +1,29 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Repeat2,
   Music,
   ListMusic,
-  Search,
   Trash2,
   Loader2,
 } from "lucide-react";
 import {
   BulkReviewDetails,
   Button,
-  Card,
   ConfirmDialog,
   EmptyState,
   Field,
   InlineAlert,
   Input,
+  ListSearch,
   PageContainer,
   PageHeader,
+  Panel,
   ProgressBar,
+  ResultPanel,
   SectionHeading,
   Select,
   SelectableRow,
@@ -68,7 +69,19 @@ export default function RepostManagerPage() {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortOption>("recent");
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
-  const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  // The outcome of the last bulk run, shown in the result slot under the
+  // header. `id` is a fresh key per run so each outcome mounts a new panel.
+  const [outcome, setOutcome] = useState<{
+    id: number;
+    status: "success" | "partial" | "error";
+    title: string;
+    text: string;
+  } | null>(null);
+  const runCounter = useRef(0);
+  const showOutcome = (status: "success" | "partial" | "error", title: string, text: string) => {
+    runCounter.current += 1;
+    setOutcome({ id: runCounter.current, status, title, text });
+  };
   const [keepList, setKeepList] = useState("");
   const [limitInput, setLimitInput] = useState("");
   const [showAutoSelect, setShowAutoSelect] = useState(false);
@@ -76,12 +89,6 @@ export default function RepostManagerPage() {
   const repostsState = useProgressiveReposts<Repost>();
   const reposts = repostsState.items;
   const loading = repostsState.isLoadingFirstPage;
-
-  useEffect(() => {
-    if (repostsState.error) {
-      setNotice({ type: "error", text: "Couldn’t load your reposts. Try refreshing the page." });
-    }
-  }, [repostsState.error]);
 
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
 
@@ -126,7 +133,7 @@ export default function RepostManagerPage() {
   const executeBulkRemove = async () => {
     setShowRemoveConfirm(false);
     setRemoving(true);
-    setNotice(null);
+    setOutcome(null);
     try {
       const items = reposts
         .filter((r) => selected.has(r.id))
@@ -172,21 +179,23 @@ export default function RepostManagerPage() {
       });
 
       if (removedIds.size === items.length) {
-        setNotice({ type: "success", text: `Removed ${removedIds.size} repost${removedIds.size === 1 ? "" : "s"}.` });
+        showOutcome("success", "Reposts removed", `Removed ${removedIds.size} repost${removedIds.size === 1 ? "" : "s"}.`);
       } else if (rateLimited) {
-        setNotice({
-          type: "error",
-          text: `Removed ${removedIds.size} of ${items.length} before hitting SoundCloud's rate limit. Wait a bit and run it again to finish.`,
-        });
+        showOutcome(
+          removedIds.size > 0 ? "partial" : "error",
+          "Stopped at SoundCloud's rate limit",
+          `Removed ${removedIds.size} of ${items.length} before hitting SoundCloud's rate limit. Wait a bit and run it again to finish.`,
+        );
       } else {
-        setNotice({
-          type: "error",
-          text: `Removed ${removedIds.size} of ${items.length} reposts. Some failed — try again.`,
-        });
+        showOutcome(
+          removedIds.size > 0 ? "partial" : "error",
+          removedIds.size > 0 ? "Some reposts could not be removed" : "Remove failed",
+          `Removed ${removedIds.size} of ${items.length} reposts. Some failed — try again.`,
+        );
       }
     } catch (error) {
       console.error("Bulk remove error:", error);
-      setNotice({ type: "error", text: "An error occurred while removing reposts." });
+      showOutcome("error", "Remove failed", "An error occurred while removing reposts.");
     } finally {
       setRemoving(false);
       setRemoveProgress(null);
@@ -295,32 +304,40 @@ export default function RepostManagerPage() {
     hasActiveFilter ? { filteredCount: filteredReposts.length } : {},
   );
 
+  const loadError = repostsState.error ? (
+    <InlineAlert variant="error" className="mb-4">
+      Couldn’t load your reposts. Try refreshing the page.
+    </InlineAlert>
+  ) : null;
+
   return (
-    <PageContainer maxWidth="wide" className="pb-28">
-        <PageHeader
-          title="Repost Manager"
-          description="Browse, search, and manage your reposted tracks and playlists. Remove in bulk."
-        />
+    <PageContainer kind="list" className="pb-28">
+      <PageHeader
+        title="Repost Manager"
+        description="Browse, search, and manage your reposted tracks and playlists. Remove in bulk."
+      />
+
+      <div className="space-y-6">
+        {outcome ? (
+          <ResultPanel
+            key={outcome.id}
+            status={outcome.status}
+            title={outcome.title}
+            description={outcome.text}
+            announcement={outcome.text}
+            onDismiss={() => setOutcome(null)}
+          />
+        ) : null}
 
         {/* Info notice about activity-feed limitation */}
-        <InlineAlert variant="info" className="mb-6">
+        <InlineAlert variant="info">
           Reposts are loaded from your recent SoundCloud activity feed. Very old reposts
           may not appear here due to API limitations.
         </InlineAlert>
 
-        {notice && (
-          <InlineAlert
-            variant={notice.type}
-            className="mb-6"
-            onDismiss={() => setNotice(null)}
-          >
-            {notice.text}
-          </InlineAlert>
-        )}
-
         {removing && removeProgress && (
           <ProgressBar
-            className="mb-6 rounded-lg border-2 border-border bg-secondary/10 p-4"
+            className="rounded-lg border border-border bg-secondary/10 p-4"
             label="Removing reposts"
             value={removeProgress.current}
             max={removeProgress.total}
@@ -328,79 +345,78 @@ export default function RepostManagerPage() {
         )}
 
         {!loading && reposts.length === 0 ? (
-          <Card className="p-8">
-            <EmptyState
-              icon={<Repeat2 className="w-12 h-12" />}
-              title="No reposts found"
-              description="You haven't reposted any tracks or playlists recently."
-            />
-          </Card>
+          <Panel>
+            {loadError ?? (
+              <EmptyState
+                icon={<Repeat2 className="h-12 w-12" />}
+                title="No reposts found"
+                description="You haven't reposted any tracks or playlists recently."
+              />
+            )}
+          </Panel>
         ) : (
-          <Card className="p-6">
-            <SectionHeading className="mb-3">Reposts</SectionHeading>
+          <Panel
+            title="Reposts"
+            actions={
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={selectAll}
+                  disabled={loading}
+                  className="whitespace-nowrap text-primary-text"
+                >
+                  {selected.size === filteredReposts.length
+                    ? "Deselect All"
+                    : selectAllLabel(repostsState, filteredReposts.length)}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowAutoSelect((v) => !v)}
+                  disabled={loading}
+                  aria-expanded={showAutoSelect}
+                  className="whitespace-nowrap text-muted-foreground"
+                >
+                  {showAutoSelect ? "Hide auto-select" : "Auto-select…"}
+                </Button>
+              </>
+            }
+          >
+            {loadError}
 
             {/* Controls — stay interactive while the list is still loading */}
-            <div className="grid grid-cols-1 gap-2 mb-4 sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-end">
-              <Field
+            <div className="mb-3 space-y-3">
+              <ListSearch
                 label="Search reposts"
-                className="lg:min-w-[200px] lg:flex-1 [&>label]:sr-only"
-              >
-                {(field) => (
-                  <div className="relative">
-                    <Search
-                      aria-hidden="true"
-                      className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground-subtle"
-                    />
-                    <Input
-                      {...field}
-                      type="text"
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                      placeholder="Search reposts..."
-                      className="h-11 pl-10 bg-gray-50 dark:bg-secondary/20"
-                    />
-                  </div>
-                )}
-              </Field>
+                value={search}
+                onChange={setSearch}
+                shown={filteredReposts.length}
+                total={reposts.length}
+                noun={reposts.length === 1 ? "repost" : "reposts"}
+                placeholder="Search reposts..."
+                pendingNote={repostsState.isComplete ? undefined : "still loading, search covers loaded reposts only"}
+              />
               {/* The brief called this one "Type"; its options are Most
                   Recent / Oldest / A → Z, so "Sort" is what it actually does
                   and what a screen reader should say. */}
-              <Select
-                label="Sort"
-                value={sort}
-                onChange={(e) => setSort(e.target.value as SortOption)}
-                className="bg-gray-50 dark:bg-secondary/20"
-              >
-                <option value="recent">Most Recent</option>
-                <option value="oldest">Oldest First</option>
-                <option value="alpha">A → Z</option>
-              </Select>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={selectAll}
-                disabled={loading}
-                className="whitespace-nowrap text-primary-text"
-              >
-                {selected.size === filteredReposts.length
-                  ? "Deselect All"
-                  : selectAllLabel(repostsState, filteredReposts.length)}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setShowAutoSelect((v) => !v)}
-                disabled={loading}
-                aria-expanded={showAutoSelect}
-                className="whitespace-nowrap text-muted-foreground"
-              >
-                {showAutoSelect ? "Hide auto-select" : "Auto-select…"}
-              </Button>
+              <div className="sm:max-w-xs">
+                <Select
+                  label="Sort"
+                  value={sort}
+                  onChange={(e) => setSort(e.target.value as SortOption)}
+                  className="bg-gray-50 dark:bg-secondary/20"
+                >
+                  <option value="recent">Most Recent</option>
+                  <option value="oldest">Oldest First</option>
+                  <option value="alpha">A → Z</option>
+                </Select>
+              </div>
             </div>
 
             {/* Auto-select with a keep-list (everything except matches gets selected) */}
             {showAutoSelect && !loading && (
-              <div className="mb-4 p-4 rounded-xl bg-gray-50 dark:bg-secondary/20 border-2 border-gray-200 dark:border-border">
+              <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-border dark:bg-secondary/20">
                 <SectionHeading as="h3" className="mb-1">
                   Auto-select everything except your keep-list
                 </SectionHeading>
@@ -549,8 +565,9 @@ export default function RepostManagerPage() {
                 Loading more…
               </div>
             )}
-          </Card>
+          </Panel>
         )}
+      </div>
       <SelectionBanner
         count={selected.size}
         entityName="repost"
