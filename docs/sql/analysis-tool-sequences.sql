@@ -64,6 +64,8 @@ events AS (
     o."createdAt"  AS at,
     CASE o.action
       WHEN 'merge'                       THEN 'combine'
+      -- Also what Activity → Playlist and Recently Played log when they
+      -- create a new playlist: same endpoint, no source recorded.
       WHEN 'from-likes'                  THEN 'likes-to-playlist'
       WHEN 'library-audit'               THEN 'library-audit'
       WHEN 'resolve'                     THEN 'link-resolver'
