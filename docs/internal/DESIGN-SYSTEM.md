@@ -182,6 +182,23 @@ One pattern for the outcome of a run:
 tab bar already lead to the dashboard, and the tool itself is the "do it
 again" (NN/g: keep the primary action next to what it acts on [9]).
 
+Exceptions, kept on purpose:
+
+- **Growth's step 4.** Discover is a four-step flow; after a batch the
+  "Campaign Initiated!" summary is a result panel in the slot, but steps
+  1–3 are not shown beside it — "Discover Again" returns to step 1, as
+  before. Growth was layout-only, and showing the steps would change the
+  flow.
+- **Per-row and in-dialog errors** stay where they are: a failed row
+  download (Rekordbox gaps, Link Resolver's download/copy), a failed
+  transfer inside the Modifier's dialog. A focused panel at the top of the
+  page would pull the user away from the row, or take focus from behind an
+  open modal.
+- **Feedback's "Thanks — got it"** replaces the form, as before (the form is
+  done; "Send another" brings it back).
+- A result never mounts while a dialog is open; pages close the dialog
+  first (Modifier transfer, Downloads gate send).
+
 ### 2.6 Playlist picker
 
 `PlaylistPicker` (inline) and `PlaylistChooser` (trigger + dialog with the
@@ -189,8 +206,19 @@ same picker) in `components/playlists/`. One layout everywhere:
 
 search box with "Showing N of M playlists" → (multi) Select all shown /
 Clear → scrolling `SelectableList` (`max-h-[60dvh]`) of rows: 48px artwork,
-title (truncated), "N tracks", a real checkbox (`multi`) or radio
-(`single`).
+title (truncated), "N tracks", and either a real checkbox (`multi`) or a
+pressable row with a round indicator (`single`, `PlaylistChoiceRow`,
+`<button aria-pressed>`).
+
+**Single choice is a button, not a radio.** The first version used native
+radios; review found that a radio group commits on every arrow key, and
+choosing a playlist *loads* it — so arrowing down the list fetched each
+playlist, dropped the modifier's unsaved edits and the downloads
+selections, and on Playlist → Likes unmounted the picker under focus. A
+button commits only on click, Enter or Space; Tab moves between rows, as
+the old grids did. `e2e/design-system.spec.ts` pins it. A fixed entry above
+the picker (Liked Tracks on Downloads and the Modifier) uses the same
+`PlaylistChoiceRow`.
 
 - Sources (any number): inline `PlaylistPicker mode="multi"` in the main
   column.
@@ -198,8 +226,8 @@ title (truncated), "N tracks", a real checkbox (`multi`) or radio
   `PlaylistPicker mode="single"`; the tool appears beside or below it and the
   picker stays, so switching playlists is one click.
 - One destination inside a narrow panel (merge target, "add to"):
-  `PlaylistChooser`. A click chooses and closes; arrow keys move through the
-  radio group without closing; Done/Escape close.
+  `PlaylistChooser`. Choosing (click, Enter, Space) closes it and returns
+  focus to the trigger; Done/Escape close it unchanged.
 - A playlist that cannot be picked is disabled with its reason in the row
   and in its accessible name ("merge target").
 
@@ -248,40 +276,119 @@ button per bar [9].
 
 ## 4. Progress
 
-- [x] Audit, rules, shared pieces (`Panel`, `ToolLayout`, `ActionBar`,
-      `ListSearch`, `useListSearch`, `ResultPanel` outcome mode,
-      `PageContainer kind`, `SelectableRow type="radio"`,
-      `PlaylistPicker`, `PlaylistChooser`)
-- [x] combine (`a69ae43`) — also `SegmentedControl`
-- [x] likes-to-playlist (`3d3c9d0`) — also `useListSelection`
-- [ ] remaining pages (usage order), in parallel worktrees:
-      forms (audit, link/batch resolver, cloner, set → playlist);
-      managers (like, following, repost); search/scan (genre, compare,
-      keyword search, health check); playlist workbenches (modifier,
-      playlist → likes, activity, recently played); library/account
-      (following library, export, rekordbox gaps, account, feedback);
-      downloads; growth
-- [x] dashboard ranking (`ed6a337`) — `TOOL_RANKING` in `lib/tool-ranking.ts`
-- [x] analysis query (`6a1a1b5`), consolidation doc (`4365701`)
-- Draft PR: cole-hackman/tracktoolkit#110
+Done. Every page under `(app)` is migrated (commit subjects
+`refactor(<page>): …` on `feat/design-system`), each group reviewed by a
+separate reviewer, and the findings fixed (`fix(…)` commits). Full checks
+at the end are in `docs/internal/STATE.md`.
 
----
+| Page | Kind | Picker / search | Result slot |
+|---|---|---|---|
+| combine | workbench | PlaylistPicker multi + search; PlaylistChooser target | yes |
+| likes-to-playlist | workbench | likes search + select shown; chooser | yes |
+| library-audit | list | — (≤20 per run) | yes |
+| link-resolver | form | — | errors (output stays content) |
+| like / following / repost manager | list | ListSearch (progressive note) | yes |
+| playlist-cloner | form | — | yes |
+| genre-search | list | inline picker in the add dialog | yes |
+| playlist-compare | list | two PlaylistChoosers | errors |
+| playlist-modifier | workbench | single picker (stays as aside); track search | yes |
+| playlist-to-likes | workbench | single picker; track search + select shown | yes |
+| following-library | workbench (rail kept) | followings / likes / playlists search; chooser | yes |
+| batch-link-resolver | form | results search | yes |
+| growth | workbench | seed, suggestion, session, action search | yes (step 4 kept) |
+| downloads | list | single picker + Liked Tracks row; track search | yes |
+| export (+4) | form | single picker on export/playlists | — |
+| playlist-health-check | list | single picker (stays) | yes |
+| playlist-keyword-search | list | chooser for copy target | yes |
+| set-to-playlist | form | — | yes |
+| activity-to-playlist / recently-played | workbench | track search; chooser | yes |
+| rekordbox-gaps | list | track search | row errors stay on the row |
+| account / feedback | form | — | — |
+| dashboard | hub | tool search; order from `TOOL_RANKING` | — |
 
 ## 5. Open questions for Cole
 
-Calls made under this brief, recorded so they can be reversed:
+Calls made under this brief, recorded so each can be reversed. None changes
+what a tool sends to SoundCloud.
 
-1. **Success screens are gone.** Combine, Likes → Playlist, Playlist → Likes
-   and Growth no longer replace the page with a big check mark and "Back to
-   Dashboard"; the result appears in the slot above the tool. The four
-   statuses keep the colour signal.
-2. **Result slot is above the tool, not next to the button.** Consistent on
-   every layout and visible at the top of the page; focus moves there, so on
-   a phone the page scrolls up to it after a button at the bottom.
-3. **"Select all" with a search active selects the matches only**, and says
-   so ("Select all 12 shown"). Without a query it is unchanged.
-4. **Single lists narrowed from 1152 to 1024px** (the managers, keyword
-   search, audit, compare, health check).
+**Across the app**
+
+1. **Success screens are gone.** Combine, Likes → Playlist and Playlist →
+   Likes no longer replace the page with a big check mark and "Back to
+   Dashboard" / "Merge More"; the result appears in the slot above the tool.
+   Growth keeps its four-step flow (2.5).
+2. **The result slot is above the tool, not next to the button.** The same
+   place on every layout; focus moves there, so on a phone the page scrolls
+   up to it after a button at the bottom.
+3. **"Select all" with a search active selects the matches only** and says
+   so ("Select all 12 shown"); selections hidden by a search are kept and
+   still sent. Without a query it is unchanged. Exceptions kept for
+   behaviour: the three managers keep their own select-all, and Downloads'
+   "Download all" and Auto-Download "Select All" still mean the whole source.
+4. **Single lists narrowed from 1152 to 1024px** (managers, keyword search,
+   audit, compare, health check).
+5. **Pick-one lists are buttons, not radios** (2.6). Tab moves between rows.
+6. **The picker stays on screen** on Health Check, Downloads, the Modifier
+   and Export Playlist: "Back to playlists" / "Back to sources" / "Change
+   playlist" are gone there; switching is one click. Playlist → Likes still
+   swaps the picker for the tracks ("Change playlist").
+7. **Titles were added to outcome panels** ("Tracks unliked", "Couldn't
+   merge playlists", "Nothing to change" …). Every old sentence is the
+   description, word for word.
+8. **Status mapping where the old UI had only success/error:** some done =
+   `partial`; nothing done with failures = `error`; nothing to do = `empty`.
+9. **Search matching is now the same everywhere** (accent-insensitive, every
+   word), including the managers and the batch resolver, which used a plain
+   substring before.
+10. **The selection banner's destructive button** moved from raw
+    `#ef4444` (3.76:1, failing AA) to the destructive tokens.
+
+**Per page**
+
+- *Library Audit:* no search (a run shows ≤20 playlists). Partial only when
+  some playlists could not be read; finding duplicates is still `success`.
+- *Playlist Cloner:* a truncated likes copy, or one with a copy gap, is now
+  titled "Partly cloned" (was "Cloning Complete"). A `CLONE_PARTIAL` shows
+  one partial panel (was an alert plus a result).
+- *Batch Resolver:* the summary panel repeats the counts on the Results
+  header. The 50-link limit is a field error (same text). The "Showing N of
+  M" count includes the status/type filters.
+- *Set → Playlist:* "no tracks found" / "more than 150" are Tracklist field
+  errors. A created playlist is `partial` whenever any line was not added
+  (usually ID lines), which gives it the warning tint.
+- *Managers:* the "N of M" count includes the genre/duration/not-following-
+  back filters; the progressive status line stays beside it while loading.
+- *Playlist Modifier:* transfer errors stay in the dialog; a no-op transfer is
+  `empty`; the out-of-sync save is an error titled "Playlist reloaded"; the
+  success result no longer disappears after 9 s. Switching playlists drops
+  unsaved edits without asking, as "Back" did.
+- *Playlist → Likes:* liked tracks are unticked after a run.
+- *Activity / Recently Played:* a failed feed load shows only the alert (was
+  alert plus the empty card).
+- *Following Library:* keeps its 320px rail (not `ToolLayout`). Playlists load
+  50 at a time; a note under the picker says the search covers loaded ones
+  only. The likes button reads "Select loaded"; the picker's lost its old
+  two-column grid. Playlist counts of 1,000+ lose the thousands separator.
+- *Downloads:* switching source is one click; arrowing does not switch.
+  Focus after a gate send lands on "Queue sent to extension". Remove success
+  is a visible panel (was a spoken message only). `?url=` no longer pre-fills
+  the playlist search (nothing in this repo links to it; the private
+  extension repo was not checked).
+- *Growth:* "Campaign Initiated!" is always success-tinted, even for a
+  cancelled or failed batch (its existing copy already says "successfully";
+  fixing that is a wording change). A finished batch clears the "Engagement
+  started" result and the "Cancelling…" notice. Switching tabs clears the
+  result. On a phone the seed list comes before Scan settings.
+  `/api/followings` can say `truncated`, and nothing reads it yet.
+- *Rekordbox gaps:* search is within the chosen Show group.
+- *Feedback:* "Thanks — got it" left as it was (2.5).
+- *Export:* the sub-pages drop the header's "Back to Dashboard" on phones,
+  which stacked under "Back to Export".
+- *Dashboard:* tools with no usage figure (Downloads, Export, Health Check,
+  Keyword Search, Set → Playlist, Activity, Recently Played) sort last in
+  their group, in their previous order. Activity and Recently Played log new
+  playlists as `from-likes`, so their use is inside Likes → Playlist's 717
+  (TOOL-CONSOLIDATION.md).
 
 ---
 
