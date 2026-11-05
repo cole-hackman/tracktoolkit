@@ -463,7 +463,7 @@ function LinkResolverContent() {
             )}
 
             {/* Raw Data */}
-            <details className="mt-8">
+            <details className="mt-6">
               <summary className="cursor-pointer text-sm text-muted-foreground hover:text-primary-text">
                 View raw data
               </summary>

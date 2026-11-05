@@ -92,12 +92,18 @@ export default function PlaylistClonerPage() {
 
   // The copy stopped after some playlists were made. List them, so the user
   // can see what exists before running it again (which starts a new copy).
-  const showPartial = (data: { code?: string; playlists?: ClonedPlaylist[]; stats?: Record<string, unknown> } | null) => {
+  const showPartial = (
+    data: { code?: string; playlists?: ClonedPlaylist[]; stats?: Record<string, unknown> } | null,
+    fallback: string,
+  ) => {
     if (data?.code !== "CLONE_PARTIAL" || !Array.isArray(data.playlists) || data.playlists.length === 0) return false;
+    // The partial result replaces the error, so dismissing it must not
+    // reveal a "Could not clone" for a copy that did make playlists.
+    setError(null);
     setResultPlaylists(data.playlists);
     setStats(data.stats ?? { partial: true });
     // The reason the copy stopped is the panel's description.
-    setResultNote({ description: errorMessageFromBody(data, "The copy stopped before it finished.") });
+    setResultNote({ description: errorMessageFromBody(data, fallback) });
     void invalidatePlaylistCaches(queryClient);
     return true;
   };
@@ -134,7 +140,7 @@ export default function PlaylistClonerPage() {
       if (!res.ok) {
         // Show the reason first: it must not wait on a list refetch.
         setError(errorMessageFromBody(data, "Failed to clone playlist"));
-        if (showPartial(data)) return;
+        if (showPartial(data, "Failed to clone playlist")) return;
         if (res.status === 502 && data?.code === "SOUNDCLOUD_UNAVAILABLE") {
           // A write may have landed before SoundCloud stopped answering; the
           // user is told to check their playlists, so make that list fresh.
@@ -192,7 +198,7 @@ export default function PlaylistClonerPage() {
       const data = await res.json().catch(() => null);
       if (!res.ok) {
         setError(errorMessageFromBody(data, "Failed to clone liked tracks"));
-        if (showPartial(data)) return;
+        if (showPartial(data, "Failed to clone liked tracks")) return;
         if (res.status === 502 && data?.code === "SOUNDCLOUD_UNAVAILABLE") {
           void invalidatePlaylistCaches(queryClient);
         }

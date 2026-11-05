@@ -430,7 +430,9 @@ export default function SetToPlaylistPage() {
             )}
           </Field>
 
-          <ActionBar>
+          {/* `space-y-4` on the parent outranks ActionBar's own mt-6, so the
+              last 8px of the 24px gap comes from padding. */}
+          <ActionBar className="pt-2">
             <Button onClick={runMatch} disabled={busy || searchable.length === 0}>
               {matching ? "Matching…" : matches ? "Match again" : "Find on SoundCloud"}
             </Button>

@@ -92,9 +92,40 @@ test("batch-link-resolver: the run is a partial result and the search covers the
   await search.fill("playlist 1");
   await expect(page.getByText("Showing 1 of 3 links")).toBeVisible();
   await expect(page.getByText("Sample Track 1")).toHaveCount(0);
+  // The failed row is found by the text of its URL ("…/does-not-exist").
   await search.fill("does-not-exist");
   await expect(page.getByText("Showing 1 of 3 links")).toBeVisible();
   await expect(page.getByText("Not found")).toBeVisible();
+  await search.fill("zzz nothing matches this");
+  await expect(page.getByText("Showing 0 of 3 links")).toBeVisible();
+});
+
+test("playlist-cloner: dismissing a partial clone does not turn it into a failure", async ({ page }) => {
+  await mockApi(page);
+  await page.route("**/api/playlists/clone", (route) =>
+    route.fulfill({
+      status: 502,
+      contentType: "application/json",
+      body: JSON.stringify({
+        code: "CLONE_PARTIAL",
+        error: "SoundCloud stopped answering after part 1.",
+        playlists: [{ id: 41, title: "Copy (1/2)", permalink_url: "https://soundcloud.com/testuser/sets/copy-1", trackCount: 500 }],
+        stats: { partial: true },
+      }),
+    }),
+  );
+  await page.goto("/playlist-cloner/");
+  await page.getByLabel("Original playlist URL").fill("https://soundcloud.com/a/sets/b");
+  await page.getByRole("button", { name: "Clone Playlist" }).click();
+
+  const partial = page.getByRole("region", { name: "Partly cloned" });
+  await expect(partial).toBeFocused();
+  await expect(partial).toContainText("SoundCloud stopped answering after part 1.");
+  await expect(page.getByRole("region", { name: "Could not clone" })).toHaveCount(0);
+
+  await partial.getByRole("button", { name: "Dismiss result" }).click();
+  await expect(partial).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Could not clone" })).toHaveCount(0);
 });
 
 test("batch-link-resolver: over 50 links is refused on the field, a failed request is an error result", async ({ page }) => {

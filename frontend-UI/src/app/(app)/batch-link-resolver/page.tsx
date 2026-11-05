@@ -4,6 +4,7 @@ import { useMemo, useRef, useState, type ReactNode } from "react";
 import NextLink from "next/link";
 import { Link2, ExternalLink, Music, Users, ListMusic, Loader2, X, Download, RotateCcw, Copy } from "lucide-react";
 import {
+  ActionBar,
   Button,
   EmptyState,
   Field,
@@ -181,14 +182,11 @@ export default function BatchLinkResolverPage() {
                 }}
                 placeholder={"https://soundcloud.com/artist/track-name\nhttps://soundcloud.com/artist\nhttps://soundcloud.com/artist/sets/playlist-name"}
                 rows={8}
-                className="w-full px-4 py-3 border-2 border-gray-200 dark:border-border rounded-xl text-foreground bg-gray-50 dark:bg-secondary/20 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/30 resize-y font-mono text-base sm:text-sm"
+                className="w-full resize-y rounded-md border border-input bg-surface px-3 py-2 font-mono text-base text-foreground shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background dark:bg-white/5 sm:text-sm"
               />
             )}
           </Field>
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-            <span className="text-sm text-muted-foreground-subtle">
-              {input.split("\n").filter((l) => l.trim()).length} URLs entered
-            </span>
+          <ActionBar>
             <Button onClick={handleResolve} disabled={loading || !input.trim()}>
               {loading ? (
                 <>
@@ -202,7 +200,10 @@ export default function BatchLinkResolverPage() {
                 </>
               )}
             </Button>
-          </div>
+            <span className="text-sm text-muted-foreground-subtle">
+              {input.split("\n").filter((l) => l.trim()).length} URLs entered
+            </span>
+          </ActionBar>
         </Panel>
 
         {/* Results */}
@@ -226,7 +227,7 @@ export default function BatchLinkResolverPage() {
               label="Search results"
               value={query}
               onChange={setQuery}
-              shown={searched.length}
+              shown={filteredResults.length}
               total={results.length}
               noun="links"
               placeholder="Search by link, title or artist…"
