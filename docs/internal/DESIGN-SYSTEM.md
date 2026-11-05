@@ -252,11 +252,18 @@ button per bar [9].
       `ListSearch`, `useListSearch`, `ResultPanel` outcome mode,
       `PageContainer kind`, `SelectableRow type="radio"`,
       `PlaylistPicker`, `PlaylistChooser`)
-- [ ] combine
-- [ ] likes-to-playlist
-- [ ] remaining pages (usage order)
-- [ ] dashboard ranking
-- [ ] analysis query, consolidation doc
+- [x] combine (`a69ae43`) — also `SegmentedControl`
+- [x] likes-to-playlist (`3d3c9d0`) — also `useListSelection`
+- [ ] remaining pages (usage order), in parallel worktrees:
+      forms (audit, link/batch resolver, cloner, set → playlist);
+      managers (like, following, repost); search/scan (genre, compare,
+      keyword search, health check); playlist workbenches (modifier,
+      playlist → likes, activity, recently played); library/account
+      (following library, export, rekordbox gaps, account, feedback);
+      downloads; growth
+- [x] dashboard ranking (`ed6a337`) — `TOOL_RANKING` in `lib/tool-ranking.ts`
+- [x] analysis query (`6a1a1b5`), consolidation doc (`4365701`)
+- Draft PR: cole-hackman/tracktoolkit#110
 
 ---
 
