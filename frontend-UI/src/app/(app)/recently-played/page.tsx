@@ -1,24 +1,25 @@
 "use client";
 
-import { useState, useEffect, useId, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Loader2, Search, SquarePlus, History } from "lucide-react";
+import { History } from "lucide-react";
 import {
   Button,
-  Card,
   EmptyState,
-  Field,
   InlineAlert,
-  Input,
-  LoadingSpinner,
+  ListSearch,
   PageContainer,
   PageHeader,
-  Select,
+  Panel,
+  ResultPanel,
   SelectableList,
   Skeleton,
+  ToolLayout,
   TrackRow,
   useAnnounce,
+  type ResultStatus,
 } from "@/components/ui";
+import { SaveToPlaylistPanel, type SaveMode } from "@/components/workbench/SaveToPlaylistPanel";
 import { apiFetch, readApiErrorMessage } from "@/lib/api";
 import {
   invalidatePlaylistCaches,
@@ -26,8 +27,9 @@ import {
   usePlaylistDetailQuery,
   usePlaylistsQuery,
 } from "@/lib/queries";
-import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { asArray } from "@/lib/api-shape";
+import { useListSearch } from "@/lib/list-search";
+import { useListSelection } from "@/lib/useListSelection";
 
 interface Track {
   id: number;
@@ -42,22 +44,41 @@ interface Playlist {
   id: number;
   title: string;
   track_count: number;
+  artwork_url?: string;
+  coverUrl?: string;
 }
+
+/** The result slot's content: the sentence the old notice carried, plus a title. */
+interface Outcome {
+  id: number;
+  status: ResultStatus;
+  title: string;
+  text: string;
+}
+
+const trackText = (track: Track) => `${track.title ?? ""} ${track.user?.username ?? ""}`;
+const trackId = (track: Track) => track.id;
+
+const formatDuration = (ms: number) => {
+  if (!ms) return "0:00";
+  const minutes = Math.floor(ms / 60000);
+  const seconds = Math.floor((ms % 60000) / 1000);
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+};
 
 export default function RecentlyPlayedPage() {
   const queryClient = useQueryClient();
   const announce = useAnnounce();
-  const modeGroupLabelId = useId();
-  const [selected, setSelected] = useState<Set<number>>(new Set());
   const [saving, setSaving] = useState(false);
-  const [search, setSearch] = useState("");
-  const [mode, setMode] = useState<"new" | "existing">("new");
+  const [query, setQuery] = useState("");
+  const [mode, setMode] = useState<SaveMode>("new");
   const [newPlaylistName, setNewPlaylistName] = useState("");
-  const [selectedPlaylistId, setSelectedPlaylistId] = useState<number | null>(null);
-  const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
-  
+  const [targetPlaylist, setTargetPlaylist] = useState<Playlist | null>(null);
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const selectedPlaylistId = targetPlaylist?.id ?? null;
+
   const recentlyPlayedQuery = useRecentlyPlayedQuery();
-  // Only needed for the "existing playlist" dropdown — don't block the
+  // Only needed for the "existing playlist" chooser — don't block the
   // recently-played list on a fetch it doesn't need yet.
   const playlistsQuery = usePlaylistsQuery({ enabled: mode === "existing" });
   const selectedPlaylistQuery = usePlaylistDetailQuery(selectedPlaylistId ?? 0, {
@@ -75,64 +96,28 @@ export default function RecentlyPlayedPage() {
     [playlistsQuery.data?.collection],
   );
   const loading = recentlyPlayedQuery.isLoading;
-  const loadingPlaylists = mode === "existing" && playlistsQuery.isLoading;
 
-  useEffect(() => {
-    if (recentlyPlayedQuery.isError || playlistsQuery.isError) {
-      setNotice({ type: "error", text: "Couldn’t load your recently played tracks. Try refreshing the page." });
-    }
-  }, [recentlyPlayedQuery.isError, playlistsQuery.isError]);
-
-  const toggleTrack = (id: number) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const selectAll = () => {
-    if (selected.size === filteredTracks.length) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(filteredTracks.map((t) => t.id)));
-    }
-  };
-
-  const formatDuration = (ms: number) => {
-    if (!ms) return "0:00";
-    const minutes = Math.floor(ms / 60000);
-    const seconds = Math.floor((ms % 60000) / 1000);
-    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-  };
-
-  const debouncedSearch = useDebouncedValue(search, 150);
+  const { results: shownTracks, isFiltered } = useListSearch(tracks, query, trackText);
+  const {
+    selected,
+    setSelected,
+    toggle,
+    toggleAllShown,
+    toggleAllLabel,
+  } = useListSelection(shownTracks, trackId, { isQueryActive: isFiltered });
 
   useEffect(() => {
     if (!recentlyPlayedQuery.isSuccess) return;
     announce(`${tracks.length} recently played track${tracks.length === 1 ? "" : "s"} loaded`);
   }, [recentlyPlayedQuery.isSuccess, tracks.length, announce]);
 
-  const filteredTracks = useMemo(() => {
-    const query = debouncedSearch.toLowerCase();
-    return tracks.filter((t) =>
-      !query || t.title.toLowerCase().includes(query) ||
-      t.user?.username?.toLowerCase().includes(query)
-    );
-  }, [tracks, debouncedSearch]);
-
-  // Filtering is instant and silent; the debounce means this speaks once per
-  // pause rather than once per keystroke.
-  useEffect(() => {
-    if (!debouncedSearch) return;
-    announce(`${filteredTracks.length} track${filteredTracks.length === 1 ? "" : "s"} match`);
-  }, [debouncedSearch, filteredTracks.length, announce]);
+  const fail = (title: string, text: string) =>
+    setOutcome({ id: Date.now(), status: "error", title, text });
 
   const handleSave = async () => {
     if (selected.size === 0) return;
     setSaving(true);
-    setNotice(null);
+    setOutcome(null);
 
     try {
       const trackIds = Array.from(selected);
@@ -146,14 +131,15 @@ export default function RecentlyPlayedPage() {
         });
         if (response.ok) {
           await invalidatePlaylistCaches(queryClient);
-          setNotice({ type: "success", text: "Playlist saved successfully." });
-          announce("Playlist saved", { assertive: true });
+          setOutcome({
+            id: Date.now(),
+            status: "success",
+            title: "Playlist saved",
+            text: "Playlist saved successfully.",
+          });
           setSelected(new Set());
         } else {
-          setNotice({
-            type: "error",
-            text: await readApiErrorMessage(response, "Failed to create playlist."),
-          });
+          fail("Couldn't create the playlist", await readApiErrorMessage(response, "Failed to create playlist."));
         }
       } else if (selectedPlaylistId) {
         if (selectedPlaylistQuery.data) {
@@ -165,15 +151,16 @@ export default function RecentlyPlayedPage() {
             body: JSON.stringify({ tracks: mergedIds }),
           });
           if (response.ok) {
-            setNotice({ type: "success", text: "Playlist saved successfully." });
-            announce("Playlist saved", { assertive: true });
+            setOutcome({
+              id: Date.now(),
+              status: "success",
+              title: "Playlist saved",
+              text: "Playlist saved successfully.",
+            });
             setSelected(new Set());
             await invalidatePlaylistCaches(queryClient, selectedPlaylistId);
           } else {
-            setNotice({
-              type: "error",
-              text: await readApiErrorMessage(response, "Failed to update playlist."),
-            });
+            fail("Couldn't update the playlist", await readApiErrorMessage(response, "Failed to update playlist."));
             // A 409 means the server's view differs from this page's: refetch
             // so "reload and try again" has fresh data to work with. After the
             // message, so the re-crawl does not delay it.
@@ -182,209 +169,147 @@ export default function RecentlyPlayedPage() {
             }
           }
         } else {
-          setNotice({ type: "error", text: "Couldn’t load the selected playlist." });
+          fail("Couldn't update the playlist", "Couldn’t load the selected playlist.");
         }
       }
     } catch (error) {
       console.error("Save error:", error);
-      setNotice({ type: "error", text: "An error occurred while saving the playlist." });
+      fail("Couldn't save the playlist", "An error occurred while saving the playlist.");
     } finally {
       setSaving(false);
     }
   };
 
-  return (
-    <PageContainer maxWidth="wide">
-        <PageHeader
-          title="Recently Played"
-          description="View your last 25 played tracks and save them to a playlist."
-        />
+  const renderTrack = useCallback(
+    (track: Track, index: number) => (
+      <TrackRow
+        as="li"
+        key={track.id}
+        track={{
+          ...track,
+          subtitle: `${track.user?.username || "Unknown"} • ${formatDuration(track.duration)}`,
+        }}
+        isSelected={selected.has(track.id)}
+        onToggle={(e) => toggle(track, index, e)}
+      />
+    ),
+    [selected, toggle],
+  );
 
-        {notice && (
-          <InlineAlert
-            variant={notice.type}
-            className="mb-6"
-            onDismiss={() => setNotice(null)}
-          >
-            {notice.text}
-          </InlineAlert>
-        )}
+  return (
+    <PageContainer kind="workbench">
+      <PageHeader
+        title="Recently Played"
+        description="View your last 25 played tracks and save them to a playlist."
+      />
+
+      <div className="space-y-6">
+        {outcome ? (
+          <ResultPanel
+            key={outcome.id}
+            status={outcome.status}
+            title={outcome.title}
+            description={outcome.text}
+            onDismiss={() => setOutcome(null)}
+          />
+        ) : null}
 
         {loading ? (
-          <div className="grid lg:grid-cols-3 gap-8">
-            <Card className="min-w-0 p-4 sm:p-6 lg:col-span-2">
-              <div className="space-y-2">
-                {Array.from({ length: 8 }).map((_, i) => (
-                  <Skeleton key={i} className="h-16 rounded-lg" />
-                ))}
-              </div>
-            </Card>
-            <Card className="h-fit min-w-0 p-4 sm:p-6">
-              <Skeleton className="h-5 w-32 mb-4" />
-              <Skeleton className="h-4 w-24 mb-4" />
-              <Skeleton className="h-10 w-full rounded-lg" />
-            </Card>
-          </div>
+          <ToolLayout
+            main={
+              <Panel>
+                <div className="space-y-2">
+                  {Array.from({ length: 8 }).map((_, i) => (
+                    <Skeleton key={i} className="h-16 rounded-xl" />
+                  ))}
+                </div>
+              </Panel>
+            }
+            aside={
+              <Panel>
+                <Skeleton className="mb-4 h-5 w-32" />
+                <Skeleton className="mb-4 h-4 w-24" />
+                <Skeleton className="h-10 w-full rounded-lg" />
+              </Panel>
+            }
+          />
+        ) : recentlyPlayedQuery.isError ? (
+          <Panel>
+            <InlineAlert variant="error">
+              Couldn’t load your recently played tracks. Try refreshing the page.
+            </InlineAlert>
+          </Panel>
         ) : tracks.length === 0 ? (
-          <Card className="p-4 sm:p-8">
+          <Panel>
             <EmptyState
               icon={<History className="w-12 h-12" />}
               title="No recently played tracks found"
               description="Go listen to some music on SoundCloud and come back!"
             />
-          </Card>
+          </Panel>
         ) : (
-          <div className="grid lg:grid-cols-3 gap-8">
-            {/* Track list */}
-            <Card className="min-w-0 p-4 sm:p-6 lg:col-span-2">
-              <div className="mb-4 flex flex-wrap items-center gap-2">
-                <Field
-                  label="Search recently played tracks"
-                  labelHidden
-                  className="min-w-0 flex-1"
-                >
-                  {(field) => (
-                    <div className="relative">
-                      <Search
-                        aria-hidden="true"
-                        className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground-subtle"
-                      />
-                      <Input
-                        {...field}
-                        type="search"
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                        placeholder="Search tracks…"
-                        className="h-11 pl-10"
-                      />
-                    </div>
-                  )}
-                </Field>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  nowrap
-                  onClick={selectAll}
-                  className="shrink-0 text-primary-text"
-                >
-                  {selected.size === filteredTracks.length ? "Deselect All" : "Select All"}
-                </Button>
-              </div>
-
-              <SelectableList className="max-h-[60dvh] overflow-y-auto">
-                {filteredTracks.map((track) => {
-                  const isSelected = selected.has(track.id);
-                  const subtitle = `${track.user?.username || "Unknown"} • ${formatDuration(track.duration)}`;
-
-                  return (
-                    <TrackRow
-                      as="li"
-                      key={track.id}
-                      track={{
-                        ...track,
-                        subtitle,
-                      }}
-                      isSelected={isSelected}
-                      onToggle={() => toggleTrack(track.id)}
-                    />
-                  );
-                })}
-              </SelectableList>
-            </Card>
-
-            {/* Save panel */}
-            <Card className="h-fit min-w-0 space-y-4 p-4 sm:p-6 lg:sticky lg:top-24">
-              <div>
-                <h2 className="text-lg font-bold text-foreground">Save to Playlist</h2>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {selected.size} track{selected.size !== 1 ? "s" : ""} selected
-                </p>
-              </div>
-
-              <div>
-                <span
-                  id={modeGroupLabelId}
-                  className="mb-2 block text-sm font-semibold text-foreground"
-                >
-                  Save to
-                </span>
-                <div role="group" aria-labelledby={modeGroupLabelId} className="flex gap-2">
-                  <button
-                    type="button"
-                    aria-pressed={mode === "new"}
-                    onClick={() => setMode("new")}
-                    className={`min-h-11 flex-1 px-3 py-2 rounded-lg text-sm font-medium transition ${
-                      mode === "new" ? "bg-primary text-primary-foreground" : "bg-gray-100 dark:bg-secondary/50 text-muted-foreground"
-                    }`}
+          <ToolLayout
+            main={
+              <Panel
+                title="Recently played"
+                actions={
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    nowrap
+                    onClick={toggleAllShown}
+                    className="text-primary-text"
                   >
-                    New Playlist
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={mode === "existing"}
-                    onClick={() => setMode("existing")}
-                    className={`min-h-11 flex-1 px-3 py-2 rounded-lg text-sm font-medium transition ${
-                      mode === "existing" ? "bg-primary text-primary-foreground" : "bg-gray-100 dark:bg-secondary/50 text-muted-foreground"
-                    }`}
-                  >
-                    Existing
-                  </button>
-                </div>
-              </div>
-
-              {mode === "new" ? (
-                <Field label="Playlist name" hint="Optional — a dated name is used if you leave it blank.">
-                  {(field) => (
-                    <Input
-                      {...field}
-                      type="text"
-                      value={newPlaylistName}
-                      onChange={(e) => setNewPlaylistName(e.target.value)}
-                      placeholder="Recently Played"
-                      className="h-11"
-                    />
-                  )}
-                </Field>
-              ) : loadingPlaylists ? (
-                <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground-subtle">
-                  <LoadingSpinner size="sm" />
-                  Loading playlists…
-                </div>
-              ) : (
-                <Select
-                  label="Playlist"
-                  value={selectedPlaylistId || ""}
-                  onChange={(e) => setSelectedPlaylistId(Number(e.target.value))}
-                >
-                  <option value="">Choose a playlist…</option>
-                  {playlists.map((pl) => (
-                    <option key={pl.id} value={pl.id}>
-                      {pl.title} ({pl.track_count} tracks)
-                    </option>
-                  ))}
-                </Select>
-              )}
-
-              <Button
-                onClick={handleSave}
-                disabled={saving || selected.size === 0 || (mode === "existing" && !selectedPlaylistId)}
-                className="w-full"
+                    {toggleAllLabel}
+                  </Button>
+                }
               >
-                {saving ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Saving...
-                  </>
-                ) : (
-                  <>
-                    <SquarePlus className="w-4 h-4" />
-                    Save to Playlist
-                  </>
-                )}
-              </Button>
-            </Card>
-          </div>
+                <div className="space-y-3">
+                  <ListSearch
+                    label="Search recently played tracks"
+                    value={query}
+                    onChange={setQuery}
+                    shown={shownTracks.length}
+                    total={tracks.length}
+                    noun={tracks.length === 1 ? "track" : "tracks"}
+                    placeholder="Search tracks…"
+                  />
+                  {shownTracks.length === 0 ? (
+                    <EmptyState
+                      as="p"
+                      className="min-h-[160px] py-8"
+                      title="No tracks match your search"
+                      description="Try fewer or different words."
+                    />
+                  ) : (
+                    <SelectableList className="max-h-[60dvh] overflow-y-auto overscroll-contain pr-1">
+                      {shownTracks.map(renderTrack)}
+                    </SelectableList>
+                  )}
+                </div>
+              </Panel>
+            }
+            aside={
+              <SaveToPlaylistPanel
+                selectedCount={selected.size}
+                mode={mode}
+                onModeChange={setMode}
+                name={newPlaylistName}
+                onNameChange={setNewPlaylistName}
+                namePlaceholder="Recently Played"
+                playlists={playlists}
+                playlistsLoading={playlistsQuery.isLoading}
+                playlistsError={playlistsQuery.isError}
+                onRetryPlaylists={() => playlistsQuery.refetch()}
+                target={targetPlaylist}
+                onTargetChange={setTargetPlaylist}
+                saving={saving}
+                onSave={handleSave}
+              />
+            }
+          />
         )}
+      </div>
     </PageContainer>
   );
 }

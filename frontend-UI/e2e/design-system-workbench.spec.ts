@@ -66,3 +66,27 @@ test("playlist-to-likes: a finished run is a result panel above the tool", async
   // The tool stays on screen to run again.
   await expect(page.getByRole("button", { name: /^Like 6 Tracks$/ })).toBeVisible();
 });
+
+for (const route of ["/activity-to-playlist/", "/recently-played/"]) {
+  test(`${route}: search counts matches, and a save is a result panel above the tool`, async ({ page }) => {
+    await mockApi(page);
+    await page.goto(route);
+
+    const search = page.getByRole("searchbox", { name: /^Search (activity feed|recently played) tracks$/ });
+    await expect(search).toBeVisible();
+    await expect(page.getByRole("checkbox", { name: "Sample Track 1" })).toBeVisible();
+
+    await search.fill("zzzz-no-such-track");
+    await expect(page.getByText("No tracks match your search")).toBeVisible();
+    await search.fill("");
+
+    await page.getByRole("checkbox", { name: "Sample Track 1" }).check();
+    await page.getByRole("button", { name: "Save to Playlist" }).click();
+
+    const result = page.getByRole("region", { name: "Playlist saved" });
+    await expect(result).toContainText("Playlist saved successfully.");
+    await expect(result).toBeFocused();
+    // The tool is still there to run again.
+    await expect(page.getByRole("button", { name: "Save to Playlist" })).toBeVisible();
+  });
+}
