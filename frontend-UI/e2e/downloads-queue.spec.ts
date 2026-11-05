@@ -155,6 +155,23 @@ async function open(
   return seen;
 }
 
+/**
+ * Every download any new tab (the helper tab) makes, from its first one.
+ *
+ * Attached from the context's "page" event, which fires synchronously as the
+ * tab is created. Attaching it after `await page.waitForEvent("popup")`, as
+ * these tests used to, left a window in which the helper's first download
+ * had already fired: the queue reported "3 started" and the test counted 2,
+ * about 3 runs in 20 (recorded as a flake in docs/internal/STATE.md).
+ */
+function collectHelperDownloads(page: Page): string[] {
+  const downloads: string[] = [];
+  page.context().on("page", (tab) => {
+    tab.on("download", (d) => downloads.push(d.url()));
+  });
+  return downloads;
+}
+
 const panel = (page: Page) =>
   page.getByRole("region", { name: "Download queue" }).or(page.getByRole("dialog", { name: "Download queue" })).first();
 
@@ -162,11 +179,10 @@ test("Download all queues SoundCloud's own downloads only, hands each file to on
   test.skip(testInfo.project.name !== "desktop", "the side panel is the desktop layout; the sheet has its own test");
   const seen = await open(page);
 
+  const downloads = collectHelperDownloads(page);
   const popupPromise = page.waitForEvent("popup");
   await page.getByRole("button", { name: "Download all (3)" }).click();
   const helper = await popupPromise;
-  const downloads: string[] = [];
-  helper.on("download", (d) => downloads.push(d.url()));
 
   await expect(panel(page).getByText("3 started · 0 not available · 0 failed")).toBeVisible();
   await expect.poll(() => downloads.length).toBe(3);
@@ -317,11 +333,10 @@ const checkDialog = (page: Page, title = "Direct 2") => page.getByRole("dialog",
 
 test("first time in a browser: after the second file the queue stops and asks whether it saved — as a dialog, on every width", async ({ page }, testInfo) => {
   const seen = await open(page, { multiOk: false });
+  const downloads = collectHelperDownloads(page);
   const popupPromise = page.waitForEvent("popup");
   await page.getByRole("button", { name: "Download all (3)" }).click();
   const helper = await popupPromise;
-  const downloads: string[] = [];
-  helper.on("download", (d) => downloads.push(d.url()));
 
   // The question is a modal, not a card inside a panel the user may never
   // open: live, it sat behind a grey "check needed" bar below `lg` and was
@@ -375,11 +390,10 @@ test("Download all while the check is waiting re-asks the question instead of st
 test("the helper tab — where Chrome's prompt appears — asks the same question, and answering there continues the queue", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "flow test");
   await open(page, { multiOk: false });
+  const downloads = collectHelperDownloads(page);
   const popupPromise = page.waitForEvent("popup");
   await page.getByRole("button", { name: "Download all (3)" }).click();
   const helper = await popupPromise;
-  const downloads: string[] = [];
-  helper.on("download", (d) => downloads.push(d.url()));
 
   await expect(checkDialog(page)).toBeVisible();
   await expect(helper.getByText("Did “Direct 2” save?")).toBeVisible();
@@ -398,11 +412,10 @@ test("the helper tab — where Chrome's prompt appears — asks the same questio
 test("“No — try it again” hands the same file to the browser again", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "flow test");
   const seen = await open(page, { multiOk: false });
+  const downloads = collectHelperDownloads(page);
   const popupPromise = page.waitForEvent("popup");
   await page.getByRole("button", { name: "Download all (3)" }).click();
   const helper = await popupPromise;
-  const downloads: string[] = [];
-  helper.on("download", (d) => downloads.push(d.url()));
 
   await expect(checkDialog(page)).toBeVisible();
   await checkDialog(page).getByRole("button", { name: "No — try it again" }).click();
