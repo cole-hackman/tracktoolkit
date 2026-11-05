@@ -150,7 +150,7 @@ test("combine: a failed delete after merge is a partial result listing each fail
   await page.getByRole("checkbox", { name: "Sample Playlist 2" }).check();
   await page.getByRole("button", { name: "Existing playlist" }).click();
   await page.getByRole("button", { name: "Choose a target playlist…" }).click();
-  await page.getByRole("dialog").getByRole("radio", { name: /Sample Playlist 3/ }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Sample Playlist 3", exact: true }).click();
   await page.getByText("Delete source playlists after merge").click();
   await page.getByRole("button", { name: "Merge Playlists" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Merge & Delete" }).click();
@@ -254,5 +254,29 @@ test("like-manager: search is accent-insensitive and a partly failed unlike is a
   await expect(result).toBeFocused();
   await expect(result).toHaveAttribute("data-result-status", "partial");
   await expect(result).toContainText("Unliked 1 of 2 tracks. Some tracks could not be removed.");
+  await expectNoBlockingViolations(page);
+});
+
+test("single-choice picker: arrow keys do not choose, Enter does, and the picker stays", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/export/playlists/");
+
+  const first = page.getByRole("button", { name: "Sample Playlist 1", exact: true });
+  const second = page.getByRole("button", { name: "Sample Playlist 2", exact: true });
+  await expect(first).toHaveAttribute("aria-pressed", "false");
+
+  // Choosing loads a playlist, so moving through the list must not choose:
+  // these are buttons, not a radio group that commits on every arrow.
+  await first.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(first).toHaveAttribute("aria-pressed", "false");
+  await expect(second).toHaveAttribute("aria-pressed", "false");
+
+  await page.keyboard.press("Tab");
+  await expect(second).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(second).toHaveAttribute("aria-pressed", "true");
+  await expect(second).toBeFocused();
+  await expect(page.getByRole("list", { name: "Playlists" })).toBeVisible();
   await expectNoBlockingViolations(page);
 });

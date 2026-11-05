@@ -151,7 +151,7 @@ async function open(
     }),
   );
   await page.goto("/downloads/");
-  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   return seen;
 }
 
@@ -498,7 +498,7 @@ test("unticking Save into a folder keeps the browser-download flow, check includ
   await page.reload();
   await expect(checkDialog(page)).toBeVisible();
   await page.keyboard.press("Escape");
-  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   await expect(page.getByRole("checkbox", { name: /Save into a folder/ })).not.toBeChecked();
 });
 

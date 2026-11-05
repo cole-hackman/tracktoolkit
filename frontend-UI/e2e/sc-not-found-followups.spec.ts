@@ -100,7 +100,7 @@ test("likes-to-playlist: a 409 PLAYLIST_NOT_FOUND clears the target and shows th
   await page.getByRole("button", { name: "Existing playlist" }).click();
   await page.getByRole("button", { name: "Choose a playlist…" }).click();
   // The shared PlaylistPicker's rows are radios, not aria-pressed buttons.
-  await page.getByRole("dialog").getByRole("radio", { name: /Sample Playlist 3/ }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Sample Playlist 3", exact: true }).click();
   await expect(page.getByRole("button", { name: /Change/ })).toBeVisible();
 
   await page.getByRole("button", { name: "Add to Playlist" }).last().click();

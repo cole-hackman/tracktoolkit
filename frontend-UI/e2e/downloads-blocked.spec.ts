@@ -37,7 +37,7 @@ test("a blocked track has no download control, says Blocked, and is not counted"
   );
 
   await page.goto("/downloads/");
-  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
 
   await expect(
     page.getByRole("button", { name: "Download Sample Track 1 (free download)" }),
@@ -95,7 +95,7 @@ test("a playlist whose only tracks are blocked and not downloadable keeps the em
   );
 
   await page.goto("/downloads/");
-  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
 
   await expect(page.getByText("No downloadable tracks found")).toBeVisible();
   await expect(page.locator("main").getByText("Locked Away Track")).toHaveCount(0);

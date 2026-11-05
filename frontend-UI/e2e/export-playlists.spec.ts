@@ -12,14 +12,14 @@ test("export/playlists: the picker searches, stays after a choice, and switching
   await expect(page.getByText(/^Showing \d+ of \d+ playlists$/)).toBeVisible();
 
   await search.fill("");
-  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   await page.getByRole("button", { name: "Load playlist tracks" }).click();
   await expect(page.getByText(/^[\d,]+ tracks? ready$/)).toBeVisible();
   // The picker is still there beside the export card.
   await expect(search).toBeVisible();
 
-  await page.getByRole("radio", { name: /Sample Playlist 2/ }).check();
-  await expect(page.getByRole("radio", { name: /Sample Playlist 2/ })).toBeChecked();
+  await page.getByRole("button", { name: "Sample Playlist 2", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Sample Playlist 2", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByText(/^[\d,]+ tracks? ready$/)).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Load playlist tracks" })).toBeVisible();
 

@@ -12,7 +12,7 @@ test("playlist-modifier: the track search covers the whole playlist and the pick
 }) => {
   await mockApi(page);
   await page.goto("/playlist-modifier/");
-  await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).check();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
 
   const search = page.getByRole("searchbox", { name: "Search this playlist's tracks" });
   await expect(search).toBeVisible();
@@ -27,13 +27,13 @@ test("playlist-modifier: the track search covers the whole playlist and the pick
   await expect(page.getByText("No tracks match your search")).toBeVisible();
 
   // The picker is still on screen: switching playlist is one click.
-  await expect(page.getByRole("radio", { name: "Sample Playlist 2", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sample Playlist 2", exact: true })).toBeVisible();
 });
 
 test("playlist-to-likes: search over the tracks, select-all acts on the matches", async ({ page }) => {
   await mockApi(page);
   await page.goto("/playlist-to-likes/");
-  await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).click();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
 
   const search = page.getByRole("searchbox", { name: "Search this playlist's tracks" });
   await expect(page.getByRole("button", { name: /^Like 6 Tracks$/ })).toBeVisible();
@@ -58,7 +58,7 @@ test("playlist-to-likes: a finished run is a result panel above the tool", async
     });
   });
   await page.goto("/playlist-to-likes/");
-  await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).click();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   await page.getByRole("button", { name: /^Like 6 Tracks$/ }).click();
 
   const result = page.getByRole("region", { name: "Tracks Liked!" });

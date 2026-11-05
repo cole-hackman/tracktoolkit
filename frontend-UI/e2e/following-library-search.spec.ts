@@ -132,7 +132,7 @@ test("following-library: saving likes to an existing playlist uses the playlist 
   await page.getByRole("checkbox", { name: "Sample Public Track 1" }).check();
   await page.getByRole("button", { name: "Add to existing" }).click();
   await page.getByRole("button", { name: /Choose playlist…/ }).click();
-  await page.getByRole("dialog").getByRole("radio", { name: /Sample Playlist 3/ }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Sample Playlist 3", exact: true }).click();
   await page.getByRole("button", { name: "Create from Selected" }).click();
 
   const result = page.getByRole("region", { name: "Done" });

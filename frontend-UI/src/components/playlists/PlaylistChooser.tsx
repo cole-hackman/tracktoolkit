@@ -35,10 +35,9 @@ export interface PlaylistChooserProps<P extends PickerPlaylist> {
  * dialog — a bottom sheet on a phone — holding the same `PlaylistPicker` the
  * rest of the app uses, in `single` mode.
  *
- * A click or tap on a row chooses it and closes the dialog. The keyboard
- * moves through the rows as a radio group (each arrow press is a choice, as
- * with any radio group) and Done or Escape closes it, so arrowing to the
- * fifth playlist does not close the dialog on the second.
+ * Choosing a row (click, tap, Enter or Space) closes the dialog and returns
+ * focus to the trigger; Tab moves between rows without choosing. Done or
+ * Escape closes it unchanged.
  */
 export function PlaylistChooser<P extends PickerPlaylist>({
   label,
@@ -138,11 +137,11 @@ export function PlaylistChooser<P extends PickerPlaylist>({
           playlists={playlists}
           mode="single"
           selectedIds={value ? [Number(value.id)] : []}
-          onChange={(next, info) => {
+          onChange={(next) => {
             const chosen = next[0];
             if (!chosen) return;
             onChange(chosen);
-            if (info.viaPointer) setOpen(false);
+            setOpen(false);
           }}
           loadError={loadError}
           onRetry={onRetry}

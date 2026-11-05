@@ -9,7 +9,7 @@ import { mockApi } from "./fixtures/api";
 
 async function openPlaylistAndLike(page: Page) {
   await page.goto("/playlist-to-likes/");
-  await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).click();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   const like = page.getByRole("button", { name: /^Like \d+ Tracks?$/ });
   await expect(like).toBeEnabled();
   await like.click();

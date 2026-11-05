@@ -80,7 +80,7 @@ async function open(
     );
   }
   await page.goto("/downloads/");
-  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
 }
 
 test("counts are honest and the default view lists only real downloads", async ({ page }) => {
@@ -341,15 +341,15 @@ test("the track search narrows the list only: Download all, picks and Auto-Downl
 test("the source picker searches playlists, keeps Liked Tracks in reach, and stays up to switch source", async ({ page }) => {
   await mockApi(page);
   await page.goto("/downloads/");
-  const liked = page.getByRole("radio", { name: "Liked Tracks" });
+  const liked = page.getByRole("button", { name: "Liked Tracks", exact: true });
   await page.getByRole("searchbox", { name: "Search playlists" }).fill("playlist 2");
-  await expect(page.getByRole("radio", { name: /Sample Playlist 1/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Sample Playlist 1", exact: true })).toHaveCount(0);
   await expect(liked).toBeVisible();
 
-  await page.getByRole("radio", { name: /Sample Playlist 2/ }).check();
+  await page.getByRole("button", { name: "Sample Playlist 2", exact: true }).click();
   await expect(page.getByRole("region", { name: /Sample Playlist 2/ })).toBeVisible();
   // Switching is one click on the same picker; Liked Tracks takes over.
-  await liked.check();
+  await liked.click();
   await expect(page.getByRole("region", { name: /Liked Tracks/ })).toBeVisible();
-  await expect(page.getByRole("radio", { name: /Sample Playlist 2/ })).not.toBeChecked();
+  await expect(page.getByRole("button", { name: "Sample Playlist 2", exact: true })).toHaveAttribute("aria-pressed", "false");
 });

@@ -44,7 +44,7 @@ async function open(page: Page, { admin = true } = {}) {
     });
   });
   await page.goto("/downloads/");
-  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   return historyCalls;
 }
 

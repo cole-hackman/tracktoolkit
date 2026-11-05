@@ -34,7 +34,7 @@ async function setUp(
   );
 
   await page.goto("/playlist-modifier/");
-  await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).check();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   await page.getByRole("group", { name: "Filter tracks" }).waitFor();
 
   // An unsaved edit: take the first track out.

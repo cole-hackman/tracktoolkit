@@ -185,7 +185,7 @@ test("playlist-modifier row actions are visible and fit: /playlist-modifier/", a
   await mockApi(page);
   await page.goto("/playlist-modifier/");
 
-  await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).check();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
 
   const moreActions = page.getByRole("button", {
     name: "More actions for Sample Playlist Track 1",
@@ -297,7 +297,7 @@ test("playlist-modifier download control survives a long title: /playlist-modifi
 
   await mockApi(page);
   await page.goto("/playlist-modifier/");
-  await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).check();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
 
   const download = page.getByRole("button", { name: `Download ${LONG_TRACK_TITLE}` });
   await expect(download).toBeVisible();
@@ -422,7 +422,7 @@ test("no horizontal overflow: /playlist-to-likes/ with a playlist chosen", async
 
   await mockApi(page);
   await page.goto("/playlist-to-likes/");
-  await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).click();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   await expect(page.getByRole("checkbox", { name: "Sample Track 1" })).toBeVisible();
 
   await expectNoOverflow(page);
@@ -472,7 +472,7 @@ test("no horizontal overflow: /downloads/ track list and selection mode", async 
 
   await mockApi(page);
   await page.goto("/downloads/");
-  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Download Sample Track 1 (free download)" }),
   ).toBeVisible();
@@ -523,7 +523,7 @@ test("no clipped controls with a long title: /downloads/", async ({ page }, test
   );
 
   await page.goto("/downloads/");
-  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
 
   const plainRowDownload = page.getByRole("button", { name: /^Download An extremely long/ });
   await expect(plainRowDownload).toBeVisible();

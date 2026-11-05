@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useId, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { Download, Heart, ListMusic, Trash2, X, CheckSquare, Zap } from "lucide-react";
@@ -33,12 +33,12 @@ import {
   ProgressBar,
   ResultPanel,
   Select,
-  SelectableRow,
   Skeleton,
   TrackRow,
   useAnnounce,
+  SelectableList,
 } from "@/components/ui";
-import { PlaylistPicker } from "@/components/playlists/PlaylistPicker";
+import { PlaylistChoiceRow, PlaylistPicker } from "@/components/playlists/PlaylistPicker";
 import { useListSearch } from "@/lib/list-search";
 import {
   invalidatePlaylistCaches,
@@ -134,7 +134,6 @@ export default function DownloadsPage() {
 
   const [selectedSource, setSelectedSource] = useState<Playlist | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
-  const likedRadioName = useId();
   // Searches the list below the toolbar: what "Show" and the mode put there.
   // Download all, Auto-Download's Select All and the row picks work on the
   // whole source as before; the search only narrows what is on screen.
@@ -726,38 +725,36 @@ export default function DownloadsPage() {
         {/* Source: Liked Tracks first and always there, then the playlists. */}
         <Panel title="Select Source">
           <div className="space-y-3">
-            <SelectableRow
-              as="div"
-              id={LIKED_TRACKS_ID}
-              type="radio"
-              name={likedRadioName}
-              selected={isLikedSource}
-              label="Liked Tracks"
-              onToggle={() =>
-                handleSelectSource({
-                  id: LIKED_TRACKS_ID,
-                  title: "Liked Tracks",
-                  track_count: likesCount ?? 0,
-                  artwork_url: "",
-                  kind: "playlist",
-                })
-              }
-            >
-              <span className="flex min-w-0 items-center gap-3">
-                <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-[#FF5500] to-[#E64A00] text-primary-foreground">
-                  <Heart className="h-6 w-6" fill="currentColor" aria-hidden="true" />
-                </span>
-                <span className="min-w-0 flex-1 text-left">
-                  <span className="block truncate text-sm font-semibold text-foreground">Liked Tracks</span>
-                  <span className="block truncate text-xs text-muted-foreground">
-                    {likesCount !== null
-                      ? `${likesCount.toLocaleString()} liked tracks`
-                      : "All your likes"}
+            {/* Outside the picker so a playlist search never hides it, but the
+                same pressable row as the playlists below it. */}
+            <SelectableList>
+              <PlaylistChoiceRow
+                label="Liked Tracks"
+                title="Liked Tracks"
+                subtitle={likesCount !== null ? `${likesCount.toLocaleString()} liked tracks` : "All your likes"}
+                artwork={
+                  <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-[#FF5500] to-[#E64A00] text-primary-foreground">
+                    <Heart className="h-6 w-6" fill="currentColor" aria-hidden="true" />
                   </span>
-                </span>
-              </span>
-            </SelectableRow>
+                }
+                selected={isLikedSource}
+                disabled={isRemoving}
+                onChoose={() =>
+                  handleSelectSource({
+                    id: LIKED_TRACKS_ID,
+                    title: "Liked Tracks",
+                    track_count: likesCount ?? 0,
+                    artwork_url: "",
+                    kind: "playlist",
+                  })
+                }
+              />
+            </SelectableList>
 
+            {/* Disabled while a remove is saving: its result would otherwise
+                land on whichever source was picked in the meantime. */}
+            <fieldset disabled={isRemoving} className="min-w-0">
+            <legend className="sr-only">Playlists</legend>
             <PlaylistPicker
               playlists={playlists}
               mode="single"
@@ -771,6 +768,7 @@ export default function DownloadsPage() {
               searchLabel="Search playlists"
               listClassName="max-h-[40dvh]"
             />
+            </fieldset>
           </div>
         </Panel>
 

@@ -42,7 +42,7 @@ export const READY: Record<string, ReadyLocator> = {
   // first click, so neither the audit nor the width measurement described it.
   // Same shape as the other chooser-fronted routes below.
   "/playlist-modifier/": async (page) => {
-    await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).check();
+    await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
     return page.getByRole("group", { name: "Filter tracks" });
   },
   // Suspends on `/api/followings`, so the h1 alone resolves against
@@ -53,13 +53,13 @@ export const READY: Record<string, ReadyLocator> = {
   // The track list, from `/api/likes/paged`.
   "/likes-to-playlist/": (page) => page.getByRole("checkbox", { name: "Sample Track 1" }),
   // Opens on a playlist chooser, from `/api/playlists`.
-  "/playlist-to-likes/": (page) => page.getByRole("radio", { name: "Sample Playlist 1", exact: true }),
+  "/playlist-to-likes/": (page) => page.getByRole("button", { name: "Sample Playlist 1", exact: true }),
   // The track list, from `/api/recently-played`.
   "/recently-played/": (page) => page.getByRole("checkbox", { name: "Sample Track 1" }),
   // The track list, from `/api/activities`.
   "/activity-to-playlist/": (page) => page.getByRole("checkbox", { name: "Sample Track 1" }),
   // Opens on a source chooser, from `/api/playlists`.
-  "/downloads/": (page) => page.getByRole("radio", { name: /Sample Playlist 1/ }),
+  "/downloads/": (page) => page.getByRole("button", { name: "Sample Playlist 1", exact: true }),
   "/rekordbox-gaps/": (page) => page.getByText("Not available on this account"),
   // The "no search yet" empty state is not what this page is: the toolbar,
   // the match rows and their badges only exist after a search, so run one.
@@ -82,7 +82,7 @@ export const READY: Record<string, ReadyLocator> = {
     return page.getByText(/^[\d,]+ tracks? ready$/);
   },
   "/export/playlists/": async (page) => {
-    await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
+    await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
     await page.getByRole("button", { name: "Load playlist tracks" }).click();
     return page.getByText(/^[\d,]+ tracks? ready$/);
   },

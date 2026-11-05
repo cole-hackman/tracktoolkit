@@ -362,7 +362,7 @@ const CASES: Case[] = [
     path: "/export/playlists/",
     drive: async (page) => {
       // The shared picker's rows are radios, not buttons.
-      await page.getByRole("radio", { name: new RegExp(LONG.slice(0, 30)) }).first().check();
+      await page.getByRole("button", { name: new RegExp(LONG.slice(0, 30)) }).first().click();
       await page.getByRole("button", { name: "Load playlist tracks" }).click();
       await page.getByText(/^[\d,]+ tracks? ready$/).waitFor();
     },

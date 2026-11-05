@@ -201,7 +201,7 @@ test("has no serious/critical violations: /playlist-to-likes/ with a playlist ch
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/playlist-to-likes/");
 
-  await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).click();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   await expect(page.getByRole("checkbox", { name: "Sample Track 1" })).toBeVisible();
 
   await expectNoBlockingViolations(page);
@@ -225,7 +225,7 @@ async function openPlaylistModifierEditor(page: Page) {
   await mockApi(page);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/playlist-modifier/");
-  await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).check();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   await expect(page.getByRole("group", { name: "Filter tracks" })).toBeVisible();
 }
 
@@ -388,7 +388,7 @@ test("has no serious/critical violations: /downloads/ track list and selection m
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/downloads/");
 
-  await page.getByRole("radio", { name: /Sample Playlist 1/ }).check();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
 
   // Each download control names its track and its route, so a column of them
   // is not four buttons all called "Download".
@@ -584,7 +584,7 @@ test("combine: the target-playlist picker is the shared Dialog", async ({ page }
   await trigger.focus();
   await trigger.press("Enter");
   await expect(dialog).toBeVisible();
-  await dialog.getByRole("radio", { name: /Sample Playlist 1/ }).click();
+  await dialog.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   await expect(dialog).toBeHidden();
   await expect(page.getByRole("button", { name: /Change/ })).toBeFocused();
 });

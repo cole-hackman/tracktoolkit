@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Music } from "lucide-react";
 import {
   Button,
@@ -31,9 +31,9 @@ export interface PlaylistPickerProps<P extends PickerPlaylist> {
   mode: "single" | "multi";
   selectedIds: ReadonlySet<number> | readonly number[];
   /**
-   * The new selection, in list order for `multi`. `viaPointer` is true when a
-   * mouse or touch made the change (a dialog closes on that, but not on an
-   * arrow key moving through the radio group).
+   * The new selection, in list order for `multi`. In `single` mode it fires
+   * only on a deliberate activation (click, Enter or Space on a row), never
+   * on focus moving. `viaPointer` says whether a mouse or touch made it.
    */
   onChange: (next: P[], info: { viaPointer: boolean; changed: P }) => void;
   loading?: boolean;
@@ -42,6 +42,8 @@ export interface PlaylistPickerProps<P extends PickerPlaylist> {
   disabledReasons?: PlaylistDisabledReasons;
   /** Accessible name of the search box. */
   searchLabel?: string;
+  /** Accessible name of the list itself. */
+  listLabel?: string;
   /** Under the title, per row: an extra fact ("12 blocked"). */
   renderMeta?: (playlist: P) => React.ReactNode;
   emptyTitle?: string;
@@ -68,8 +70,8 @@ function asIdSet(ids: ReadonlySet<number> | readonly number[]): Set<number> {
  * same everywhere:
  *
  * search box with an "N of M" count → optional bulk-select row → a scrolling
- * `SelectableList` of 48px artwork, title and track count, a real checkbox
- * (`multi`) or radio (`single`) on each row.
+ * `SelectableList` of 48px artwork, title and track count: a real checkbox
+ * per row (`multi`), or a pressable row (`single`, see `PlaylistChoiceRow`).
  *
  * Shift-click selects a range in `multi`, counted over the rows currently
  * shown — so a search narrows what a range can reach, which is what the user
@@ -85,6 +87,7 @@ export function PlaylistPicker<P extends PickerPlaylist>({
   onRetry,
   disabledReasons,
   searchLabel = "Search playlists",
+  listLabel = "Playlists",
   renderMeta,
   emptyTitle = "No playlists found",
   emptyDescription = "Create some playlists on SoundCloud first.",
@@ -93,11 +96,16 @@ export function PlaylistPicker<P extends PickerPlaylist>({
   className,
 }: PlaylistPickerProps<P>) {
   const [query, setQuery] = useState("");
-  const radioName = useId();
   const lastIndexRef = useRef<number | null>(null);
   const selected = useMemo(() => asIdSet(selectedIds), [selectedIds]);
   const getText = useCallback((playlist: P) => playlistText(playlist), []);
   const { results: shown } = useListSearch(playlists, query, getText);
+
+  // A shift-click range is counted over the rows on screen; once they change
+  // (a search, a refetch) the remembered anchor points at a different row.
+  useEffect(() => {
+    lastIndexRef.current = null;
+  }, [shown]);
 
   const inListOrder = useCallback(
     (ids: Set<number>) => playlists.filter((playlist) => ids.has(Number(playlist.id))),
@@ -106,7 +114,9 @@ export function PlaylistPicker<P extends PickerPlaylist>({
 
   const toggle = (playlist: P, index: number, event?: React.MouseEvent | React.KeyboardEvent) => {
     const id = Number(playlist.id);
-    const viaPointer = Boolean(event && "clientX" in event);
+    // Keyboard activation (Enter/Space on a button, Space on a checkbox)
+    // arrives with `detail` 0 or no event at all.
+    const viaPointer = Boolean(event && (event as React.MouseEvent).detail > 0);
 
     if (mode === "single") {
       onChange([playlist], { viaPointer, changed: playlist });
@@ -219,46 +229,67 @@ export function PlaylistPicker<P extends PickerPlaylist>({
           description="Try fewer or different words."
         />
       ) : (
-        <SelectableList className={cn("max-h-[60dvh] overflow-y-auto overscroll-contain pr-1", listClassName)}>
+        <SelectableList label={listLabel} className={cn("max-h-[60dvh] overflow-y-auto overscroll-contain pr-1", listClassName)}>
           {shown.map((playlist, index) => {
             const id = Number(playlist.id);
             const isSelected = selected.has(id);
             const reason = disabledReasons?.get(id);
             const meta = renderMeta?.(playlist);
+            const subtitle = (
+              <>
+                {typeof playlist.track_count === "number"
+                  ? `${playlist.track_count} track${playlist.track_count === 1 ? "" : "s"}`
+                  : null}
+                {reason ? <span className="ml-2 text-primary-text">({reason})</span> : null}
+                {meta ? <span className="ml-2">{meta}</span> : null}
+              </>
+            );
+            // The disabled reason is part of the name: a dimmed row alone
+            // says nothing to a screen reader.
+            const label = reason ? `${playlist.title} (${reason})` : playlist.title;
+            const artwork = (
+              <img
+                src={playlist.coverUrl || playlist.artwork_url || "/brand/icon-192.png"}
+                alt=""
+                width={48}
+                height={48}
+                loading="lazy"
+                decoding="async"
+                className="h-12 w-12 shrink-0 rounded-lg object-cover"
+              />
+            );
+
+            if (mode === "single") {
+              return (
+                <PlaylistChoiceRow
+                  key={id}
+                  label={label}
+                  title={playlist.title}
+                  subtitle={subtitle}
+                  artwork={artwork}
+                  selected={isSelected}
+                  disabled={Boolean(reason)}
+                  onChoose={(event) => toggle(playlist, index, event)}
+                />
+              );
+            }
+
             return (
               <SelectableRow
                 key={id}
                 id={id}
-                type={mode === "single" ? "radio" : "checkbox"}
-                name={mode === "single" ? radioName : undefined}
                 selected={isSelected}
                 disabled={Boolean(reason)}
-                // The disabled reason is part of the name: a dimmed row alone
-                // says nothing to a screen reader.
-                label={reason ? `${playlist.title} (${reason})` : playlist.title}
+                label={label}
                 onToggle={(event) => toggle(playlist, index, event)}
               >
                 <span className="flex min-w-0 items-center gap-3">
-                  <img
-                    src={playlist.coverUrl || playlist.artwork_url || "/brand/icon-192.png"}
-                    alt=""
-                    width={48}
-                    height={48}
-                    loading="lazy"
-                    decoding="async"
-                    className="h-12 w-12 shrink-0 rounded-lg object-cover"
-                  />
+                  {artwork}
                   <span className="min-w-0 flex-1 text-left">
                     <span className="block truncate text-sm font-semibold text-foreground">
                       {playlist.title}
                     </span>
-                    <span className="block truncate text-xs text-muted-foreground">
-                      {typeof playlist.track_count === "number"
-                        ? `${playlist.track_count} track${playlist.track_count === 1 ? "" : "s"}`
-                        : null}
-                      {reason ? <span className="ml-2 text-primary-text">({reason})</span> : null}
-                      {meta ? <span className="ml-2">{meta}</span> : null}
-                    </span>
+                    <span className="block truncate text-xs text-muted-foreground">{subtitle}</span>
                   </span>
                 </span>
               </SelectableRow>
@@ -267,5 +298,75 @@ export function PlaylistPicker<P extends PickerPlaylist>({
         </SelectableList>
       )}
     </div>
+  );
+}
+
+interface PlaylistChoiceRowProps {
+  /** Accessible name: the title, plus why it is unavailable when it is. */
+  label: string;
+  title: React.ReactNode;
+  subtitle?: React.ReactNode;
+  /** 48px artwork or an icon tile. */
+  artwork: React.ReactNode;
+  selected: boolean;
+  disabled?: boolean;
+  onChoose: (event: React.MouseEvent<HTMLButtonElement>) => void;
+}
+
+/**
+ * One row of a pick-one list: a real `<button aria-pressed>` the size and
+ * shape of a `SelectableRow`, with a round indicator where the checkbox
+ * would be.
+ *
+ * Deliberately not a radio. Choosing a playlist loads it — its tracks, a
+ * report, an editor — and a native radio group commits on every arrow key,
+ * so arrowing down a list of forty would load forty playlists and throw away
+ * whatever was selected or edited in the one before. A button commits only
+ * on click, Enter or Space; Tab moves between rows, as the old grids did.
+ * Exported for the one fixed entry a page lists above the picker (Downloads'
+ * "Liked Tracks"), so it looks and behaves like the rows below it.
+ */
+export function PlaylistChoiceRow({
+  label,
+  title,
+  subtitle,
+  artwork,
+  selected,
+  disabled = false,
+  onChoose,
+}: PlaylistChoiceRowProps) {
+  return (
+    <li className="min-w-0">
+      <button
+        type="button"
+        aria-pressed={selected}
+        aria-label={label}
+        disabled={disabled}
+        onClick={onChoose}
+        className={cn(
+          "flex min-h-16 w-full min-w-0 items-center gap-3 rounded-xl border px-3 py-2 text-left transition-colors",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/80 focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          selected
+            ? "border-primary bg-primary/10"
+            : "border-transparent bg-gray-50 hover:border-gray-200 dark:bg-secondary/20 dark:hover:border-border",
+          disabled && "cursor-not-allowed opacity-60",
+        )}
+      >
+        <span
+          aria-hidden="true"
+          className={cn(
+            "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2",
+            selected ? "border-primary" : "border-muted-foreground",
+          )}
+        >
+          {selected ? <span className="h-3 w-3 rounded-full bg-primary" /> : null}
+        </span>
+        {artwork}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-semibold text-foreground">{title}</span>
+          {subtitle ? <span className="block truncate text-xs text-muted-foreground">{subtitle}</span> : null}
+        </span>
+      </button>
+    </li>
   );
 }
