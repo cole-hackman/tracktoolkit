@@ -172,7 +172,9 @@ function buildOutcome(
   // written and a reason per playlist: error. Nothing to add: empty.
   let status: ResultStatus = "success";
   if (hasProblems) status = created.length > 0 || partials.length > 0 ? "partial" : "error";
-  else if (!isClone && result.addedCount === 0 && created.length === 0) status = "empty";
+  // The append path always returns the target playlist, so "nothing added"
+  // is addedCount 0 alone.
+  else if (!isClone && result.addedCount === 0) status = "empty";
 
   return {
     id: Date.now(),

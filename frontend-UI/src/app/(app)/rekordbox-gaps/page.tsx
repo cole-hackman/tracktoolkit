@@ -14,7 +14,7 @@ import {
   PageContainer,
   PageHeader,
   Panel,
-  ResultPanel,
+  InlineAlert,
   Select,
   Skeleton,
   useAnnounce,
@@ -71,7 +71,7 @@ export default function RekordboxGapsPage() {
   const [source, setSource] = useState<string>(LIKES);
   const [show, setShow] = useState<MatchKind>("missing");
   const [visible, setVisible] = useState(ROW_STEP);
-  const [rowError, setRowError] = useState<{ run: number; title: string; message: string } | null>(null);
+  const [rowError, setRowError] = useState<{ id: number; message: string } | null>(null);
   const [query, setQuery] = useState("");
   const [downloadingId, setDownloadingId] = useState<number | null>(null);
   const [walking, setWalking] = useState(false);
@@ -135,6 +135,8 @@ export default function RekordboxGapsPage() {
   const readFile = async (file: File | undefined) => {
     if (!file) return;
     setParseError(null);
+    // A new collection is a new list; the last one's filter does not apply.
+    setQuery("");
     setReading(true);
     try {
       // Read and parsed here, in this tab. The file is never sent anywhere.
@@ -163,7 +165,11 @@ export default function RekordboxGapsPage() {
     setDownloadingId(track.id);
     const result = await startSoundCloudDownload(track.download_url);
     setDownloadingId(null);
-    if (!result.ok) setRowError({ run: Date.now(), title: "Couldn't start the download", message: `${track.title}: ${result.error}` });
+    // Shown under the row it is about, not in the page's result slot: a
+    // focused panel at the top would pull the user away from a list of
+    // hundreds of rows. It is a per-row action error, like the resolver's
+    // download error, not the outcome of a run.
+    if (!result.ok) setRowError({ id: track.id, message: result.error });
   };
 
   // For the local runner: only gates for tracks you don't have, so it never
@@ -207,17 +213,6 @@ export default function RekordboxGapsPage() {
   return (
     <PageContainer kind="list">
       <PageHeader title="Rekordbox gaps" description="Find what you like on SoundCloud but don't have in Rekordbox, and where to get it." />
-
-      {rowError ? (
-        <ResultPanel
-          key={rowError.run}
-          status="error"
-          title={rowError.title}
-          description={rowError.message}
-          onDismiss={() => setRowError(null)}
-          className="mb-6"
-        />
-      ) : null}
 
       <div className={hasQueue ? "pb-24 lg:grid lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6 lg:pb-0" : undefined}>
         <div className="min-w-0 space-y-6">
@@ -378,6 +373,11 @@ export default function RekordboxGapsPage() {
                             downloading={downloadingId === track.id}
                             onDownload={() => downloadOne(track, status)}
                           />
+                          {rowError?.id === track.id && (
+                            <InlineAlert variant="error" className="mt-1" onDismiss={() => setRowError(null)}>
+                              {`${track.title}: ${rowError.message}`}
+                            </InlineAlert>
+                          )}
                         </li>
                       ))}
                     </ul>
