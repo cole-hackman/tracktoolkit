@@ -62,7 +62,10 @@ export function PlaylistChooser<P extends PickerPlaylist>({
   const available = playlists.filter((p) => !disabledReasons?.has(Number(p.id)));
 
   return (
-    <div className={cn("grid gap-1.5", className)}>
+    // `min-w-0` on the grid and its children: a grid column's minimum is its
+    // content's, and one long playlist title in the trigger otherwise widened
+    // the page past a phone's viewport (1022px at 390 on compare).
+    <div className={cn("grid min-w-0 gap-1.5 [&>*]:min-w-0", className)}>
       <span id={labelId} className="text-sm font-semibold text-foreground">
         {label}
       </span>

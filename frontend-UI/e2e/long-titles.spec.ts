@@ -309,7 +309,7 @@ const CASES: Case[] = [
   {
     path: "/playlist-health-check/",
     drive: async (page) => {
-      await page.getByRole("radio", { name: new RegExp(LONG.slice(0, 30)) }).first().click();
+      await page.getByRole("button", { name: new RegExp(LONG.slice(0, 30)) }).first().click();
       await page.getByRole("group", { name: "Filter tracks" }).waitFor();
     },
     proof: async (page) => expect(page.locator("main")).toContainText(LONG),
@@ -343,10 +343,10 @@ const CASES: Case[] = [
     path: "/playlist-compare/",
     drive: async (page) => {
       await page.getByRole("button", { name: /^Playlist A/ }).click();
-      await page.getByRole("radio").nth(0).click();
+      await page.getByRole("dialog").getByRole("list", { name: "Playlists" }).getByRole("button").nth(0).click();
       await expect(page.getByRole("dialog")).toBeHidden();
       await page.getByRole("button", { name: /^Playlist B/ }).click();
-      await page.getByRole("radio").nth(1).click();
+      await page.getByRole("dialog").getByRole("list", { name: "Playlists" }).getByRole("button").nth(1).click();
       await expect(page.getByRole("dialog")).toBeHidden();
       await page.getByRole("button", { name: "Compare" }).click();
       await page.getByRole("heading", { name: /In both playlists/ }).waitFor();

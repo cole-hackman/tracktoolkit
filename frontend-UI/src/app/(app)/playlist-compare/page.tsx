@@ -153,7 +153,6 @@ export default function PlaylistComparePage() {
               loading={loading}
               loadError={playlistsQuery.isError}
               onRetry={() => playlistsQuery.refetch()}
-              className="min-w-0 [&>*]:min-w-0"
               placeholder="Choose a playlist..."
             />
             <PlaylistChooser
@@ -165,7 +164,6 @@ export default function PlaylistComparePage() {
               loading={loading}
               loadError={playlistsQuery.isError}
               onRetry={() => playlistsQuery.refetch()}
-              className="min-w-0 [&>*]:min-w-0"
               placeholder="Choose a playlist..."
             />
           </div>

@@ -30,7 +30,7 @@ test("keyword search: copy and a partial remove land in the result region", asyn
   await page.getByRole("heading", { name: "Matches" }).waitFor();
   await page.getByRole("button", { name: "Select all" }).click();
   await page.getByRole("button", { name: /^Copy selected tracks to/ }).click();
-  await page.getByRole("radio").nth(1).click();
+  await page.getByRole("dialog").getByRole("list", { name: "Playlists" }).getByRole("button").nth(1).click();
   await page.getByRole("button", { name: /^Copy \d/ }).click();
   await expect(page.getByRole("region", { name: "Tracks copied" })).toBeFocused();
   await page.getByRole("button", { name: /^Remove \d/ }).click();

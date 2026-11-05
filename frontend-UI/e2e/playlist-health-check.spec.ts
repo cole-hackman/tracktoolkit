@@ -60,7 +60,7 @@ async function trackPlaylistRoute(
 
 async function openHealthCheck(page: Page) {
   await page.goto("/playlist-health-check/");
-  await page.getByRole("radio", { name: /Sample Playlist 1/ }).click();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   await page.getByRole("group", { name: "Filter tracks" }).waitFor();
 }
 

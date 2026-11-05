@@ -56,10 +56,10 @@ test("compare: a 404 PLAYLIST_NOT_FOUND shows the server text, clears the select
   const a = page.getByRole("button", { name: /^Playlist A/ });
   const b = page.getByRole("button", { name: /^Playlist B/ });
   await a.click();
-  await page.getByRole("radio", { name: "Sample Playlist 1" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   await b.click();
-  await expect(page.getByRole("radio", { name: "Sample Playlist 2" })).toHaveCount(1);
-  await page.getByRole("radio", { name: "Sample Playlist 2" }).click();
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Sample Playlist 2", exact: true })).toHaveCount(1);
+  await page.getByRole("dialog").getByRole("button", { name: "Sample Playlist 2", exact: true }).click();
 
   const before = listGets;
   await page.getByRole("button", { name: "Compare" }).click();
@@ -72,7 +72,7 @@ test("compare: a 404 PLAYLIST_NOT_FOUND shows the server text, clears the select
   await expect.poll(() => listGets).toBeGreaterThan(before);
   await expect(b).toContainText("Choose a playlist...");
   await b.click();
-  await expect(page.getByRole("radio", { name: "Sample Playlist 2" })).toHaveCount(0);
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Sample Playlist 2", exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
   // Compare reads React state, not the DOM: it is disabled only if B was cleared.
   await expect(page.getByRole("button", { name: "Compare" })).toBeDisabled();

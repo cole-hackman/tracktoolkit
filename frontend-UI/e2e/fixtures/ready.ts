@@ -73,7 +73,7 @@ export const READY: Record<string, ReadyLocator> = {
   // The scan results — summary bar, filter pills, per-row badges — only
   // exist once a playlist is picked.
   "/playlist-health-check/": async (page) => {
-    await page.getByRole("radio", { name: /Sample Playlist 1/ }).click();
+    await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
     return page.getByRole("group", { name: "Filter tracks" });
   },
   // The format select and the preview only exist after the list is loaded.
@@ -106,10 +106,10 @@ export const READY: Record<string, ReadyLocator> = {
   // The metrics and the three track sections only exist after a comparison.
   "/playlist-compare/": async (page) => {
     await page.getByRole("button", { name: /^Playlist A/ }).click();
-    await page.getByRole("radio").nth(0).click();
+    await page.getByRole("dialog").getByRole("list", { name: "Playlists" }).getByRole("button").nth(0).click();
     await page.getByRole("dialog").waitFor({ state: "hidden" });
     await page.getByRole("button", { name: /^Playlist B/ }).click();
-    await page.getByRole("radio").nth(1).click();
+    await page.getByRole("dialog").getByRole("list", { name: "Playlists" }).getByRole("button").nth(1).click();
     await page.getByRole("dialog").waitFor({ state: "hidden" });
     await page.getByRole("button", { name: "Compare" }).click();
     return page.getByRole("heading", { name: /In both playlists/ });

@@ -607,7 +607,6 @@ export default function PlaylistKeywordSearchPage() {
                     loadError={playlistsQuery.isError}
                     onRetry={() => playlistsQuery.refetch()}
                     placeholder="Copy to…"
-                    className="min-w-0 [&>*]:min-w-0"
                   />
                 </div>
                 <Button nowrap
