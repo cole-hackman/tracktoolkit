@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { Button, Card, Field, InlineAlert, Input, Select } from "@/components/ui";
+import { ActionBar, Button, Card, Field, InlineAlert, Input, Panel, Select } from "@/components/ui";
 import { SupportLink } from "@/components/SupportLink";
 import { apiFetchJson, isApiError } from "@/lib/api";
 import { NAV_LINKS, toolLabelForPath } from "@/lib/nav";
@@ -281,14 +281,14 @@ export function FeedbackForm() {
   const unlistedPage = page && !knownHrefs.has(page) ? page : null;
 
   return (
-    <>
+    <div className="space-y-6">
       {result ? (
-        <Card className="p-5 sm:p-6">
+        <Panel>
           <div role="status">
             <h2
               ref={confirmationRef}
               tabIndex={-1}
-              className="text-xl font-bold tracking-tight text-foreground focus:outline-none focus-visible:outline-none"
+              className="text-lg font-semibold text-foreground focus:outline-none focus-visible:outline-none"
             >
               Thanks — got it
             </h2>
@@ -311,7 +311,7 @@ export function FeedbackForm() {
               </SupportLink>
               .
             </p>
-            <div className="mt-5 flex flex-wrap gap-3">
+            <ActionBar>
               <Button type="button" onClick={handleSendAnother}>
                 Send another
               </Button>
@@ -321,12 +321,12 @@ export function FeedbackForm() {
               >
                 Back to dashboard
               </Link>
-            </div>
+            </ActionBar>
           </div>
-        </Card>
+        </Panel>
       ) : (
-        <Card className="p-5 sm:p-6">
-          <form onSubmit={handleSubmit} noValidate className="grid gap-6">
+        <Panel>
+          <form onSubmit={handleSubmit} noValidate className="grid gap-4">
             {formAlert ? (
               <InlineAlert variant={alertVariant}>{formAlert}</InlineAlert>
             ) : null}
@@ -510,17 +510,17 @@ export function FeedbackForm() {
             </div>
 
             {/* 6 — submit */}
-            <div>
+            <ActionBar className="mt-2">
               <Button type="submit" size="lg" disabled={submitting}>
                 {submitting ? "Sending…" : "Send feedback"}
               </Button>
-            </div>
+            </ActionBar>
           </form>
-        </Card>
+        </Panel>
       )}
 
       {recent.length > 0 ? (
-        <section className="mt-8" aria-labelledby="recent-reports-heading">
+        <section aria-labelledby="recent-reports-heading">
           <h2
             id="recent-reports-heading"
             className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
@@ -553,7 +553,7 @@ export function FeedbackForm() {
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {announcement}
       </span>
-    </>
+    </div>
   );
 }
 
