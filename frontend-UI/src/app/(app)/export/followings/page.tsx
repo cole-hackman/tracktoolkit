@@ -18,9 +18,12 @@ export default function ExportFollowingsPage() {
   };
 
   return (
-    <PageContainer maxWidth="narrow">
+    <PageContainer kind="form">
       <ExportBackLink />
       <PageHeader
+        // ExportBackLink above is the way back; the default "Back to
+        // Dashboard" would stack a second back link under it on a phone.
+        backHref=""
         title="Export Followings"
         description="Export everyone you follow as a simple list or spreadsheet."
       />

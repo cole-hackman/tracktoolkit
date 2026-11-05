@@ -201,7 +201,7 @@ test("has no serious/critical violations: /playlist-to-likes/ with a playlist ch
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/playlist-to-likes/");
 
-  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   await expect(page.getByRole("checkbox", { name: "Sample Track 1" })).toBeVisible();
 
   await expectNoBlockingViolations(page);
@@ -225,7 +225,7 @@ async function openPlaylistModifierEditor(page: Page) {
   await mockApi(page);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/playlist-modifier/");
-  await page.getByRole("button", { name: "Sample Playlist 1" }).click();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   await expect(page.getByRole("group", { name: "Filter tracks" })).toBeVisible();
 }
 
@@ -347,9 +347,8 @@ test("has no serious/critical violations: /genre-search/ results and add-to-play
 /**
  * A successful add clears the selection, which unmounts `SelectionBanner` and
  * with it the button the dialog was opened from — so the focus `useDialog`
- * would otherwise restore to no longer exists, and `.focus()` on a detached
- * node silently leaves the user at `<body>`, above everything. The page hands
- * focus to the results block instead.
+ * would otherwise restore to no longer exists. The outcome panel in the result
+ * slot takes focus instead.
  */
 test("genre-search: focus survives a successful add", async ({ page }) => {
   await mockApi(page);
@@ -373,12 +372,9 @@ test("genre-search: focus survives a successful add", async ({ page }) => {
     page.getByText('1 track added to "Sample Playlist 9".', { exact: true }),
   ).toBeVisible();
 
-  const focus = await page.evaluate(() => ({
-    isBody: document.activeElement === document.body,
-    text: (document.activeElement?.textContent || "").trim().slice(0, 40),
-  }));
-  expect(focus.isBody, "focus fell back to <body> after a successful add").toBe(false);
-  expect(focus.text).toContain("Results");
+  // The result panel takes focus itself when it mounts, so focus is on the
+  // outcome and not left on <body>.
+  await expect(page.getByRole("region", { name: "Tracks added" })).toBeFocused();
 });
 
 test("has no serious/critical violations: /downloads/ track list and selection mode", async ({
@@ -388,7 +384,7 @@ test("has no serious/critical violations: /downloads/ track list and selection m
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/downloads/");
 
-  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
 
   // Each download control names its track and its route, so a column of them
   // is not four buttons all called "Download".
@@ -579,10 +575,12 @@ test("combine: the target-playlist picker is the shared Dialog", async ({ page }
   // <button> node across the "Choose a target playlist…" / "Change" ternary —
   // add a `key` or a wrapper and `returnFocusRef` would point at a detached
   // node and focus would fall to <body>. Pinned here so that stays true.
+  // The rows are the shared PlaylistPicker's radios now (one picker for the
+  // whole app), so the option is a radio rather than an aria-pressed button.
   await trigger.focus();
   await trigger.press("Enter");
   await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await dialog.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   await expect(dialog).toBeHidden();
   await expect(page.getByRole("button", { name: /Change/ })).toBeFocused();
 });

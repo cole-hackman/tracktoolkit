@@ -5,7 +5,6 @@ import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-q
 import {
   Sparkles,
   History,
-  Search,
   Check,
   Loader2,
   ExternalLink,
@@ -22,8 +21,10 @@ import {
   Download,
 } from "lucide-react";
 import {
+  ActionBar,
   PageContainer,
   PageHeader,
+  Panel,
   Card,
   Button,
   Field,
@@ -32,16 +33,20 @@ import {
   EmptyState,
   ConfirmDialog,
   BulkReviewDetails,
+  ListSearch,
   ProgressBar,
+  ResultPanel,
   SelectableRow,
   SelectionBanner,
   Select,
-  Input,
-  useAnnounce
+  ToolLayout,
+  useAnnounce,
+  type ResultStatus,
 } from "@/components/ui";
 import { ProgressiveBlur } from "@/components/ui/ProgressiveBlur";
 import { apiFetch } from "@/lib/api";
 import { downloadCsv } from "@/lib/csv";
+import { useListSearch } from "@/lib/list-search";
 import {
   followingsQueryOptions,
   invalidateDashboardSummary,
@@ -212,6 +217,27 @@ interface FollowBackBucket {
   notFollowedBack: number;
 }
 
+/**
+ * The outcome of a run (a failed scan, starting or failing to start an
+ * engagement batch, a follow-back check, a reversal), shown in the result
+ * slot above the tabs. `source` lets the end of an engagement batch retire
+ * its own "started" panel without touching a History result.
+ */
+interface Outcome {
+  id: number;
+  status: ResultStatus;
+  title: string;
+  description: string;
+  source?: "engage";
+}
+
+// Search text per list, module-level so `useListSearch` memoises on them.
+const followingText = (f: Following) => f.username ?? "";
+const suggestionText = (s: Suggestion) =>
+  [s.user.username, ...(s.genres ?? []), s.suggestedTrack?.title ?? ""].join(" ");
+const sessionText = (s: SessionGroup) => s.label ?? "";
+const actionText = (a: GrowthAction) => `${a.targetName ?? ""} ${a.actionType}`;
+
 function formatDuration(seconds: number) {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = seconds % 60;
@@ -262,8 +288,13 @@ export default function GrowthPage() {
   const [discoveryStats, setDiscoveryStats] = useState<DiscoveryStats | null>(null);
   const [discoveryStartedAt, setDiscoveryStartedAt] = useState<number | null>(null);
   const [selectedSuggestions, setSelectedSuggestions] = useState<Set<number>>(new Set());
+  const [suggestionQuery, setSuggestionQuery] = useState("");
   const [likeTracks, setLikeTracks] = useState(false); // auto-like is opt-in
   const [recentEngagedCount, setRecentEngagedCount] = useState({ followed: 0, liked: 0 });
+  // What the end of the last batch announced; the summary panel speaks it.
+  const [campaignAnnouncement, setCampaignAnnouncement] = useState("");
+  // Seed-list validation ("maximum of 5"), shown at the list it is about.
+  const [seedLimitError, setSeedLimitError] = useState<string | null>(null);
 
   // Engagement job (server-paced batch)
   const [job, setJob] = useState<EngageJob | null>(null);
@@ -277,9 +308,19 @@ export default function GrowthPage() {
   const [reversing, setReversing] = useState(false);
   const [checkingFollowbacks, setCheckingFollowbacks] = useState(false);
   const [showReverseConfirm, setShowReverseConfirm] = useState(false);
+  const [sessionQuery, setSessionQuery] = useState("");
+  const [actionQuery, setActionQuery] = useState("");
 
-  // General Notification
-  const [notice, setNotice] = useState<{ type: "success" | "error" | "info" | "warning"; text: string } | null>(null);
+  // The result of the last run, in the slot under the page header.
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const report = useCallback(
+    (status: ResultStatus, title: string, description: string, source?: Outcome["source"]) =>
+      setOutcome({ id: Date.now(), status, title, description, source }),
+    [],
+  );
+  // "Cancelling after the current action…": an acknowledgement of Stop, not
+  // the outcome of a run, so it stays a plain notice.
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Fetch followings for Step 1
   const { data: followingsData } = useSuspenseQuery(followingsQueryOptions());
@@ -338,6 +379,8 @@ export default function GrowthPage() {
   const discoverMutation = useMutation({
     mutationFn: async (payload: { inspirationUserIds: number[]; strategy: string; genre?: string }) => {
       setDiscoveryStartedAt(Date.now());
+      setOutcome(null);
+      setSeedLimitError(null);
       setDiscoveryStep(2);
       const res = await apiFetch("/api/growth/discover", {
         method: "POST",
@@ -358,6 +401,7 @@ export default function GrowthPage() {
           .map((s: Suggestion) => s.user.id)
       );
       setSelectedSuggestions(autoSelected);
+      setSuggestionQuery("");
       setDiscoveryStep(3);
       const found = data.suggestions.length;
       const focus: string | null | undefined = data.stats?.genreFocus;
@@ -369,7 +413,11 @@ export default function GrowthPage() {
     },
     onError: (err: Error) => {
       setDiscoveryStartedAt(null);
-      setNotice({ type: "error", text: err.message || "Failed to scan networks. SoundCloud might be rate limiting." });
+      report(
+        "error",
+        "Couldn't scan networks",
+        err.message || "Failed to scan networks. SoundCloud might be rate limiting.",
+      );
       setDiscoveryStep(1);
     }
   });
@@ -384,6 +432,8 @@ export default function GrowthPage() {
   const startEngagement = async () => {
     if (selectedSuggestions.size === 0) return;
     setShowRiskModal(false);
+    setOutcome(null);
+    setNotice(null);
 
     const selectedList = suggestions.filter(s => selectedSuggestions.has(s.user.id));
     const seedFollowings = followings.filter(f => selectedInspirations.has(f.id));
@@ -415,17 +465,19 @@ export default function GrowthPage() {
 
       const data = await res.json();
       if (!res.ok) {
-        setNotice({ type: "error", text: data.error || "Failed to start engagement batch." });
+        report("error", "Couldn't start the batch", data.error || "Failed to start engagement batch.");
         if (data.budget) refetchBudget();
         return;
       }
       setJob(data.job);
-      setNotice({
-        type: "info",
-        text: `Engagement started — following ${targets.length} user${targets.length === 1 ? "" : "s"} at a safe pace. You can leave this page; it runs in the background.`,
-      });
+      report(
+        "success",
+        "Engagement started",
+        `Engagement started — following ${targets.length} user${targets.length === 1 ? "" : "s"} at a safe pace. You can leave this page; it runs in the background.`,
+        "engage",
+      );
     } catch {
-      setNotice({ type: "error", text: "Failed to start engagement batch." });
+      report("error", "Couldn't start the batch", "Failed to start engagement batch.");
     }
   };
 
@@ -441,12 +493,16 @@ export default function GrowthPage() {
           if (data.job.status !== "running") {
             clearInterval(interval);
             setRecentEngagedCount({ followed: data.job.followed, liked: data.job.liked });
+            // The summary panel speaks this when it mounts; it supersedes the
+            // "Engagement started" result and the "Cancelling…" notice.
+            setCampaignAnnouncement(
+              `Engagement ${data.job.status} — followed ${data.job.followed}, liked ${data.job.liked}.`,
+            );
+            setOutcome((prev) => (prev?.source === "engage" ? null : prev));
+            setNotice(null);
             setDiscoveryStep(4);
             refetchBudget();
             invalidateDashboardSummary(queryClient);
-            announce(
-              `Engagement ${data.job.status} — followed ${data.job.followed}, liked ${data.job.liked}.`,
-            );
           }
         }
       } catch {
@@ -454,12 +510,12 @@ export default function GrowthPage() {
       }
     }, 2000);
     return () => clearInterval(interval);
-  }, [job, queryClient, refetchBudget, announce]);
+  }, [job, queryClient, refetchBudget]);
 
   const cancelEngagement = async () => {
     try {
       await apiFetch("/api/growth/engage/cancel", { method: "POST" });
-      setNotice({ type: "info", text: "Cancelling after the current action…" });
+      setNotice("Cancelling after the current action…");
     } catch {
       /* ignore */
     }
@@ -510,6 +566,7 @@ export default function GrowthPage() {
   const checkFollowbacksMutation = useMutation({
     mutationFn: async (sessId: string | null) => {
       setCheckingFollowbacks(true);
+      setOutcome(null);
       const res = await apiFetch("/api/growth/check-followbacks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -519,15 +576,16 @@ export default function GrowthPage() {
       return res.json();
     },
     onSuccess: (data) => {
-      setNotice({
-        type: "success",
-        text: `Checked ${data.checked} users. Found ${data.followedBack} new followbacks! (${data.alreadyChecked} skipped on cooldown)`
-      });
+      report(
+        "success",
+        "Follow-backs checked",
+        `Checked ${data.checked} users. Found ${data.followedBack} new followbacks! (${data.alreadyChecked} skipped on cooldown)`,
+      );
       refetchHistory();
       refetchStats();
     },
     onError: (err: Error) => {
-      setNotice({ type: "error", text: err.message || "Failed to verify followbacks." });
+      report("error", "Couldn't check follow-backs", err.message || "Failed to verify followbacks.");
     },
     onSettled: () => {
       setCheckingFollowbacks(false);
@@ -541,6 +599,7 @@ export default function GrowthPage() {
       filter?: { sessionId?: string; followedBack?: boolean; actionType?: 'follow' | 'like' } 
     }) => {
       setReversing(true);
+      setOutcome(null);
       const res = await apiFetch("/api/growth/reverse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -550,17 +609,28 @@ export default function GrowthPage() {
       return res.json();
     },
     onSuccess: (data) => {
-      setNotice({
-        type: "success",
-        text: `Successfully reversed ${data.reversed} actions. (${data.failed} failed)`
-      });
+      // Same sentence as before; the status only says whether all, some or
+      // none of the selection was undone.
+      const reversed = Number(data.reversed) || 0;
+      const failed = Number(data.failed) || 0;
+      const status: ResultStatus =
+        failed === 0 ? "success" : reversed > 0 ? "partial" : "error";
+      report(
+        status,
+        status === "success"
+          ? "Actions reversed"
+          : status === "partial"
+            ? "Some actions not reversed"
+            : "Actions not reversed",
+        `Successfully reversed ${data.reversed} actions. (${data.failed} failed)`,
+      );
       setSelectedHistoryActions(new Set());
       refetchHistory();
       refetchStats();
       invalidateDashboardSummary(queryClient);
     },
     onError: (err: Error) => {
-      setNotice({ type: "error", text: err.message || "Failed to reverse actions." });
+      report("error", "Couldn't reverse actions", err.message || "Failed to reverse actions.");
     },
     onSettled: () => {
       setReversing(false);
@@ -645,9 +715,11 @@ export default function GrowthPage() {
       const next = new Set(prev);
       if (next.has(id)) {
         next.delete(id);
+        // Room for another seed again, so the limit message no longer applies.
+        setSeedLimitError(null);
       } else {
         if (next.size >= 5) {
-          setNotice({ type: "error", text: "You can select a maximum of 5 seed users." });
+          setSeedLimitError("You can select a maximum of 5 seed users.");
           return prev;
         }
         next.add(id);
@@ -658,7 +730,10 @@ export default function GrowthPage() {
 
   const selectTab = (key: TabKey) => {
     setActiveTab(key);
+    // A tab switch cleared the old top notice; it clears what replaced it.
+    setOutcome(null);
     setNotice(null);
+    setSeedLimitError(null);
     if (key === "history") {
       refetchHistory();
       refetchStats();
@@ -692,13 +767,51 @@ export default function GrowthPage() {
     });
   };
 
+  // Searches over the whole collection each list holds, never the rendered
+  // rows (lib/list-search.ts).
+  const { results: filteredInspirations } = useListSearch(followings, searchInspirations, followingText);
+  const { results: shownSuggestions, isFiltered: suggestionsFiltered } = useListSearch(
+    suggestions,
+    suggestionQuery,
+    suggestionText,
+  );
+  const { results: shownSessions } = useListSearch(historySessions, sessionQuery, sessionText);
+
+  const allShownSuggestionsSelected =
+    shownSuggestions.length > 0 && shownSuggestions.every((s) => selectedSuggestions.has(s.user.id));
+
+  /**
+   * Without a search this is exactly the old toggle over every suggestion.
+   * With one it acts on the matches only and says so ("Select all 3 shown"),
+   * the rule every searchable list follows; the selection banner's count
+   * still covers every selected user, shown or not.
+   */
   const toggleAllSuggestions = () => {
-    if (selectedSuggestions.size === suggestions.length) {
-      setSelectedSuggestions(new Set());
-    } else {
-      setSelectedSuggestions(new Set(suggestions.map(s => s.user.id)));
+    if (!suggestionsFiltered) {
+      if (selectedSuggestions.size === suggestions.length) {
+        setSelectedSuggestions(new Set());
+      } else {
+        setSelectedSuggestions(new Set(suggestions.map(s => s.user.id)));
+      }
+      return;
     }
+    setSelectedSuggestions((prev) => {
+      const next = new Set(prev);
+      for (const s of shownSuggestions) {
+        if (allShownSuggestionsSelected) next.delete(s.user.id);
+        else next.add(s.user.id);
+      }
+      return next;
+    });
   };
+
+  const toggleAllSuggestionsLabel = suggestionsFiltered
+    ? allShownSuggestionsSelected
+      ? "Deselect shown"
+      : `Select all ${shownSuggestions.length} shown`
+    : selectedSuggestions.size === suggestions.length
+      ? "Deselect All"
+      : "Select All";
 
   const toggleHistoryAction = (id: string) => {
     setSelectedHistoryActions(prev => {
@@ -709,545 +822,86 @@ export default function GrowthPage() {
     });
   };
 
-  const selectAllHistoryActions = (actions: GrowthAction[]) => {
-    if (selectedHistoryActions.size === actions.length) {
-      setSelectedHistoryActions(new Set());
-    } else {
-      setSelectedHistoryActions(new Set(actions.map(a => a.id)));
-    }
-  };
-
-  const filteredInspirations = followings.filter(f =>
-    !searchInspirations || f.username?.toLowerCase().includes(searchInspirations.toLowerCase())
-  );
-
   const selectedSession = historySessions.find(s => s.sessionId === selectedSessionId);
   const sessionActions = historyActions.filter(a => a.sessionId === selectedSessionId);
+  const { results: shownActions, isFiltered: actionsFiltered } = useListSearch(
+    sessionActions,
+    actionQuery,
+    actionText,
+  );
+  const allShownActionsSelected =
+    shownActions.length > 0 && shownActions.every((a) => selectedHistoryActions.has(a.id));
+
+  /** Same rule as the suggestions: unchanged without a search, shown rows with one. */
+  const selectAllHistoryActions = () => {
+    if (!actionsFiltered) {
+      if (selectedHistoryActions.size === sessionActions.length) {
+        setSelectedHistoryActions(new Set());
+      } else {
+        setSelectedHistoryActions(new Set(sessionActions.map(a => a.id)));
+      }
+      return;
+    }
+    setSelectedHistoryActions((prev) => {
+      const next = new Set(prev);
+      for (const a of shownActions) {
+        if (allShownActionsSelected) next.delete(a.id);
+        else next.add(a.id);
+      }
+      return next;
+    });
+  };
+
+  const selectAllHistoryLabel = actionsFiltered
+    ? allShownActionsSelected
+      ? "Deselect shown"
+      : `Select all ${shownActions.length} shown`
+    : selectedHistoryActions.size === sessionActions.length
+      ? "Deselect All"
+      : "Select All";
+
+  const selectSession = (sessionId: string) => {
+    setSelectedSessionId(sessionId);
+    setSelectedHistoryActions(new Set());
+    setActionQuery("");
+  };
 
   return (
-    <PageContainer maxWidth="wide" className="pb-28">
+    <PageContainer kind="workbench" className="pb-28">
       <PageHeader
         title="Grow Your Network"
         description="Discover active SoundCloud users likely to follow you back, engage with their tracks, and reverse campaigns anytime."
       />
 
-      {notice && (
-        <InlineAlert
-          variant={notice.type}
-          className="mb-6"
-          onDismiss={() => setNotice(null)}
-        >
-          {notice.text}
-        </InlineAlert>
-      )}
+      <div className="space-y-6">
+        {/* Result slot: the outcome of the last run, above the tool. */}
+        {outcome ? (
+          <ResultPanel
+            key={outcome.id}
+            status={outcome.status}
+            title={outcome.title}
+            description={outcome.description}
+            // The sentence alone, as the old notice was read: several titles
+            // ("Engagement started") are also how the sentence begins.
+            announcement={outcome.description}
+            onDismiss={() => setOutcome(null)}
+          />
+        ) : null}
 
-      {/* Tabs Selector */}
-      <div className="mb-6 overflow-x-auto">
-        <div
-          role="tablist"
-          aria-label="Growth sections"
-          className="flex w-full gap-1 rounded-lg border-2 border-border/50 bg-secondary/20 p-1 sm:w-fit"
-        >
-          {TABS.map(({ key, short, long, Icon }) => (
-            <button
-              key={key}
-              ref={(element) => {
-                tabRefs.current[key] = element;
-              }}
-              type="button"
-              role="tab"
-              id={`growth-tab-${key}`}
-              aria-selected={activeTab === key}
-              aria-controls={`growth-panel-${key}`}
-              tabIndex={activeTab === key ? 0 : -1}
-              onClick={() => selectTab(key)}
-              onKeyDown={handleTabKeyDown}
-              className={`flex min-h-11 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2 text-sm font-semibold transition-all sm:flex-none sm:gap-2 sm:px-4 ${
-                activeTab === key
-                  ? "bg-card text-primary-text shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-              <span className="sm:hidden">{short}</span>
-              <span className="hidden sm:inline">{long}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Discover Tab */}
-      {activeTab === "discover" && (
-        <div
-          role="tabpanel"
-          id="growth-panel-discover"
-          aria-labelledby="growth-tab-discover"
-        >
-          {/* Daily budget / cooldown banner */}
-          {budget && (
-            <div className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-border/60 bg-secondary/20 px-4 py-2.5 text-xs">
-              <span className="inline-flex items-center gap-1.5 font-semibold text-foreground">
-                <ShieldAlert className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
-                Daily follow budget
-              </span>
-              <span className="text-muted-foreground">
-                <span className="font-semibold text-foreground">{budget.remaining}</span> of {budget.dailyCap} left
-              </span>
-              {budget.cooldownRemainingMs > 0 && (
-                <span className="text-warning-text">
-                  Cooldown: {Math.ceil(budget.cooldownRemainingMs / 60000)} min until next batch
-                </span>
-              )}
-              {/* `text-muted-foreground-subtle` measures 4.4:1 against this
-                  tinted banner — just under AA, so this one line steps up to
-                  the full-strength muted token. */}
-              <span className="ml-auto text-muted-foreground">
-                Caps protect your account from spam flags.
-              </span>
-            </div>
-          )}
-          {/* STEP 1: Select Seeds */}
-          {discoveryStep === 1 && (
-            <Card className="p-6">
-              <div className="mb-4">
-                <h2 className="text-lg font-bold text-foreground">1. Select Inspiration Users</h2>
-                <p className="text-sm text-muted-foreground mt-0.5">
-                  Select 1–5 users you follow to scan their networks. We'll find people who follow them and similar artists.
-                </p>
-              </div>
-
-              {/* Crawl strategy and search */}
-              <div className="grid grid-cols-1 gap-3 mb-4 sm:grid-cols-2">
-                <Field label="Search your followings">
-                  {(field) => (
-                    <div className="relative">
-                      <Search
-                        className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground"
-                        aria-hidden="true"
-                      />
-                      <Input
-                        {...field}
-                        type="search"
-                        value={searchInspirations}
-                        onChange={(e) => setSearchInspirations(e.target.value)}
-                        placeholder="Username"
-                        className="pl-9 h-11 bg-secondary/20 border-border"
-                      />
-                    </div>
-                  )}
-                </Field>
-
-                {/* The id is the one ea978e8 gave this control; the visible
-                    label now points at it, so the accessible name survives. */}
-                <Select
-                  id="growth-seed-strategy"
-                  label="Strategy"
-                  value={strategy}
-                  onChange={(e) => setStrategy(e.target.value as 'followers' | 'followings' | 'both')}
-                  className="bg-secondary/20"
-                >
-                  <option value="followers">Scan Their Followers</option>
-                  <option value="followings">Scan Their Followings</option>
-                  <option value="both">Scan Both</option>
-                </Select>
-
-                <Field
-                  id="growth-genre-focus"
-                  label="Genre focus"
-                  hint="Only suggests accounts whose recent tracks match; checks more accounts, so the scan takes a little longer."
-                  className="sm:col-span-2"
-                >
-                  {(field) => (
-                    <Select
-                      {...field}
-                      value={genreFocus}
-                      onChange={(e) => setGenreFocus(e.target.value)}
-                      className="bg-secondary/20"
-                    >
-                      <option value="any">Any genre</option>
-                      {GENRE_FOCUS_OPTIONS.map((o) => (
-                        <option key={o.slug} value={o.slug}>{o.label}</option>
-                      ))}
-                    </Select>
-                  )}
-                </Field>
-              </div>
-
-              <div className="text-sm text-muted-foreground mb-3 flex items-center justify-between gap-3">
-                <span role="status">{selectedInspirations.size} of 5 selected</span>
-                {selectedInspirations.size > 0 && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setSelectedInspirations(new Set())}
-                    className="text-primary-text"
-                  >
-                    Clear Selection
-                  </Button>
-                )}
-              </div>
-
-              {/* Grid lists */}
-              <ProgressiveBlur
-                className="grid sm:grid-cols-2 md:grid-cols-3 gap-3 max-h-[60dvh] overflow-y-auto"
-                active={filteredInspirations.length > 9}
-                fadeHeight={72}
-              >
-                {filteredInspirations.map((user) => (
-                  <SelectableRow
-                    key={user.id}
-                    as="div"
-                    id={user.id}
-                    selected={selectedInspirations.has(user.id)}
-                    onToggle={() => handleInspirationClick(user.id)}
-                    label={user.username}
-                  >
-                    <span className="flex items-center gap-3">
-                      <img
-                        src={user.avatar_url || "/brand/icon-192.png"}
-                        alt=""
-                        width={40}
-                        height={40}
-                        loading="lazy"
-                        decoding="async"
-                        className="w-10 h-10 rounded-full object-cover shrink-0"
-                      />
-                      <span className="min-w-0 flex-1">
-                        <span className="block font-semibold text-sm truncate text-foreground">{user.username}</span>
-                        <span className="block text-xs text-muted-foreground truncate">{formatNumber(user.followers_count)} followers</span>
-                      </span>
-                    </span>
-                  </SelectableRow>
-                ))}
-              </ProgressiveBlur>
-
-              {/* Start Discovery Trigger */}
-              <div className="mt-6 flex justify-end">
-                <Button
-                  onClick={() => discoverMutation.mutate({
-                    inspirationUserIds: Array.from(selectedInspirations),
-                    strategy,
-                    ...(genreFocus !== "any" ? { genre: genreFocus } : {}),
-                  })}
-                  disabled={selectedInspirations.size === 0 || discoverMutation.isPending}
-                  className="gap-2 h-11 px-6 shadow-glow-sm"
-                >
-                  {discoverMutation.isPending ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Sparkles className="w-4 h-4" />
-                  )}
-                  Scan Networks & Discover
-                </Button>
-              </div>
-            </Card>
-          )}
-
-          {/* STEP 2: Loading scanning state */}
-          {discoveryStep === 2 && (
-            <Card
-              role="status"
-              className="p-6 sm:p-12 flex flex-col items-center justify-center text-center"
-            >
-              <div className="relative mb-6" aria-hidden="true">
-                <div className="absolute inset-0 bg-primary/20 rounded-full animate-ping duration-1000" />
-                <div className="relative w-16 h-16 rounded-full bg-primary/10 border-2 border-primary flex items-center justify-center text-primary">
-                  <Loader2 className="w-8 h-8 animate-spin" />
-                </div>
-              </div>
-              <h2 className="text-xl font-bold text-foreground">Scanning Networks</h2>
-              <p className="text-sm text-muted-foreground mt-2 max-w-md">
-                Crawling followers and related artists for your selected seed users. We filter out accounts you already follow, then compare scene and activity signals.
-                {anySeedSampled && (
-                  <> For large seeds we sample their ~{SEED_SAMPLE_CAP.toLocaleString()} most recent followers — recent followers are the most active.</>
-                )}
-              </p>
-              <div className="mt-6 space-y-1 text-xs text-primary-text font-mono">
-                {discoveryStartedAt != null && (
-                  <DiscoveryElapsedTimer
-                    startedAt={discoveryStartedAt}
-                    estimatedSeconds={estimatedDiscoverySeconds}
-                  />
-                )}
-                <div className="animate-pulse">Fetching profile signals in small, rate-limit-safe batches…</div>
-              </div>
-              <p className="mt-3 max-w-md text-xs text-muted-foreground">
-                SoundCloud can occasionally take up to a minute to respond; this scan will finish automatically when every shown profile has been checked.
-              </p>
-            </Card>
-          )}
-
-          {/* STEP 3: Suggestions List */}
-          {discoveryStep === 3 && (
-            <>
-              <Card className="p-6 mb-6">
-                <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border/60 pb-4 mb-4">
-                  <div>
-                    <h2 className="text-lg font-bold text-foreground">Discovery Results</h2>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      Scanned {discoveryStats?.candidatesScanned} profiles → found {discoveryStats?.afterDedup} new candidates, scored by scene fit
-                      {discoveryStats?.durationMs ? ` in ${formatDuration(Math.round(discoveryStats.durationMs / 1000))}` : ""}.
-                    </p>
-                    {discoveryStats?.sampledFollowers && (
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Large seeds were sampled: most recent {(discoveryStats.sampleCapPerSeed ?? 1000).toLocaleString()} followers per seed — the slice most likely to still be active.
-                      </p>
-                    )}
-                    {budgetNotice && (
-                      <p data-testid="budget-notice" className="text-xs text-warning-text mt-1">
-                        {budgetNotice}
-                      </p>
-                    )}
-                    {discoveryStats?.genreFocus && (
-                      <p className="mt-1 text-xs text-foreground">
-                        <span className="font-semibold">Focus: {genreLabel(discoveryStats.genreFocus)}</span>
-                        {" · "}
-                        {discoveryStats.genreMatched ?? 0} of {discoveryStats.genreChecked ?? 0} checked matched
-                        {(discoveryStats.genreMatched ?? 0) > suggestions.length && ` (showing top ${suggestions.length})`}
-                        {((discoveryStats.genreUnknown ?? 0) > 0 || (discoveryStats.genreSkipped ?? 0) > 0) && (
-                          <span className="text-muted-foreground">
-                            {" "}
-                            ({[
-                              (discoveryStats.genreUnknown ?? 0) > 0 ? `${discoveryStats.genreUnknown} had no genre info` : null,
-                              (discoveryStats.genreSkipped ?? 0) > 0 ? `${discoveryStats.genreSkipped} not checked in time` : null,
-                            ].filter(Boolean).join(", ")}; left out)
-                          </span>
-                        )}
-                      </p>
-                    )}
-                    {discoveryStats?.seedGenres && discoveryStats.seedGenres.length > 0 && (
-                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                        <span className="text-xs uppercase tracking-wider text-muted-foreground">Scene:</span>
-                        {discoveryStats.seedGenres.slice(0, 6).map((g) => (
-                          <span key={g} className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary-text">
-                            {g}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <div className="grid w-full grid-cols-1 gap-2 sm:flex sm:w-auto sm:items-center sm:gap-3">
-                    <Button variant="outline" size="sm" onClick={() => setDiscoveryStep(1)}>
-                      Back / Adjust Seeds
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={toggleAllSuggestions}
-                      className="text-primary-text"
-                    >
-                      {selectedSuggestions.size === suggestions.length ? "Deselect All" : "Select All"}
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Opt-in auto-like (off by default — halves write volume) */}
-                <label className="mb-4 flex items-start gap-3 rounded-xl border border-border/60 bg-secondary/20 px-4 py-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={likeTracks}
-                    onChange={(e) => setLikeTracks(e.target.checked)}
-                    className="mt-0.5 h-6 w-6 shrink-0 accent-primary"
-                  />
-                  <span className="text-xs leading-5 text-muted-foreground">
-                    <span className="font-semibold text-foreground">Also like each user&apos;s top track</span> when following.
-                    Off by default — following alone is a lighter footprint and less likely to trip spam filters.
-                  </span>
-                </label>
-
-                {suggestions.length === 0 ? (
-                  <EmptyState
-                    icon={<Info className="w-12 h-12" />}
-                    title={focusBlamesGenre ? `No ${genreLabel(discoveryStats!.genreFocus!)} matches` : "No suggestions found"}
-                    description={emptyDescription}
-                    action={
-                      focusBlamesGenre ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={discoverMutation.isPending}
-                          onClick={() => {
-                            setGenreFocus("any");
-                            discoverMutation.mutate({
-                              inspirationUserIds: Array.from(selectedInspirations),
-                              strategy,
-                            });
-                          }}
-                        >
-                          Scan again with any genre
-                        </Button>
-                      ) : undefined
-                    }
-                  />
-                ) : (
-                  <ProgressiveBlur
-                    className="grid md:grid-cols-2 gap-4 max-h-[60dvh] overflow-y-auto pr-1"
-                    active={suggestions.length > 6}
-                    fadeHeight={72}
-                  >
-                    {suggestions.map((sug) => {
-                      const badge = SCORE_BADGE[sug.scoreLabel];
-                      const track = sug.suggestedTrack;
-                      return (
-                        <SelectableRow
-                          key={sug.user.id}
-                          as="div"
-                          id={sug.user.id}
-                          selected={selectedSuggestions.has(sug.user.id)}
-                          onToggle={() => toggleSuggestion(sug.user.id)}
-                          label={sug.user.username}
-                          className="items-start py-3"
-                          rightSlot={
-                            // Both controls sit outside the toggle label: a
-                            // button inside a label is a nested interactive
-                            // control, and the old card had two of them.
-                            <div className="flex flex-col items-center gap-1">
-                              <a
-                                href={sug.user.permalink_url}
-                                target="_blank"
-                                rel="noreferrer"
-                                aria-label={`Open ${sug.user.username} on SoundCloud`}
-                                className="touch-44 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-                              >
-                                <ExternalLink className="w-4 h-4" aria-hidden="true" />
-                              </a>
-                              {track && (
-                                <IconButton
-                                  label={`Preview ${track.title} on SoundCloud`}
-                                  onClick={() => previewTrack(track)}
-                                  className="min-h-11 min-w-11 text-primary hover:text-primary-text"
-                                >
-                                  <Play className="w-4 h-4 fill-current" aria-hidden="true" />
-                                </IconButton>
-                              )}
-                            </div>
-                          }
-                        >
-                          <span className="block">
-                            {/* Upper user info */}
-                            <span className="flex flex-wrap items-center gap-2">
-                              <span className="font-bold text-sm text-foreground truncate">{sug.user.username}</span>
-                              <span
-                                className={`text-xs font-bold px-2 py-0.5 rounded-full uppercase select-none ${badge.className}`}
-                              >
-                                <span aria-hidden="true">{badge.emoji} </span>
-                                {badge.text} ({sug.score}%)
-                              </span>
-                            </span>
-                            <span className="text-xs text-muted-foreground flex gap-x-2 mt-0.5">
-                              <span>{formatNumber(sug.user.followers_count)} followers</span>
-                              <span aria-hidden="true">•</span>
-                              <span>Ratio: {sug.signals.followBackRatio}</span>
-                            </span>
-
-                            {sug.genres && sug.genres.length > 0 && (
-                              <span className="mt-2 flex flex-wrap gap-1.5">
-                                {sug.genres.slice(0, 3).map((g) => (
-                                  <span
-                                    key={g}
-                                    className="max-w-full truncate rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary-text"
-                                  >
-                                    {g}
-                                  </span>
-                                ))}
-                              </span>
-                            )}
-
-                            {/* Seed reason */}
-                            <span className="mt-2 block w-fit text-xs bg-secondary/40 px-2.5 py-1 rounded-md text-muted-foreground">
-                              {sug.signals.isRelatedArtist ? "SoundCloud Related Artist" : "Discovered in seeds' follower network"}
-                            </span>
-
-                            {/* Suggested track to like */}
-                            {track ? (
-                              <span className="mt-2 flex items-center gap-3 p-2 bg-card rounded-lg border border-border/50 text-xs">
-                                <img
-                                  src={track.artwork_url || "/brand/icon-192.png"}
-                                  alt=""
-                                  width={40}
-                                  height={40}
-                                  loading="lazy"
-                                  decoding="async"
-                                  className="w-10 h-10 rounded object-cover shrink-0"
-                                />
-                                <span className="min-w-0 flex-1">
-                                  <span className="block font-medium text-foreground truncate">{track.title}</span>
-                                  <span className="text-muted-foreground flex items-center gap-1 mt-0.5">
-                                    <Heart className="w-3 h-3 text-primary fill-primary" aria-hidden="true" />
-                                    <span>{formatNumber(track.likes_count)} likes</span>
-                                  </span>
-                                </span>
-                              </span>
-                            ) : (
-                              <span className="mt-2 block text-xs text-muted-foreground italic">No tracks uploaded</span>
-                            )}
-                          </span>
-                        </SelectableRow>
-                      );
-                    })}
-                  </ProgressiveBlur>
-                )}
-              </Card>
-
-              {/* Live batch progress */}
-              {job && job.status === "running" && (
-                <div className="fixed inset-x-0 bottom-[var(--mobile-nav-h)] z-40 border-t border-border/60 bg-card/95 backdrop-blur">
-                  <div className="mx-auto flex max-w-5xl flex-col gap-2 px-4 py-3 sm:px-6">
-                    <div className="flex items-center justify-between gap-4">
-                      <ProgressBar
-                        className="min-w-0 flex-1"
-                        label="Following"
-                        value={job.current}
-                        max={job.total}
-                        detail={job.likeTracks ? `${job.liked} liked` : undefined}
-                      />
-                      <Button variant="outline" size="sm" onClick={cancelEngagement} nowrap>
-                        Stop
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Bottom selection banner */}
-              {(!job || job.status !== "running") && (
-                <SelectionBanner
-                  count={selectedSuggestions.size}
-                  entityName="user"
-                  actionLabel={likeTracks ? "Follow + like selected" : "Follow selected"}
-                  onAction={handleEngageClick}
-                  actionIcon={<UserPlus className="w-4 h-4" />}
-                />
-              )}
-            </>
-          )}
-
-          {/* STEP 4: Success confirmation summary */}
-          {discoveryStep === 4 && (
-            <Card className="p-8 text-center max-w-xl mx-auto">
-              <div
-                className="w-12 h-12 rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 flex items-center justify-center mx-auto mb-4 border border-green-200"
-                aria-hidden="true"
-              >
-                <Check className="w-6 h-6" />
-              </div>
-              <h2 className="text-xl font-bold text-foreground">Campaign Initiated!</h2>
-              <p className="text-sm text-muted-foreground mt-2">
-                We've successfully processed your selected engagement actions.
-              </p>
-
-              <div className="grid grid-cols-2 gap-4 mt-6 p-4 bg-secondary/20 rounded-xl">
-                <div>
-                  <div className="text-2xl font-bold text-primary">{recentEngagedCount.followed}</div>
-                  <div className="text-xs text-muted-foreground font-semibold uppercase mt-0.5">Users Followed</div>
-                </div>
-                <div>
-                  <div className="text-2xl font-bold text-primary">{recentEngagedCount.liked}</div>
-                  <div className="text-xs text-muted-foreground font-semibold uppercase mt-0.5">Tracks Liked</div>
-                </div>
-              </div>
-
-              <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
+        {/* The end of an engagement batch (step 4 of Discover). It belongs to
+            the Discover tab, so it is hidden, not unmounted, on the other two:
+            coming back shows it again without taking focus a second time,
+            exactly as the step used to reappear. Its two buttons are the
+            step's two ways on, unchanged. */}
+        {discoveryStep === 4 ? (
+          <ResultPanel
+            status="success"
+            title="Campaign Initiated!"
+            description="We've successfully processed your selected engagement actions."
+            announcement={campaignAnnouncement || undefined}
+            className={activeTab === "discover" ? undefined : "hidden"}
+            actions={
+              <>
                 <Button
                   variant="outline"
                   onClick={() => selectTab("history")}
@@ -1259,6 +913,7 @@ export default function GrowthPage() {
                 <Button nowrap
                   onClick={() => {
                     setSelectedInspirations(new Set());
+                    setSeedLimitError(null);
                     setDiscoveryStep(1);
                   }}
                   className="gap-2 shadow-glow-sm"
@@ -1266,144 +921,702 @@ export default function GrowthPage() {
                   <Sparkles className="w-4 h-4" />
                   Discover Again
                 </Button>
+              </>
+            }
+          >
+            <div className="grid grid-cols-2 gap-4 rounded-xl bg-secondary/20 p-4 text-center">
+              <div>
+                <div className="text-2xl font-bold text-primary">{recentEngagedCount.followed}</div>
+                <div className="text-xs text-muted-foreground font-semibold uppercase mt-0.5">Users Followed</div>
               </div>
-            </Card>
-          )}
+              <div>
+                <div className="text-2xl font-bold text-primary">{recentEngagedCount.liked}</div>
+                <div className="text-xs text-muted-foreground font-semibold uppercase mt-0.5">Tracks Liked</div>
+              </div>
+            </div>
+          </ResultPanel>
+        ) : null}
+
+        {notice && (
+          <InlineAlert variant="info" onDismiss={() => setNotice(null)}>
+            {notice}
+          </InlineAlert>
+        )}
+
+        {/* Tabs Selector */}
+        <div className="overflow-x-auto">
+          <div
+            role="tablist"
+            aria-label="Growth sections"
+            className="flex w-full gap-1 rounded-lg border border-border/50 bg-secondary/20 p-1 sm:w-fit"
+          >
+            {TABS.map(({ key, short, long, Icon }) => (
+              <button
+                key={key}
+                ref={(element) => {
+                  tabRefs.current[key] = element;
+                }}
+                type="button"
+                role="tab"
+                id={`growth-tab-${key}`}
+                aria-selected={activeTab === key}
+                aria-controls={`growth-panel-${key}`}
+                tabIndex={activeTab === key ? 0 : -1}
+                onClick={() => selectTab(key)}
+                onKeyDown={handleTabKeyDown}
+                className={`flex min-h-11 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2 text-sm font-semibold transition-all sm:flex-none sm:gap-2 sm:px-4 ${
+                  activeTab === key
+                    ? "bg-card text-primary-text shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span className="sm:hidden">{short}</span>
+                <span className="hidden sm:inline">{long}</span>
+              </button>
+            ))}
+          </div>
         </div>
-      )}
 
-      {/* History Tab */}
-      {activeTab === "history" && (
-        <div
-          role="tabpanel"
-          id="growth-panel-history"
-          aria-labelledby="growth-tab-history"
-        >
-          {/* Dashboard Stats Panel */}
-          {statsData && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
-              <Card className="p-4 flex flex-col justify-between">
-                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Total Followed</span>
-                <span className="text-2xl font-bold mt-1 text-foreground">{statsData.totalFollowed}</span>
-              </Card>
-              <Card className="p-4 flex flex-col justify-between">
-                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Total Liked</span>
-                <span className="text-2xl font-bold mt-1 text-foreground">{statsData.totalLiked}</span>
-              </Card>
-              <Card className="p-4 flex flex-col justify-between">
-                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Followback Rate</span>
-                <span className="text-2xl font-bold mt-1 text-primary">
-                  {Math.round(statsData.followedBackRate * 100)}%
+        {/* Discover Tab */}
+        {activeTab === "discover" && (
+          <div
+            role="tabpanel"
+            id="growth-panel-discover"
+            aria-labelledby="growth-tab-discover"
+            className="space-y-6"
+          >
+            {/* Daily budget / cooldown banner */}
+            {budget && (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-border/60 bg-secondary/20 px-4 py-2.5 text-xs">
+                <span className="inline-flex items-center gap-1.5 font-semibold text-foreground">
+                  <ShieldAlert className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
+                  Daily follow budget
                 </span>
-              </Card>
-              <Card className="p-4 flex flex-col justify-between">
-                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Active Follows</span>
-                <span className="text-2xl font-bold mt-1 text-foreground">{statsData.activeFollows}</span>
-              </Card>
-            </div>
-          )}
-
-          <div className="grid lg:grid-cols-3 gap-6">
-            {/* Left sidebar: Sessions selection */}
-            <div className="lg:col-span-1 space-y-4">
-              <Card className="p-4">
-                <div className="flex items-center justify-between gap-2 border-b border-border/60 pb-3 mb-3">
-                  <h2 className="text-sm font-bold text-foreground">Discovery Sessions</h2>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    nowrap
-                    className="px-2"
-                    onClick={() => checkFollowbacksMutation.mutate(null)}
-                    disabled={checkingFollowbacks || historyActions.length === 0}
-                  >
-                    {checkingFollowbacks ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-                    ) : (
-                      <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
-                    )}
-                    <span className="sm:hidden">Check</span>
-                    <span className="hidden sm:inline">Check All</span>
-                  </Button>
-                </div>
-
-                {historySessions.length === 0 ? (
-                  <EmptyState
-                    icon={<Clock className="w-8 h-8" />}
-                    title="No sessions logged"
-                    description="Completed campaigns will appear here."
-                  />
-                ) : (
-                  <div className="space-y-2 max-h-[60dvh] overflow-y-auto">
-                    {historySessions.map((sess) => {
-                      const isActive = selectedSessionId === sess.sessionId;
-                      const followbackPercent = sess.totalActions > 0
-                        ? Math.round((sess.followedBack / sess.totalActions) * 100)
-                        : 0;
-
-                      return (
-                        // A real button with `aria-pressed`, not a
-                        // `SelectableRow`: picking a session is single-select
-                        // navigation, so a checkbox would state the wrong
-                        // thing. Native Enter/Space replaces the hand-rolled
-                        // keydown handler.
-                        <button
-                          key={sess.sessionId}
-                          type="button"
-                          aria-pressed={isActive}
-                          onClick={() => {
-                            setSelectedSessionId(sess.sessionId);
-                            setSelectedHistoryActions(new Set());
-                          }}
-                          className={`block w-full min-h-11 p-3 rounded-xl border-2 transition-all text-left ${
-                            isActive
-                              ? "bg-primary/5 border-primary/30"
-                              : "bg-secondary/20 border-transparent hover:border-border"
-                          }`}
-                        >
-                          <span className="block font-bold text-xs text-foreground line-clamp-1">{sess.label}</span>
-                          <span className="block text-xs text-muted-foreground mt-1">
-                            {new Date(sess.date).toLocaleDateString()}
-                          </span>
-
-                          <span className="flex justify-between items-center text-xs mt-2.5 pt-2 border-t border-border/40 text-muted-foreground">
-                            <span>{sess.totalActions} actions</span>
-                            <span className="font-semibold text-primary-text">
-                              {followbackPercent}% followback
-                            </span>
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
+                <span className="text-muted-foreground">
+                  <span className="font-semibold text-foreground">{budget.remaining}</span> of {budget.dailyCap} left
+                </span>
+                {budget.cooldownRemainingMs > 0 && (
+                  <span className="text-warning-text">
+                    Cooldown: {Math.ceil(budget.cooldownRemainingMs / 60000)} min until next batch
+                  </span>
                 )}
-              </Card>
-            </div>
+                {/* `text-muted-foreground-subtle` measures 4.4:1 against this
+                    tinted banner — just under AA, so this one line steps up to
+                    the full-strength muted token. */}
+                <span className="ml-auto text-muted-foreground">
+                  Caps protect your account from spam flags.
+                </span>
+              </div>
+            )}
 
-            {/* Right content: Actions list in session */}
-            <div className="lg:col-span-2">
-              <Card className="p-6">
-                {!selectedSessionId ? (
-                  <EmptyState
-                    icon={<ChevronRight className="w-12 h-12" />}
-                    title="Select a session"
-                    description="Select a discovery campaign session from the list to manage its followers and track history."
-                  />
-                ) : (
-                  <>
-                    <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border/60 pb-4 mb-4">
-                      <div>
-                        <h2 className="text-md font-bold text-foreground">{selectedSession?.label}</h2>
-                        <div className="text-xs text-muted-foreground flex gap-3 mt-1 flex-wrap">
-                          <span>Followed back: {selectedSession?.followedBack}</span>
-                          <span>•</span>
-                          <span>Pending check: {selectedSession?.unchecked}</span>
-                          <span>•</span>
-                          <span>Reversed: {selectedSession?.reversed}</span>
-                        </div>
+            {/* STEP 1: Select Seeds — the seed list, with the scan settings
+                and the scan button in the action panel beside it. */}
+            {discoveryStep === 1 && (
+              <ToolLayout
+                main={
+                  <Panel
+                    title="1. Select Inspiration Users"
+                    description="Select 1–5 users you follow to scan their networks. We'll find people who follow them and similar artists."
+                  >
+                    <div className="space-y-3">
+                      <ListSearch
+                        label="Search your followings"
+                        labelVisible
+                        value={searchInspirations}
+                        onChange={setSearchInspirations}
+                        shown={filteredInspirations.length}
+                        total={followings.length}
+                        noun={followings.length === 1 ? "following" : "followings"}
+                        placeholder="Username"
+                      />
+
+                      {seedLimitError && (
+                        <InlineAlert variant="error" onDismiss={() => setSeedLimitError(null)}>
+                          {seedLimitError}
+                        </InlineAlert>
+                      )}
+
+                      {filteredInspirations.length === 0 && followings.length > 0 ? (
+                        <EmptyState
+                          as="p"
+                          className="min-h-[160px] py-8"
+                          title="No followings match your search"
+                          description="Try fewer or different words. Selected seeds stay selected."
+                        />
+                      ) : (
+                        <ProgressiveBlur
+                          className="grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-2 gap-3 max-h-[60dvh] overflow-y-auto"
+                          active={filteredInspirations.length > 9}
+                          fadeHeight={72}
+                        >
+                          {filteredInspirations.map((user) => (
+                            <SelectableRow
+                              key={user.id}
+                              as="div"
+                              id={user.id}
+                              selected={selectedInspirations.has(user.id)}
+                              onToggle={() => handleInspirationClick(user.id)}
+                              label={user.username}
+                            >
+                              <span className="flex items-center gap-3">
+                                <img
+                                  src={user.avatar_url || "/brand/icon-192.png"}
+                                  alt=""
+                                  width={40}
+                                  height={40}
+                                  loading="lazy"
+                                  decoding="async"
+                                  className="w-10 h-10 rounded-full object-cover shrink-0"
+                                />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block font-semibold text-sm truncate text-foreground">{user.username}</span>
+                                  <span className="block text-xs text-muted-foreground truncate">{formatNumber(user.followers_count)} followers</span>
+                                </span>
+                              </span>
+                            </SelectableRow>
+                          ))}
+                        </ProgressiveBlur>
+                      )}
+                    </div>
+                  </Panel>
+                }
+                aside={
+                  <Panel title="Scan settings">
+                    <div className="space-y-4">
+                      <div className="flex min-h-11 items-center justify-between gap-3 rounded-lg bg-secondary/20 px-4 py-2">
+                        <span role="status" className="text-sm text-muted-foreground">
+                          {selectedInspirations.size} of 5 selected
+                        </span>
+                        {selectedInspirations.size > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setSelectedInspirations(new Set());
+                              setSeedLimitError(null);
+                            }}
+                            className="text-primary-text"
+                          >
+                            Clear Selection
+                          </Button>
+                        )}
                       </div>
 
-                      <div className="grid w-full grid-cols-1 gap-2 sm:w-auto sm:flex sm:flex-wrap sm:items-center">
+                      {/* The id is the one ea978e8 gave this control; the visible
+                          label now points at it, so the accessible name survives. */}
+                      <Select
+                        id="growth-seed-strategy"
+                        label="Strategy"
+                        value={strategy}
+                        onChange={(e) => setStrategy(e.target.value as 'followers' | 'followings' | 'both')}
+                        className="bg-secondary/20"
+                      >
+                        <option value="followers">Scan Their Followers</option>
+                        <option value="followings">Scan Their Followings</option>
+                        <option value="both">Scan Both</option>
+                      </Select>
+
+                      <Field
+                        id="growth-genre-focus"
+                        label="Genre focus"
+                        hint="Only suggests accounts whose recent tracks match; checks more accounts, so the scan takes a little longer."
+                      >
+                        {(field) => (
+                          <Select
+                            {...field}
+                            value={genreFocus}
+                            onChange={(e) => setGenreFocus(e.target.value)}
+                            className="bg-secondary/20"
+                          >
+                            <option value="any">Any genre</option>
+                            {GENRE_FOCUS_OPTIONS.map((o) => (
+                              <option key={o.slug} value={o.slug}>{o.label}</option>
+                            ))}
+                          </Select>
+                        )}
+                      </Field>
+                    </div>
+
+                    {/* Start Discovery Trigger */}
+                    <ActionBar layout="stretch">
+                      <Button
+                        onClick={() => discoverMutation.mutate({
+                          inspirationUserIds: Array.from(selectedInspirations),
+                          strategy,
+                          ...(genreFocus !== "any" ? { genre: genreFocus } : {}),
+                        })}
+                        disabled={selectedInspirations.size === 0 || discoverMutation.isPending}
+                        className="gap-2 h-11 px-6 shadow-glow-sm"
+                      >
+                        {discoverMutation.isPending ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Sparkles className="w-4 h-4" />
+                        )}
+                        Scan Networks & Discover
+                      </Button>
+                    </ActionBar>
+                  </Panel>
+                }
+              />
+            )}
+
+            {/* STEP 2: Loading scanning state */}
+            {discoveryStep === 2 && (
+              <Panel role="status">
+                <div className="flex flex-col items-center justify-center py-6 text-center sm:py-12">
+                  <div className="relative mb-6" aria-hidden="true">
+                    <div className="absolute inset-0 bg-primary/20 rounded-full animate-ping duration-1000" />
+                    <div className="relative w-16 h-16 rounded-full bg-primary/10 border-2 border-primary flex items-center justify-center text-primary">
+                      <Loader2 className="w-8 h-8 animate-spin" />
+                    </div>
+                  </div>
+                  <h2 className="text-lg font-semibold text-foreground">Scanning Networks</h2>
+                  <p className="text-sm text-muted-foreground mt-2 max-w-md">
+                    Crawling followers and related artists for your selected seed users. We filter out accounts you already follow, then compare scene and activity signals.
+                    {anySeedSampled && (
+                      <> For large seeds we sample their ~{SEED_SAMPLE_CAP.toLocaleString()} most recent followers — recent followers are the most active.</>
+                    )}
+                  </p>
+                  <div className="mt-6 space-y-1 text-xs text-primary-text font-mono">
+                    {discoveryStartedAt != null && (
+                      <DiscoveryElapsedTimer
+                        startedAt={discoveryStartedAt}
+                        estimatedSeconds={estimatedDiscoverySeconds}
+                      />
+                    )}
+                    <div className="animate-pulse">Fetching profile signals in small, rate-limit-safe batches…</div>
+                  </div>
+                  <p className="mt-3 max-w-md text-xs text-muted-foreground">
+                    SoundCloud can occasionally take up to a minute to respond; this scan will finish automatically when every shown profile has been checked.
+                  </p>
+                </div>
+              </Panel>
+            )}
+
+            {/* STEP 3: Suggestions List */}
+            {discoveryStep === 3 && (
+              <>
+                <Panel
+                  title="Discovery Results"
+                  actions={
+                    <>
+                      <Button variant="outline" size="sm" onClick={() => setDiscoveryStep(1)}>
+                        Back / Adjust Seeds
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={toggleAllSuggestions}
+                        className="text-primary-text"
+                      >
+                        {toggleAllSuggestionsLabel}
+                      </Button>
+                    </>
+                  }
+                >
+                  <div className="space-y-4">
+                    {/* What the scan covered. Query output, so it stays with
+                        the results rather than moving to the result slot. */}
+                    <div>
+                      <p className="text-xs text-muted-foreground">
+                        Scanned {discoveryStats?.candidatesScanned} profiles → found {discoveryStats?.afterDedup} new candidates, scored by scene fit
+                        {discoveryStats?.durationMs ? ` in ${formatDuration(Math.round(discoveryStats.durationMs / 1000))}` : ""}.
+                      </p>
+                      {discoveryStats?.sampledFollowers && (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Large seeds were sampled: most recent {(discoveryStats.sampleCapPerSeed ?? 1000).toLocaleString()} followers per seed — the slice most likely to still be active.
+                        </p>
+                      )}
+                      {budgetNotice && (
+                        <p data-testid="budget-notice" className="text-xs text-warning-text mt-1">
+                          {budgetNotice}
+                        </p>
+                      )}
+                      {discoveryStats?.genreFocus && (
+                        <p className="mt-1 text-xs text-foreground">
+                          <span className="font-semibold">Focus: {genreLabel(discoveryStats.genreFocus)}</span>
+                          {" · "}
+                          {discoveryStats.genreMatched ?? 0} of {discoveryStats.genreChecked ?? 0} checked matched
+                          {(discoveryStats.genreMatched ?? 0) > suggestions.length && ` (showing top ${suggestions.length})`}
+                          {((discoveryStats.genreUnknown ?? 0) > 0 || (discoveryStats.genreSkipped ?? 0) > 0) && (
+                            <span className="text-muted-foreground">
+                              {" "}
+                              ({[
+                                (discoveryStats.genreUnknown ?? 0) > 0 ? `${discoveryStats.genreUnknown} had no genre info` : null,
+                                (discoveryStats.genreSkipped ?? 0) > 0 ? `${discoveryStats.genreSkipped} not checked in time` : null,
+                              ].filter(Boolean).join(", ")}; left out)
+                            </span>
+                          )}
+                        </p>
+                      )}
+                      {discoveryStats?.seedGenres && discoveryStats.seedGenres.length > 0 && (
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          <span className="text-xs uppercase tracking-wider text-muted-foreground">Scene:</span>
+                          {discoveryStats.seedGenres.slice(0, 6).map((g) => (
+                            <span key={g} className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary-text">
+                              {g}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Opt-in auto-like (off by default — halves write volume) */}
+                    <label className="flex items-start gap-3 rounded-xl border border-border/60 bg-secondary/20 px-4 py-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={likeTracks}
+                        onChange={(e) => setLikeTracks(e.target.checked)}
+                        className="mt-0.5 h-6 w-6 shrink-0 accent-primary"
+                      />
+                      <span className="text-xs leading-5 text-muted-foreground">
+                        <span className="font-semibold text-foreground">Also like each user&apos;s top track</span> when following.
+                        Off by default — following alone is a lighter footprint and less likely to trip spam filters.
+                      </span>
+                    </label>
+
+                    {suggestions.length === 0 ? (
+                      <EmptyState
+                        icon={<Info className="w-12 h-12" />}
+                        title={focusBlamesGenre ? `No ${genreLabel(discoveryStats!.genreFocus!)} matches` : "No suggestions found"}
+                        description={emptyDescription}
+                        action={
+                          focusBlamesGenre ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={discoverMutation.isPending}
+                              onClick={() => {
+                                setGenreFocus("any");
+                                discoverMutation.mutate({
+                                  inspirationUserIds: Array.from(selectedInspirations),
+                                  strategy,
+                                });
+                              }}
+                            >
+                              Scan again with any genre
+                            </Button>
+                          ) : undefined
+                        }
+                      />
+                    ) : (
+                      <div className="space-y-3">
+                        <ListSearch
+                          label="Search suggestions"
+                          value={suggestionQuery}
+                          onChange={setSuggestionQuery}
+                          shown={shownSuggestions.length}
+                          total={suggestions.length}
+                          noun={suggestions.length === 1 ? "suggestion" : "suggestions"}
+                          placeholder="Search by username, genre or track…"
+                        />
+                        {shownSuggestions.length === 0 ? (
+                          <EmptyState
+                            as="p"
+                            className="min-h-[160px] py-8"
+                            title="No suggestions match your search"
+                            description="Try fewer or different words. Selected users stay selected."
+                          />
+                        ) : (
+                          <ProgressiveBlur
+                            className="grid md:grid-cols-2 gap-3 max-h-[60dvh] overflow-y-auto pr-1"
+                            active={shownSuggestions.length > 6}
+                            fadeHeight={72}
+                          >
+                            {shownSuggestions.map((sug) => {
+                              const badge = SCORE_BADGE[sug.scoreLabel];
+                              const track = sug.suggestedTrack;
+                              return (
+                                <SelectableRow
+                                  key={sug.user.id}
+                                  as="div"
+                                  id={sug.user.id}
+                                  selected={selectedSuggestions.has(sug.user.id)}
+                                  onToggle={() => toggleSuggestion(sug.user.id)}
+                                  label={sug.user.username}
+                                  className="items-start py-3"
+                                  rightSlot={
+                                    // Both controls sit outside the toggle label: a
+                                    // button inside a label is a nested interactive
+                                    // control, and the old card had two of them.
+                                    <div className="flex flex-col items-center gap-1">
+                                      <a
+                                        href={sug.user.permalink_url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        aria-label={`Open ${sug.user.username} on SoundCloud`}
+                                        className="touch-44 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                                      >
+                                        <ExternalLink className="w-4 h-4" aria-hidden="true" />
+                                      </a>
+                                      {track && (
+                                        <IconButton
+                                          label={`Preview ${track.title} on SoundCloud`}
+                                          onClick={() => previewTrack(track)}
+                                          className="min-h-11 min-w-11 text-primary hover:text-primary-text"
+                                        >
+                                          <Play className="w-4 h-4 fill-current" aria-hidden="true" />
+                                        </IconButton>
+                                      )}
+                                    </div>
+                                  }
+                                >
+                                  <span className="block">
+                                    {/* Upper user info */}
+                                    <span className="flex flex-wrap items-center gap-2">
+                                      <span className="font-bold text-sm text-foreground truncate">{sug.user.username}</span>
+                                      <span
+                                        className={`text-xs font-bold px-2 py-0.5 rounded-full uppercase select-none ${badge.className}`}
+                                      >
+                                        <span aria-hidden="true">{badge.emoji} </span>
+                                        {badge.text} ({sug.score}%)
+                                      </span>
+                                    </span>
+                                    <span className="text-xs text-muted-foreground flex gap-x-2 mt-0.5">
+                                      <span>{formatNumber(sug.user.followers_count)} followers</span>
+                                      <span aria-hidden="true">•</span>
+                                      <span>Ratio: {sug.signals.followBackRatio}</span>
+                                    </span>
+
+                                    {sug.genres && sug.genres.length > 0 && (
+                                      <span className="mt-2 flex flex-wrap gap-1.5">
+                                        {sug.genres.slice(0, 3).map((g) => (
+                                          <span
+                                            key={g}
+                                            className="max-w-full truncate rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary-text"
+                                          >
+                                            {g}
+                                          </span>
+                                        ))}
+                                      </span>
+                                    )}
+
+                                    {/* Seed reason */}
+                                    <span className="mt-2 block w-fit text-xs bg-secondary/40 px-2.5 py-1 rounded-md text-muted-foreground">
+                                      {sug.signals.isRelatedArtist ? "SoundCloud Related Artist" : "Discovered in seeds' follower network"}
+                                    </span>
+
+                                    {/* Suggested track to like */}
+                                    {track ? (
+                                      <span className="mt-2 flex items-center gap-3 p-2 bg-card rounded-lg border border-border/50 text-xs">
+                                        <img
+                                          src={track.artwork_url || "/brand/icon-192.png"}
+                                          alt=""
+                                          width={40}
+                                          height={40}
+                                          loading="lazy"
+                                          decoding="async"
+                                          className="w-10 h-10 rounded object-cover shrink-0"
+                                        />
+                                        <span className="min-w-0 flex-1">
+                                          <span className="block font-medium text-foreground truncate">{track.title}</span>
+                                          <span className="text-muted-foreground flex items-center gap-1 mt-0.5">
+                                            <Heart className="w-3 h-3 text-primary fill-primary" aria-hidden="true" />
+                                            <span>{formatNumber(track.likes_count)} likes</span>
+                                          </span>
+                                        </span>
+                                      </span>
+                                    ) : (
+                                      <span className="mt-2 block text-xs text-muted-foreground italic">No tracks uploaded</span>
+                                    )}
+                                  </span>
+                                </SelectableRow>
+                              );
+                            })}
+                          </ProgressiveBlur>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </Panel>
+
+                {/* Live batch progress */}
+                {job && job.status === "running" && (
+                  <div className="fixed inset-x-0 bottom-[var(--mobile-nav-h)] z-40 border-t border-border/60 bg-card/95 backdrop-blur">
+                    <div className="mx-auto flex max-w-6xl flex-col gap-2 px-4 py-3 sm:px-6">
+                      <div className="flex items-center justify-between gap-4">
+                        <ProgressBar
+                          className="min-w-0 flex-1"
+                          label="Following"
+                          value={job.current}
+                          max={job.total}
+                          detail={job.likeTracks ? `${job.liked} liked` : undefined}
+                        />
+                        <Button variant="outline" size="sm" onClick={cancelEngagement} nowrap>
+                          Stop
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Bottom selection banner */}
+                {(!job || job.status !== "running") && (
+                  <SelectionBanner
+                    count={selectedSuggestions.size}
+                    entityName="user"
+                    actionLabel={likeTracks ? "Follow + like selected" : "Follow selected"}
+                    onAction={handleEngageClick}
+                    actionIcon={<UserPlus className="w-4 h-4" />}
+                  />
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* History Tab */}
+        {activeTab === "history" && (
+          <div
+            role="tabpanel"
+            id="growth-panel-history"
+            aria-labelledby="growth-tab-history"
+            className="space-y-6"
+          >
+            {/* Dashboard Stats Panel */}
+            {statsData && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <Card className="p-4 flex flex-col justify-between">
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Total Followed</span>
+                  <span className="text-2xl font-bold mt-1 text-foreground">{statsData.totalFollowed}</span>
+                </Card>
+                <Card className="p-4 flex flex-col justify-between">
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Total Liked</span>
+                  <span className="text-2xl font-bold mt-1 text-foreground">{statsData.totalLiked}</span>
+                </Card>
+                <Card className="p-4 flex flex-col justify-between">
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Followback Rate</span>
+                  <span className="text-2xl font-bold mt-1 text-primary">
+                    {Math.round(statsData.followedBackRate * 100)}%
+                  </span>
+                </Card>
+                <Card className="p-4 flex flex-col justify-between">
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Active Follows</span>
+                  <span className="text-2xl font-bold mt-1 text-foreground">{statsData.activeFollows}</span>
+                </Card>
+              </div>
+            )}
+
+            <div className="grid lg:grid-cols-3 gap-6">
+              {/* Left column: Sessions selection */}
+              <div className="min-w-0 lg:col-span-1">
+                <Panel
+                  title="Discovery Sessions"
+                  actions={
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      nowrap
+                      className="px-2"
+                      onClick={() => checkFollowbacksMutation.mutate(null)}
+                      disabled={checkingFollowbacks || historyActions.length === 0}
+                    >
+                      {checkingFollowbacks ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+                      )}
+                      <span className="sm:hidden">Check</span>
+                      <span className="hidden sm:inline">Check All</span>
+                    </Button>
+                  }
+                >
+                  {historySessions.length === 0 ? (
+                    <EmptyState
+                      icon={<Clock className="w-8 h-8" />}
+                      title="No sessions logged"
+                      description="Completed campaigns will appear here."
+                    />
+                  ) : (
+                    <div className="space-y-3">
+                      <ListSearch
+                        label="Search sessions"
+                        value={sessionQuery}
+                        onChange={setSessionQuery}
+                        shown={shownSessions.length}
+                        total={historySessions.length}
+                        noun={historySessions.length === 1 ? "session" : "sessions"}
+                      />
+                      {shownSessions.length === 0 ? (
+                        <EmptyState
+                          as="p"
+                          className="py-6"
+                          title="No sessions match your search"
+                          description="Try fewer or different words."
+                        />
+                      ) : (
+                        <div className="space-y-2 max-h-[60dvh] overflow-y-auto">
+                          {shownSessions.map((sess) => {
+                            const isActive = selectedSessionId === sess.sessionId;
+                            const followbackPercent = sess.totalActions > 0
+                              ? Math.round((sess.followedBack / sess.totalActions) * 100)
+                              : 0;
+
+                            return (
+                              // A real button with `aria-pressed`, not a
+                              // `SelectableRow`: picking a session is single-select
+                              // navigation, so a checkbox would state the wrong
+                              // thing. Native Enter/Space replaces the hand-rolled
+                              // keydown handler.
+                              <button
+                                key={sess.sessionId}
+                                type="button"
+                                aria-pressed={isActive}
+                                onClick={() => selectSession(sess.sessionId)}
+                                className={`block w-full min-h-11 p-3 rounded-xl border transition-all text-left ${
+                                  isActive
+                                    ? "bg-primary/5 border-primary/30"
+                                    : "bg-secondary/20 border-transparent hover:border-border"
+                                }`}
+                              >
+                                <span className="block font-bold text-xs text-foreground line-clamp-1">{sess.label}</span>
+                                <span className="block text-xs text-muted-foreground mt-1">
+                                  {new Date(sess.date).toLocaleDateString()}
+                                </span>
+
+                                <span className="flex justify-between items-center text-xs mt-2.5 pt-2 border-t border-border/40 text-muted-foreground">
+                                  <span>{sess.totalActions} actions</span>
+                                  <span className="font-semibold text-primary-text">
+                                    {followbackPercent}% followback
+                                  </span>
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </Panel>
+              </div>
+
+              {/* Right column: Actions list in session */}
+              <div className="min-w-0 lg:col-span-2">
+                {!selectedSessionId ? (
+                  <Panel>
+                    <EmptyState
+                      icon={<ChevronRight className="w-12 h-12" />}
+                      title="Select a session"
+                      description="Select a discovery campaign session from the list to manage its followers and track history."
+                    />
+                  </Panel>
+                ) : (
+                  <Panel
+                    title={selectedSession?.label}
+                    description={
+                      <span className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+                        <span>Followed back: {selectedSession?.followedBack}</span>
+                        <span aria-hidden="true">•</span>
+                        <span>Pending check: {selectedSession?.unchecked}</span>
+                        <span aria-hidden="true">•</span>
+                        <span>Reversed: {selectedSession?.reversed}</span>
+                      </span>
+                    }
+                  >
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-1 gap-3 sm:flex sm:flex-wrap sm:items-center">
                         <Button
                           variant="outline"
                           size="sm"
@@ -1437,7 +1650,7 @@ export default function GrowthPage() {
                               .filter(a => a.actionType === 'follow' && a.followedBack === false && !a.reversed)
                               .map(a => a.id);
                             if (targets.length === 0) {
-                              setNotice({ type: "info", text: "No non-reciprocating users to unfollow." });
+                              report("empty", "Nothing to unfollow", "No non-reciprocating users to unfollow.");
                               return;
                             }
                             setSelectedHistoryActions(new Set(targets));
@@ -1448,231 +1661,249 @@ export default function GrowthPage() {
                           Unfollow Non-Followbacks
                         </Button>
                       </div>
-                    </div>
 
-                    <div className="flex justify-between items-center gap-3 mb-3">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => selectAllHistoryActions(sessionActions)}
-                        className="text-primary-text"
-                      >
-                        {selectedHistoryActions.size === sessionActions.length ? "Deselect All" : "Select All"}
-                      </Button>
-                      <span className="text-xs text-muted-foreground" role="status">
-                        {sessionActions.length} actions in session
-                      </span>
-                    </div>
+                      <ListSearch
+                        label="Search this session"
+                        value={actionQuery}
+                        onChange={setActionQuery}
+                        shown={shownActions.length}
+                        total={sessionActions.length}
+                        noun={sessionActions.length === 1 ? "action" : "actions"}
+                        placeholder="Search by name or action…"
+                      />
 
-                    {/* Action Cards */}
-                    <ProgressiveBlur
-                      className="grid sm:grid-cols-2 gap-3 max-h-[60dvh] overflow-y-auto"
-                      active={sessionActions.length > 6}
-                      fadeHeight={72}
-                    >
-                      {sessionActions.map((act) => (
-                        <SelectableRow
-                          key={act.id}
-                          as="div"
-                          id={act.id}
-                          selected={selectedHistoryActions.has(act.id)}
-                          onToggle={() => toggleHistoryAction(act.id)}
-                          label={act.targetName || "Action"}
+                      <div className="flex justify-between items-center gap-3">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={selectAllHistoryActions}
+                          className="text-primary-text"
                         >
-                          <span className="flex items-center gap-3">
-                            <img
-                              src={act.targetAvatar || "/brand/icon-192.png"}
-                              alt=""
-                              width={40}
-                              height={40}
-                              loading="lazy"
-                              decoding="async"
-                              className={`w-10 h-10 object-cover shrink-0 ${act.actionType === 'follow' ? 'rounded-full' : 'rounded-lg'}`}
-                            />
+                          {selectAllHistoryLabel}
+                        </Button>
+                        <span className="text-xs text-muted-foreground" role="status">
+                          {sessionActions.length} actions in session
+                        </span>
+                      </div>
 
-                            <span className="min-w-0 flex-1">
-                              <span className="block font-semibold text-xs text-foreground truncate">{act.targetName}</span>
-                              <span className="text-xs text-muted-foreground flex gap-1.5 mt-0.5 flex-wrap items-center">
-                                <span className="font-semibold uppercase tracking-wider text-xs bg-secondary px-1.5 py-0.5 rounded text-muted-foreground">
-                                  {act.actionType}
-                                </span>
+                      {/* Action Cards */}
+                      {shownActions.length === 0 && sessionActions.length > 0 ? (
+                        <EmptyState
+                          as="p"
+                          className="min-h-[160px] py-8"
+                          title="No actions match your search"
+                          description="Try fewer or different words. Selected actions stay selected."
+                        />
+                      ) : (
+                        <ProgressiveBlur
+                          className="grid sm:grid-cols-2 gap-3 max-h-[60dvh] overflow-y-auto"
+                          active={shownActions.length > 6}
+                          fadeHeight={72}
+                        >
+                          {shownActions.map((act) => (
+                            <SelectableRow
+                              key={act.id}
+                              as="div"
+                              id={act.id}
+                              selected={selectedHistoryActions.has(act.id)}
+                              onToggle={() => toggleHistoryAction(act.id)}
+                              label={act.targetName || "Action"}
+                            >
+                              <span className="flex items-center gap-3">
+                                <img
+                                  src={act.targetAvatar || "/brand/icon-192.png"}
+                                  alt=""
+                                  width={40}
+                                  height={40}
+                                  loading="lazy"
+                                  decoding="async"
+                                  className={`w-10 h-10 object-cover shrink-0 ${act.actionType === 'follow' ? 'rounded-full' : 'rounded-lg'}`}
+                                />
 
-                                {act.reversed ? (
-                                  <span className="text-warning-text font-semibold flex items-center gap-0.5">
-                                    <Undo2 className="w-3 h-3" aria-hidden="true" /> Reversed
+                                <span className="min-w-0 flex-1">
+                                  <span className="block font-semibold text-xs text-foreground truncate">{act.targetName}</span>
+                                  <span className="text-xs text-muted-foreground flex gap-1.5 mt-0.5 flex-wrap items-center">
+                                    <span className="font-semibold uppercase tracking-wider text-xs bg-secondary px-1.5 py-0.5 rounded text-muted-foreground">
+                                      {act.actionType}
+                                    </span>
+
+                                    {act.reversed ? (
+                                      <span className="text-warning-text font-semibold flex items-center gap-0.5">
+                                        <Undo2 className="w-3 h-3" aria-hidden="true" /> Reversed
+                                      </span>
+                                    ) : act.actionType === 'follow' && (
+                                      <>
+                                        {act.followedBack === true && (
+                                          <span className="text-xs text-success-text font-bold">
+                                            <span aria-hidden="true">✓ </span>Follows Back
+                                          </span>
+                                        )}
+                                        {act.followedBack === false && (
+                                          <span className="text-xs text-destructive-text font-semibold">
+                                            <span aria-hidden="true">✗ </span>No Followback
+                                          </span>
+                                        )}
+                                        {act.followedBack === null && (
+                                          <span className="text-xs text-muted-foreground">
+                                            <span aria-hidden="true">⏳ </span>Unchecked
+                                          </span>
+                                        )}
+                                      </>
+                                    )}
                                   </span>
-                                ) : act.actionType === 'follow' && (
-                                  <>
-                                    {act.followedBack === true && (
-                                      <span className="text-xs text-success-text font-bold">
-                                        <span aria-hidden="true">✓ </span>Follows Back
-                                      </span>
-                                    )}
-                                    {act.followedBack === false && (
-                                      <span className="text-xs text-destructive-text font-semibold">
-                                        <span aria-hidden="true">✗ </span>No Followback
-                                      </span>
-                                    )}
-                                    {act.followedBack === null && (
-                                      <span className="text-xs text-muted-foreground">
-                                        <span aria-hidden="true">⏳ </span>Unchecked
-                                      </span>
-                                    )}
-                                  </>
-                                )}
+                                </span>
                               </span>
-                            </span>
-                          </span>
-                        </SelectableRow>
-                      ))}
-                    </ProgressiveBlur>
-                  </>
-                )}
-              </Card>
-            </div>
-          </div>
-
-          {/* Bottom history selection banner */}
-          <SelectionBanner
-            count={selectedHistoryActions.size}
-            entityName="action"
-            actionLabel={reversing ? "Undoing..." : "Undo/Reverse Selected"}
-            onAction={() => setShowReverseConfirm(true)}
-            disabled={reversing}
-            actionVariant="destructive"
-            actionIcon={reversing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Undo2 className="w-4 h-4" />}
-          />
-
-          {/* Reversal Confirmation Modal */}
-          <ConfirmDialog
-            open={showReverseConfirm}
-            title="Reverse selected actions?"
-            description={`This will unfollow the selected users and/or unlike the selected tracks. This takes a few seconds.`}
-            confirmLabel="Confirm Undo"
-            variant="destructive"
-            onConfirm={() => reverseMutation.mutate({ actionIds: Array.from(selectedHistoryActions) })}
-            onCancel={() => setShowReverseConfirm(false)}
-          >
-            <BulkReviewDetails
-              action="reversing"
-              warning="Unfollows user profiles and unlikes tracks. It will update database history log."
-              items={sessionActions
-                .filter(a => selectedHistoryActions.has(a.id))
-                .map(a => ({
-                  id: a.id,
-                  label: a.targetName || 'Action',
-                  meta: `${a.actionType.toUpperCase()} action`,
-                }))}
-            />
-          </ConfirmDialog>
-        </div>
-      )}
-
-      {/* Analytics Tab */}
-      {activeTab === "analytics" && (
-        <div
-          role="tabpanel"
-          id="growth-panel-analytics"
-          aria-labelledby="growth-tab-analytics"
-        >
-          {statsData && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
-              <Card className="p-4 flex flex-col justify-between">
-                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Total Followed</span>
-                <span className="text-2xl font-bold mt-1 text-foreground">{statsData.totalFollowed}</span>
-              </Card>
-              <Card className="p-4 flex flex-col justify-between">
-                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Followback Rate</span>
-                <span className="text-2xl font-bold mt-1 text-primary">{Math.round(statsData.followedBackRate * 100)}%</span>
-              </Card>
-              <Card className="p-4 flex flex-col justify-between">
-                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Active Follows</span>
-                <span className="text-2xl font-bold mt-1 text-foreground">{statsData.activeFollows}</span>
-              </Card>
-              <Card className="p-4 flex flex-col justify-between">
-                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Pending Check</span>
-                <span className="text-2xl font-bold mt-1 text-foreground">{statsData.uncheckedFollows}</span>
-              </Card>
-            </div>
-          )}
-
-          <div className="grid lg:grid-cols-2 gap-6">
-            {/* Per-seed conversion */}
-            <Card className="p-6">
-              <h2 className="text-sm font-bold text-foreground mb-1">Which seeds convert best</h2>
-              <p className="text-xs text-muted-foreground mb-4">
-                Follow-back rate of people discovered from each inspiration artist. Seed your next campaign from the winners.
-              </p>
-              {analyticsPerSeed.length === 0 ? (
-                <EmptyState
-                  icon={<BarChart3 className="w-10 h-10" />}
-                  title="Not enough data yet"
-                  description="Run a campaign and check follow-backs to see which seeds convert."
-                />
-              ) : (
-                <div className="space-y-3">
-                  {analyticsPerSeed.slice(0, 12).map((seed) => (
-                    <div key={seed.seedId} className="flex items-center gap-3">
-                      <div className="min-w-0 flex-1">
-                        <div className="text-xs font-semibold text-foreground truncate">{seed.name}</div>
-                        <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-secondary">
-                          <div
-                            className="h-full rounded-full bg-primary"
-                            style={{ width: `${seed.rate === null ? 0 : Math.round(seed.rate * 100)}%` }}
-                          />
-                        </div>
-                      </div>
-                      <div className="w-24 text-right text-xs text-muted-foreground shrink-0">
-                        {seed.rate === null ? (
-                          <span>{seed.follows} follows</span>
-                        ) : (
-                          <span className="font-semibold text-foreground">
-                            {Math.round(seed.rate * 100)}%
-                          </span>
-                        )}
-                        <span className="ml-1">({seed.checked}/{seed.follows})</span>
-                      </div>
+                            </SelectableRow>
+                          ))}
+                        </ProgressiveBlur>
+                      )}
                     </div>
-                  ))}
-                </div>
-              )}
-            </Card>
+                  </Panel>
+                )}
+              </div>
+            </div>
 
-            {/* Follow-back timing */}
-            <Card className="p-6">
-              <h2 className="text-sm font-bold text-foreground mb-1">When people follow back</h2>
-              <p className="text-xs text-muted-foreground mb-4">
-                How long after a follow reciprocation was confirmed — helps you time your follow-back checks.
-              </p>
-              {analyticsCurve.every((b) => b.followedBack + b.notFollowedBack === 0) ? (
-                <EmptyState
-                  icon={<Clock className="w-10 h-10" />}
-                  title="No confirmed follow-backs yet"
-                  description="Check follow-backs on a campaign to populate this."
-                />
-              ) : (
-                <div className="space-y-4">
-                  {analyticsCurve.map((b) => {
-                    const total = b.followedBack + b.notFollowedBack;
-                    const pct = total > 0 ? Math.round((b.followedBack / total) * 100) : 0;
-                    return (
-                      <div key={b.bucket}>
-                        <div className="flex justify-between text-xs mb-1">
-                          <span className="text-foreground font-medium">{b.bucket}</span>
-                          <span className="text-muted-foreground">{b.followedBack} back / {total} checked</span>
+            {/* Bottom history selection banner */}
+            <SelectionBanner
+              count={selectedHistoryActions.size}
+              entityName="action"
+              actionLabel={reversing ? "Undoing..." : "Undo/Reverse Selected"}
+              onAction={() => setShowReverseConfirm(true)}
+              disabled={reversing}
+              actionVariant="destructive"
+              actionIcon={reversing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Undo2 className="w-4 h-4" />}
+            />
+
+            {/* Reversal Confirmation Modal */}
+            <ConfirmDialog
+              open={showReverseConfirm}
+              title="Reverse selected actions?"
+              description={`This will unfollow the selected users and/or unlike the selected tracks. This takes a few seconds.`}
+              confirmLabel="Confirm Undo"
+              variant="destructive"
+              onConfirm={() => reverseMutation.mutate({ actionIds: Array.from(selectedHistoryActions) })}
+              onCancel={() => setShowReverseConfirm(false)}
+            >
+              <BulkReviewDetails
+                action="reversing"
+                warning="Unfollows user profiles and unlikes tracks. It will update database history log."
+                items={sessionActions
+                  .filter(a => selectedHistoryActions.has(a.id))
+                  .map(a => ({
+                    id: a.id,
+                    label: a.targetName || 'Action',
+                    meta: `${a.actionType.toUpperCase()} action`,
+                  }))}
+              />
+            </ConfirmDialog>
+          </div>
+        )}
+
+        {/* Analytics Tab */}
+        {activeTab === "analytics" && (
+          <div
+            role="tabpanel"
+            id="growth-panel-analytics"
+            aria-labelledby="growth-tab-analytics"
+            className="space-y-6"
+          >
+            {statsData && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <Card className="p-4 flex flex-col justify-between">
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Total Followed</span>
+                  <span className="text-2xl font-bold mt-1 text-foreground">{statsData.totalFollowed}</span>
+                </Card>
+                <Card className="p-4 flex flex-col justify-between">
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Followback Rate</span>
+                  <span className="text-2xl font-bold mt-1 text-primary">{Math.round(statsData.followedBackRate * 100)}%</span>
+                </Card>
+                <Card className="p-4 flex flex-col justify-between">
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Active Follows</span>
+                  <span className="text-2xl font-bold mt-1 text-foreground">{statsData.activeFollows}</span>
+                </Card>
+                <Card className="p-4 flex flex-col justify-between">
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Pending Check</span>
+                  <span className="text-2xl font-bold mt-1 text-foreground">{statsData.uncheckedFollows}</span>
+                </Card>
+              </div>
+            )}
+
+            <div className="grid lg:grid-cols-2 gap-6">
+              {/* Per-seed conversion */}
+              <Panel
+                title="Which seeds convert best"
+                description="Follow-back rate of people discovered from each inspiration artist. Seed your next campaign from the winners."
+              >
+                {analyticsPerSeed.length === 0 ? (
+                  <EmptyState
+                    icon={<BarChart3 className="w-10 h-10" />}
+                    title="Not enough data yet"
+                    description="Run a campaign and check follow-backs to see which seeds convert."
+                  />
+                ) : (
+                  <div className="space-y-3">
+                    {analyticsPerSeed.slice(0, 12).map((seed) => (
+                      <div key={seed.seedId} className="flex items-center gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-semibold text-foreground truncate">{seed.name}</div>
+                          <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+                            <div
+                              className="h-full rounded-full bg-primary"
+                              style={{ width: `${seed.rate === null ? 0 : Math.round(seed.rate * 100)}%` }}
+                            />
+                          </div>
                         </div>
-                        <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
-                          <div className="h-full rounded-full bg-green-500" style={{ width: `${pct}%` }} />
+                        <div className="w-24 text-right text-xs text-muted-foreground shrink-0">
+                          {seed.rate === null ? (
+                            <span>{seed.follows} follows</span>
+                          ) : (
+                            <span className="font-semibold text-foreground">
+                              {Math.round(seed.rate * 100)}%
+                            </span>
+                          )}
+                          <span className="ml-1">({seed.checked}/{seed.follows})</span>
                         </div>
                       </div>
-                    );
-                  })}
-                </div>
-              )}
-            </Card>
+                    ))}
+                  </div>
+                )}
+              </Panel>
+
+              {/* Follow-back timing */}
+              <Panel
+                title="When people follow back"
+                description="How long after a follow reciprocation was confirmed — helps you time your follow-back checks."
+              >
+                {analyticsCurve.every((b) => b.followedBack + b.notFollowedBack === 0) ? (
+                  <EmptyState
+                    icon={<Clock className="w-10 h-10" />}
+                    title="No confirmed follow-backs yet"
+                    description="Check follow-backs on a campaign to populate this."
+                  />
+                ) : (
+                  <div className="space-y-4">
+                    {analyticsCurve.map((b) => {
+                      const total = b.followedBack + b.notFollowedBack;
+                      const pct = total > 0 ? Math.round((b.followedBack / total) * 100) : 0;
+                      return (
+                        <div key={b.bucket}>
+                          <div className="flex justify-between text-xs mb-1">
+                            <span className="text-foreground font-medium">{b.bucket}</span>
+                            <span className="text-muted-foreground">{b.followedBack} back / {total} checked</span>
+                          </div>
+                          <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+                            <div className="h-full rounded-full bg-green-500" style={{ width: `${pct}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </Panel>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Risk interstitial (shown once, before first engagement) */}
       <ConfirmDialog

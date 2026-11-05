@@ -60,7 +60,7 @@ async function trackPlaylistRoute(
 
 async function openHealthCheck(page: Page) {
   await page.goto("/playlist-health-check/");
-  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   await page.getByRole("group", { name: "Filter tracks" }).waitFor();
 }
 
@@ -94,7 +94,7 @@ test.describe("playlist health check: blocked tracks", () => {
     expect(put.tracks).toHaveLength(4);
   });
 
-  test("a 409 from the server shows its own text in the alert", async ({ page }) => {
+  test("a 409 from the server shows its own text in the result region", async ({ page }) => {
     await mockApi(page);
     const reason =
       "This playlist has 1 track this page didn't load (it may have changed on SoundCloud). Reload and try again. Nothing was changed.";
@@ -106,7 +106,9 @@ test.describe("playlist health check: blocked tracks", () => {
     await page.getByRole("button", { name: /Remove 2 Dead Tracks/ }).click();
     await page.getByRole("button", { name: "Remove", exact: true }).click();
 
-    await expect(page.getByRole("alert").filter({ hasText: reason })).toBeVisible();
+    const failure = page.getByRole("region", { name: "Couldn’t update the playlist" });
+    await expect(failure).toContainText(reason);
+    await expect(failure).toBeFocused();
     // Not the old fixed string.
     await expect(page.getByText("Failed to update playlist.")).toHaveCount(0);
   });
@@ -137,7 +139,7 @@ test.describe("playlist health check: blocked tracks", () => {
     await page.getByRole("button", { name: /Remove 2 Dead Tracks/ }).click();
 
     await expect(
-      page.getByRole("alert").filter({ hasText: "Cannot remove all tracks from a playlist" }),
+      page.getByRole("region", { name: "Nothing was removed" }).filter({ hasText: "Cannot remove all tracks from a playlist" }),
     ).toBeVisible();
     expect(puts).toBe(0);
   });
@@ -158,7 +160,9 @@ test.describe("playlist health check: blocked tracks", () => {
     await page.getByRole("button", { name: /Remove 2 Dead Tracks/ }).click();
     await page.getByRole("button", { name: "Remove", exact: true }).click();
 
-    await expect(page.getByRole("alert").filter({ hasText: "Failed to update playlist." })).toBeVisible();
+    await expect(
+      page.getByRole("region", { name: "Couldn’t update the playlist" }),
+    ).toContainText("Failed to update playlist.");
   });
 
   test("when SoundCloud returns fewer tracks than it counts, removal is explained and turned off", async ({
@@ -213,4 +217,37 @@ test.describe("playlist health check: blocked tracks", () => {
     );
     expect(overflow).toBeLessThanOrEqual(0);
   });
+});
+
+test("switching playlists never offers the last playlist's tracks for removal under the new one", async ({ page }) => {
+  await mockApi(page);
+  const seen = await trackPlaylistRoute(page);
+  // Playlist 2 answers slowly, so there is a window in which it is chosen
+  // and its tracks have not arrived.
+  let releaseSecond: () => void = () => {};
+  const secondGate = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  await page.route(
+    (url) => url.pathname === "/api/playlists/2",
+    async (route) => {
+      if (route.request().method() === "PUT") {
+        seen.putBodies.push(route.request().postDataJSON());
+        return route.fulfill(json({}, 500));
+      }
+      await secondGate;
+      return route.fulfill(json({ id: 2, title: "Sample Playlist 2", track_count: 0, tracks: [] }));
+    },
+  );
+  await openHealthCheck(page);
+  const remove = page.getByRole("button", { name: /^Remove \d+ Dead Track/ });
+  await expect(remove).toBeVisible();
+
+  await page.getByRole("button", { name: "Sample Playlist 2", exact: true }).click();
+  // Playlist 1's two unhealthy tracks must not be offered under playlist 2.
+  await expect(remove).toHaveCount(0);
+  releaseSecond();
+  await expect(page.getByRole("region", { name: "Sample Playlist 2" })).toBeVisible();
+  await expect(remove).toHaveCount(0);
+  expect(seen.putBodies).toEqual([]);
 });

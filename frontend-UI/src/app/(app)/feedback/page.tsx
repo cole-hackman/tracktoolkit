@@ -12,7 +12,7 @@ import { FeedbackForm } from "./FeedbackForm";
  */
 export default function FeedbackPage() {
   return (
-    <PageContainer maxWidth="narrow">
+    <PageContainer kind="form">
       <PageHeader
         title="Send feedback"
         description="Bug reports and feature requests go straight to the person who builds Track Toolkit."

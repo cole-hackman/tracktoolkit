@@ -5,13 +5,13 @@ import Link from "next/link";
 import { AlertTriangle, Download, LogOut, Trash2 } from "lucide-react";
 import {
   Button,
-  Card,
   ConfirmDialog,
   Field,
   InlineAlert,
   Input,
   PageContainer,
   PageHeader,
+  Panel,
   useAnnounce,
 } from "@/components/ui";
 import { SupportLink } from "@/components/SupportLink";
@@ -37,8 +37,6 @@ const RETENTION: { what: string; keptFor: string }[] = [
     keptFor: "Deleted after 24 months without a sign-in",
   },
 ];
-
-const cardHeadingClass = "text-lg font-semibold tracking-tight text-foreground";
 
 /**
  * Everything a person can do about their own data, on one page: see it, take
@@ -114,17 +112,16 @@ export default function AccountPage() {
   };
 
   return (
-    <PageContainer maxWidth="narrow">
+    <PageContainer kind="form">
       <PageHeader
         title="Account"
         description="What Track Toolkit stores about you, and how to take it with you or remove it."
       />
 
-      <div className="space-y-5">
+      <div className="space-y-6">
         {/* ── Profile ── */}
-        <Card className="p-5">
-          <h2 className={cardHeadingClass}>Profile</h2>
-          <div className="mt-4 flex items-center gap-4">
+        <Panel title="Profile">
+          <div className="flex items-center gap-4">
             <img
               src={user?.avatar_url || "/brand/icon-192.png"}
               alt=""
@@ -149,12 +146,11 @@ export default function AccountPage() {
               ) : null}
             </div>
           </div>
-        </Card>
+        </Panel>
 
         {/* ── Download my data ── */}
-        <Card className="p-5">
-          <h2 className={cardHeadingClass}>Download my data</h2>
-          <p className="mt-2 text-sm text-muted-foreground">
+        <Panel title="Download my data" className="space-y-4">
+          <p className="text-sm text-muted-foreground">
             One file with everything keyed to your account: your account record,
             your operation history, your growth history, your feedback, your
             cached library pages, your indexed library and any library chats,
@@ -163,26 +159,25 @@ export default function AccountPage() {
           </p>
           <Button
             onClick={handleDownload}
-            className="mt-4 w-full sm:w-auto"
+            className="w-full sm:w-auto"
           >
             <Download className="h-4 w-4" aria-hidden="true" />
             Download my data
           </Button>
-          <p className="mt-2 text-sm text-muted-foreground-subtle">
+          <p className="text-sm text-muted-foreground-subtle">
             JSON, usually under a few megabytes.
           </p>
-        </Card>
+        </Panel>
 
         {/* ── Disconnect ── */}
-        <Card className="p-5">
-          <h2 className={cardHeadingClass}>Disconnect SoundCloud</h2>
-          <p className="mt-2 text-sm text-muted-foreground">
+        <Panel title="Disconnect SoundCloud" className="space-y-4">
+          <p className="text-sm text-muted-foreground">
             Signs you out and deletes your saved sign-in tokens now. We keep the
             rest for 6 days so you can sign back in and keep your account. After
             that it is deleted. Your SoundCloud account is untouched.
           </p>
           {disconnectError ? (
-            <InlineAlert variant="error" className="mt-4">
+            <InlineAlert variant="error">
               {disconnectError} Try again, or email{" "}
               <SupportLink subject="Disconnect problem" /> and we will do it for
               you.
@@ -195,23 +190,27 @@ export default function AccountPage() {
               setDisconnectError(null);
               setDisconnectOpen(true);
             }}
-            className="mt-4 w-full sm:w-auto"
+            className="w-full sm:w-auto"
           >
             <LogOut className="h-4 w-4" aria-hidden="true" />
             Disconnect
           </Button>
-        </Card>
+        </Panel>
 
         {/* ── Delete account ── */}
-        <Card className="border-destructive/40 p-5">
-          <h2 className={`${cardHeadingClass} flex items-center gap-2`}>
-            <AlertTriangle
-              className="h-5 w-5 text-destructive-text"
-              aria-hidden="true"
-            />
-            Delete account
-          </h2>
-          <p className="mt-2 text-sm text-muted-foreground">
+        <Panel
+          className="space-y-4 border-destructive/40"
+          title={
+            <span className="flex items-center gap-2">
+              <AlertTriangle
+                className="h-5 w-5 text-destructive-text"
+                aria-hidden="true"
+              />
+              Delete account
+            </span>
+          }
+        >
+          <p className="text-sm text-muted-foreground">
             Permanently deletes your Track Toolkit account and everything stored
             with it — your login, connected SoundCloud tokens, operation
             history, growth history and feedback. Public catalog rows about
@@ -219,7 +218,7 @@ export default function AccountPage() {
             are not affected. This cannot be undone.
           </p>
           {deleteError ? (
-            <InlineAlert variant="error" className="mt-4">
+            <InlineAlert variant="error">
               {deleteError} Try again, or email{" "}
               <SupportLink subject="Account deletion problem" /> and we will do
               it for you.
@@ -233,17 +232,16 @@ export default function AccountPage() {
               setDeleteConfirmText("");
               setDeleteOpen(true);
             }}
-            className="mt-4 w-full sm:w-auto"
+            className="w-full sm:w-auto"
           >
             <Trash2 className="h-4 w-4" aria-hidden="true" />
             Delete account
           </Button>
-        </Card>
+        </Panel>
 
         {/* ── Retention ── */}
-        <Card className="p-5">
-          <h2 className={cardHeadingClass}>What we keep and for how long</h2>
-          <table className="mt-4 w-full border-collapse text-left text-sm">
+        <Panel title="What we keep and for how long">
+          <table className="w-full border-collapse text-left text-sm">
             <caption className="sr-only">
               How long Track Toolkit keeps each kind of data
             </caption>
@@ -287,7 +285,7 @@ export default function AccountPage() {
               Full privacy policy
             </Link>
           </p>
-        </Card>
+        </Panel>
 
         <p className="text-sm text-muted-foreground">
           Questions? <SupportLink subject="Account question" />

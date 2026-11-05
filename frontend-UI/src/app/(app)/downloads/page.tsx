@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { ArrowLeft, Download, Heart, ListMusic, Trash2, X, CheckSquare, Search, Zap } from "lucide-react";
+import { Download, Heart, ListMusic, Trash2, X, CheckSquare, Zap } from "lucide-react";
 import { apiFetch, readApiErrorMessage } from "@/lib/api";
 import { startSoundCloudDownload } from "@/lib/download";
 import { downloadedLabel, downloadedMap } from "@/lib/download-history";
@@ -21,22 +21,25 @@ import { useAuth } from "@/contexts/AuthContext";
 import {
   Button,
   BulkReviewDetails,
-  Card,
   ConfirmDialog,
   EmptyState,
-  Field,
   IconButton,
   InlineAlert,
-  Input,
+  ListSearch,
   LoadingSpinner,
   PageContainer,
   PageHeader,
+  Panel,
   ProgressBar,
+  ResultPanel,
   Select,
   Skeleton,
   TrackRow,
   useAnnounce,
+  SelectableList,
 } from "@/components/ui";
+import { PlaylistChoiceRow, PlaylistPicker } from "@/components/playlists/PlaylistPicker";
+import { useListSearch } from "@/lib/list-search";
 import {
   invalidatePlaylistCaches,
   queryKeys,
@@ -106,6 +109,12 @@ const ROW_STEP = 200;
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
+/** What the track search matches: the title and the artist. */
+const trackSearchText = (t: Track) => `${t.title} ${t.user?.username ?? ""}`;
+
+/** The queue-sent result, focused again after the gate confirmation closes. */
+const QUEUE_SENT_ID = "downloads-queue-sent";
+
 export default function DownloadsPage() {
   const queryClient = useQueryClient();
   const announce = useAnnounce();
@@ -125,7 +134,10 @@ export default function DownloadsPage() {
 
   const [selectedSource, setSelectedSource] = useState<Playlist | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
-  const [sourceSearch, setSourceSearch] = useState("");
+  // Searches the list below the toolbar: what "Show" and the mode put there.
+  // Download all, Auto-Download's Select All and the row picks work on the
+  // whole source as before; the search only narrows what is on screen.
+  const [trackQuery, setTrackQuery] = useState("");
   // Opens on what the page is for. The other buckets are one choice away.
   const [filter, setFilter] = useState<DownloadFilter>("downloadable");
   const [visibleCount, setVisibleCount] = useState(ROW_STEP);
@@ -135,9 +147,15 @@ export default function DownloadsPage() {
   const [selectedTrackIds, setSelectedTrackIds] = useState<Set<number>>(new Set());
   const [isRemoving, setIsRemoving] = useState(false);
 
-  // Confirmation dialog + inline error
+  // Confirmation dialog + the remove's outcome (the result panel at the top)
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
-  const [inlineError, setInlineError] = useState<string | null>(null);
+  const [removeResult, setRemoveResult] = useState<
+    { id: number; status: "success" | "error"; text: string } | null
+  >(null);
+  // A new id per outcome, so each one mounts its own panel (focus + announce).
+  const resultSeq = useRef(0);
+  const setInlineError = (text: string | null) =>
+    setRemoveResult(text === null ? null : { id: ++resultSeq.current, status: "error", text });
   const [downloadingTrackId, setDownloadingTrackId] = useState<number | null>(null);
   // A failed download is reported in its own row, not in the page banner —
   // the banner sits at the top of a list that can be hundreds of rows long,
@@ -151,13 +169,13 @@ export default function DownloadsPage() {
   const [extInstalled, setExtInstalled] = useState(false);
   // Gate sites the installed extension says it can work, beyond Hypeddit.
   const [extGates, setExtGates] = useState<Set<GateSite>>(new Set());
-  const backToSourcesRef = useRef<HTMLButtonElement>(null);
   // A send that contains Droploud or Cobrand gates waits here for a yes.
   // Which selection it is, not the tracks: the dialog is modal, so the
   // selection cannot change under it.
   const [confirmSend, setConfirmSend] = useState<"picked" | "auto" | null>(null);
   const [hypedditProgress, setHypedditProgress] = useState<HypedditProgress | null>(null);
-  const [queueSent, setQueueSent] = useState(false);
+  // The id of the latest send, or null: each send mounts a fresh result panel.
+  const [queueSent, setQueueSent] = useState<number | null>(null);
 
   // Rows ticked in the normal list, for "Download N selected": either kind of
   // automatic download, without going through Auto-Download's select-all.
@@ -206,11 +224,6 @@ export default function DownloadsPage() {
     }
   }, [selectedSource, isLikedSource, likesQuery.data, playlistDetailQuery.data]);
 
-  useEffect(() => {
-    const urlParam = new URLSearchParams(window.location.search).get("url");
-    if (urlParam) setSourceSearch(urlParam);
-  }, []);
-
   // Detect extension and load persisted progress on mount
   useEffect(() => {
     setExtInstalled(localStorage.getItem("sc-toolkit-ext-installed") === "1.0");
@@ -254,6 +267,10 @@ export default function DownloadsPage() {
   }, [selectedSource]);
 
   const handleSelectSource = (p: Playlist) => {
+    // The previous source's tracks must not be shown, picked or removed
+    // under the new source's name while its own load; the sync effect
+    // refills this from the cache at once when the new source is cached.
+    setTracks([]);
     setSelectedSource(p);
     setFilter("downloadable");
     setVisibleCount(ROW_STEP);
@@ -263,7 +280,8 @@ export default function DownloadsPage() {
     setSelectedHypedditIds(new Set());
     setPickedIds(new Set());
     setInlineError(null);
-    setQueueSent(false);
+    setQueueSent(null);
+    setTrackQuery("");
   };
 
   const toggleSelectionMode = () => {
@@ -284,7 +302,7 @@ export default function DownloadsPage() {
     // press — it used to open on "Queue 0 tracks", disabled, until Select All.
     setSelectedHypedditIds(entering ? new Set(gateTracks.map((t) => t.id)) : new Set());
     setPickedIds(new Set());
-    setQueueSent(false);
+    setQueueSent(null);
     setInlineError(null);
   };
 
@@ -348,10 +366,12 @@ export default function DownloadsPage() {
       });
 
       if (response.ok) {
-        announce(
-          `${removedCount} track${removedCount === 1 ? "" : "s"} removed from ${selectedSource.title}`,
-          { assertive: true },
-        );
+        // The result panel says it (focus + announcement).
+        setRemoveResult({
+          id: ++resultSeq.current,
+          status: "success",
+          text: `${removedCount} track${removedCount === 1 ? "" : "s"} removed from ${selectedSource.title}`,
+        });
         setTracks(remainingTracks);
         setSelectedTrackIds(new Set());
         setSelectionMode(false);
@@ -382,7 +402,7 @@ export default function DownloadsPage() {
     const ts = Date.now();
     localStorage.setItem("sc-toolkit-hypeddit-queue", JSON.stringify({ queue, ts }));
     window.postMessage({ type: "sc-toolkit-queue-set", queue, ts }, "*");
-    setQueueSent(true);
+    setQueueSent(++resultSeq.current);
   };
 
   const sendToExtension = () => {
@@ -414,9 +434,11 @@ export default function DownloadsPage() {
     if (which === "picked") sendPicked();
     else if (which === "auto") sendToExtension();
     // Sending clears the selection, which unmounts the button that opened the
-    // dialog, so focus would fall to the body. Cancel keeps that button, and
-    // the dialog returns focus to it as usual.
-    requestAnimationFrame(() => backToSourcesRef.current?.focus());
+    // dialog, so focus would fall to the body. Every confirmed send mounts the
+    // "Queue sent" result, which takes focus itself; this makes sure the
+    // dialog's own focus return cannot leave it on the body. Cancel keeps
+    // that button, and the dialog returns focus to it as usual.
+    requestAnimationFrame(() => document.getElementById(QUEUE_SENT_ID)?.focus());
   };
 
   const dismissProgress = () => {
@@ -571,10 +593,8 @@ export default function DownloadsPage() {
     );
   }, [selectedSource, loadingTracks, downloadableTracks.length, announce]);
 
-  const filteredPlaylists = useMemo(
-    () => playlists.filter((p) => p.title.toLowerCase().includes(sourceSearch.toLowerCase())),
-    [playlists, sourceSearch],
-  );
+  const baseList = hypedditMode ? gateTracks : listedTracks;
+  const { results: shownTracks } = useListSearch(baseList, trackQuery, trackSearchText);
 
   const formatDuration = (ms: number) => {
     const minutes = Math.floor(ms / 60000);
@@ -660,163 +680,123 @@ export default function DownloadsPage() {
   }, [tracks, selectedTrackIds, showRemoveConfirm]);
 
   return (
-    <PageContainer maxWidth="default">
-        <PageHeader
-          title="Downloads"
-          description="Find downloadable tracks in your library."
-        />
-        {isOwner && (
-          <p className="-mt-2 mb-6 text-sm text-muted-foreground">
-            DJing from Rekordbox?{" "}
-            <Link href="/rekordbox-gaps/" className="font-medium text-primary-text underline underline-offset-2">
-              See which of these you don&rsquo;t have yet
-            </Link>
-            .
-          </p>
+    <PageContainer kind="list">
+      <PageHeader
+        title="Downloads"
+        description={
+          <>
+            Find downloadable tracks in your library.
+            {isOwner && (
+              <span className="mt-1 block">
+                DJing from Rekordbox?{" "}
+                <Link href="/rekordbox-gaps/" className="font-medium text-primary-text underline underline-offset-2">
+                  See which of these you don&rsquo;t have yet
+                </Link>
+                .
+              </span>
+            )}
+          </>
+        }
+      />
+
+      <div className="space-y-6">
+        {/* Queue-sent confirmation (owner-only) */}
+        {isOwner && queueSent !== null && (
+          <ResultPanel
+            key={queueSent}
+            id={QUEUE_SENT_ID}
+            status="success"
+            title="Queue sent to extension"
+            description="Open the Track Toolkit side panel from the Chrome toolbar to watch it run; it starts on its own."
+            onDismiss={() => setQueueSent(null)}
+          />
+        )}
+
+        {removeResult && (
+          <ResultPanel
+            key={removeResult.id}
+            status={removeResult.status}
+            title={removeResult.status === "error" ? "Couldn't remove tracks" : removeResult.text}
+            description={removeResult.status === "error" ? removeResult.text : undefined}
+            announcement={removeResult.text}
+            onDismiss={() => setInlineError(null)}
+          />
         )}
 
         <div className={hasQueue ? "pb-24 lg:grid lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6 lg:pb-0" : undefined}>
-        <div className="min-w-0">
+        <div className="min-w-0 space-y-6">
 
-        {!selectedSource ? (
-          /* Source Selection */
-          <Card className="p-4 sm:p-6">
-            <h2 className="text-lg sm:text-xl font-bold mb-4 text-foreground">
-              Select Source
-            </h2>
-            {loading ? (
-              <div className="space-y-3">
-                {Array.from({ length: 3 }).map((_, i) => (
-                  <Skeleton key={i} className="h-16 rounded-lg" />
-                ))}
-              </div>
-            ) : (
-              <>
-                {/* Search filter */}
-                {playlists.length > 5 && (
-                  <Field label="Search playlists" labelHidden className="mb-4">
-                    {(field) => (
-                      <div className="relative">
-                        <Search
-                          aria-hidden="true"
-                          className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground-subtle"
-                        />
-                        <Input
-                          {...field}
-                          type="search"
-                          value={sourceSearch}
-                          onChange={(e) => setSourceSearch(e.target.value)}
-                          placeholder="Search playlists…"
-                          className="h-11 pl-9 bg-transparent dark:text-foreground dark:border-border"
-                        />
-                      </div>
-                    )}
-                  </Field>
-                )}
+        {/* Source: Liked Tracks first and always there, then the playlists. */}
+        <Panel title="Select Source">
+          <div className="space-y-3">
+            {/* Outside the picker so a playlist search never hides it, but the
+                same pressable row as the playlists below it. */}
+            <SelectableList>
+              <PlaylistChoiceRow
+                label="Liked Tracks"
+                title="Liked Tracks"
+                subtitle={likesCount !== null ? `${likesCount.toLocaleString()} liked tracks` : "All your likes"}
+                artwork={
+                  <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-[#FF5500] to-[#E64A00] text-primary-foreground">
+                    <Heart className="h-6 w-6" fill="currentColor" aria-hidden="true" />
+                  </span>
+                }
+                selected={isLikedSource}
+                disabled={isRemoving}
+                onChoose={() =>
+                  !isLikedSource &&
+                  handleSelectSource({
+                    id: LIKED_TRACKS_ID,
+                    title: "Liked Tracks",
+                    track_count: likesCount ?? 0,
+                    artwork_url: "",
+                    kind: "playlist",
+                  })
+                }
+              />
+            </SelectableList>
 
-                <div className="grid md:grid-cols-2 gap-4">
-                  {/* Liked Tracks — always shown */}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleSelectSource({
-                        id: LIKED_TRACKS_ID,
-                        title: "Liked Tracks",
-                        track_count: likesCount ?? 0,
-                        artwork_url: "",
-                        kind: "playlist",
-                      })
-                    }
-                    className="flex items-center gap-4 p-4 rounded-xl bg-secondary/20 border-2 border-transparent hover:border-primary transition-all text-left"
-                  >
-                    <div className="w-16 h-16 rounded-lg bg-gradient-to-br from-[#FF5500] to-[#E64A00] flex items-center justify-center text-primary-foreground shrink-0">
-                      <Heart className="w-8 h-8" fill="currentColor" aria-hidden="true" />
-                    </div>
-                    <div>
-                      <div className="font-semibold text-foreground">
-                        Liked Tracks
-                      </div>
-                      <div className="text-sm text-muted-foreground">
-                        {likesCount !== null
-                          ? `${likesCount.toLocaleString()} liked tracks`
-                          : "All your likes"}
-                      </div>
-                    </div>
-                  </button>
-
-                  {filteredPlaylists.map((playlist) => (
-                    <button
-                      type="button"
-                      key={playlist.id}
-                      onClick={() => handleSelectSource(playlist)}
-                      className="flex items-center gap-4 p-4 rounded-xl bg-secondary/20 border-2 border-transparent hover:border-primary transition-all text-left"
-                    >
-                      <img
-                        src={playlist.coverUrl || playlist.artwork_url || "/brand/icon-192.png"}
-                        alt=""
-                        width={64}
-                        height={64}
-                        loading="lazy"
-                        decoding="async"
-                        className="w-16 h-16 rounded-lg object-cover shrink-0"
-                      />
-                      <div>
-                        <div className="font-semibold text-foreground">
-                          {playlist.title}
-                        </div>
-                        <div className="text-sm text-muted-foreground">
-                          {plural(playlist.track_count, "track")}
-                        </div>
-                      </div>
-                    </button>
-                  ))}
-
-                  {sourceSearch && filteredPlaylists.length === 0 && (
-                    <div className="md:col-span-2">
-                      <EmptyState
-                        title="No playlists match your search"
-                        description="Try a different keyword."
-                      />
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
-          </Card>
-        ) : (
-          /* Track List */
-          <div>
-            <Button
-              ref={backToSourcesRef}
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setSelectedSource(null);
-                setTracks([]);
-                setInlineError(null);
-                setHypedditMode(false);
-                setSelectionMode(false);
+            {/* Disabled while a remove is saving: its result would otherwise
+                land on whichever source was picked in the meantime. */}
+            <fieldset disabled={isRemoving} className="min-w-0">
+            <legend className="sr-only">Playlists</legend>
+            <PlaylistPicker
+              playlists={playlists}
+              mode="single"
+              selectedIds={selectedSource && !isLikedSource ? [selectedSource.id] : []}
+              onChange={(next) => {
+                if (next[0]) handleSelectSource(next[0]);
               }}
-              className="mb-4 text-muted-foreground"
-            >
-              <ArrowLeft className="w-4 h-4" aria-hidden="true" />
-              Back to sources
-            </Button>
+              loading={loading}
+              loadError={playlistsQuery.isError}
+              onRetry={() => void playlistsQuery.refetch()}
+              searchLabel="Search playlists"
+              listClassName="max-h-[40dvh]"
+            />
+            </fieldset>
+          </div>
+        </Panel>
 
-            <h2 className="mb-6 flex flex-wrap items-center gap-x-3 gap-y-1 text-xl sm:text-2xl font-bold text-foreground">
-              {selectedSource.id === LIKED_TRACKS_ID ? (
-                <Heart className="w-6 h-6 shrink-0 text-primary" fill="currentColor" aria-hidden="true" />
-              ) : (
-                <ListMusic className="w-6 h-6 shrink-0" aria-hidden="true" />
-              )}
-              <span className="min-w-0 break-words">{selectedSource.title}</span>
-              <span className="text-base font-normal text-muted-foreground">
-                ({downloadableTracks.length} downloadable)
+        {selectedSource && (
+          /* Track List */
+          <Panel
+            title={
+              <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                {selectedSource.id === LIKED_TRACKS_ID ? (
+                  <Heart className="h-5 w-5 shrink-0 text-primary" fill="currentColor" aria-hidden="true" />
+                ) : (
+                  <ListMusic className="h-5 w-5 shrink-0" aria-hidden="true" />
+                )}
+                <span className="min-w-0 break-words">{selectedSource.title}</span>
+                <span className="text-base font-normal text-muted-foreground">
+                  ({downloadableTracks.length} downloadable)
+                </span>
               </span>
-            </h2>
-
+            }
+          >
+          <div className="space-y-4">
             {!loadingTracks && tracks.length > 0 && (
-              <div className="-mt-4 mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                 <p className="text-sm text-muted-foreground">
                   {plural(counts.direct, "direct download")} · {plural(counts.gate, "free gate")} ·{" "}
                   {counts.buy.toLocaleString()} to buy or pre-order · {counts.unavailable.toLocaleString()} not available
@@ -845,7 +825,7 @@ export default function DownloadsPage() {
 
             {/* Hypeddit progress banner (owner-only) */}
             {isOwner && showProgressBanner && (
-              <div className="mb-4 rounded-xl border border-border bg-card px-4 py-3">
+              <div className="rounded-xl border border-border bg-card px-4 py-3">
                 <div className="flex items-start gap-2">
                   <ProgressBar
                     className="min-w-0 flex-1"
@@ -866,37 +846,9 @@ export default function DownloadsPage() {
               </div>
             )}
 
-            {/* Queue-sent confirmation (owner-only) */}
-            {isOwner && queueSent && (
-              <div
-                role="status"
-                className="mb-4 flex items-start gap-3 rounded-xl border border-border bg-card px-4 py-3 text-sm text-foreground"
-              >
-                <Zap className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
-                <span className="min-w-0 flex-1">
-                  Queue sent to extension. Open the Track Toolkit side panel from the Chrome toolbar
-                  to watch it run; it starts on its own.
-                </span>
-                <IconButton label="Dismiss queue message" size="sm" onClick={() => setQueueSent(false)}>
-                  <X className="w-4 h-4" aria-hidden="true" />
-                </IconButton>
-              </div>
-            )}
-
-            {/* Inline error */}
-            {inlineError && (
-              <InlineAlert
-                variant="error"
-                className="mb-4"
-                onDismiss={() => setInlineError(null)}
-              >
-                {inlineError}
-              </InlineAlert>
-            )}
-
             {/* Toolbar */}
             {tracks.length > 0 && (
-              <div className="mb-6 flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-3">
                 {/* Queue every SoundCloud-native download (allow-listed accounts) */}
                 {isOwner && directTracks.length > 0 && !selectionMode && !hypedditMode && (
                   <Button onClick={startQueue} disabled={queue.state.running}>
@@ -1040,14 +992,29 @@ export default function DownloadsPage() {
               </div>
             )}
 
-            <Card className="p-4 sm:p-6">
+            {!loadingTracks && tracks.length > 0 && (
+              <ListSearch
+                label="Search tracks"
+                value={trackQuery}
+                onChange={(value) => {
+                  setTrackQuery(value);
+                  setVisibleCount(ROW_STEP);
+                }}
+                shown={shownTracks.length}
+                total={baseList.length}
+                noun={baseList.length === 1 ? "track" : "tracks"}
+                placeholder="Search by title or artist…"
+              />
+            )}
+
+            <div>
               {loadingTracks ? (
                 <div className="space-y-3">
                   {Array.from({ length: 5 }).map((_, i) => (
                     <Skeleton key={i} className="h-16 rounded-lg" />
                   ))}
                 </div>
-              ) : (hypedditMode ? gateTracks : listedTracks).length === 0 ? (
+              ) : baseList.length === 0 ? (
                 <EmptyState
                   icon={<Download className="w-12 h-12" />}
                   title={filter === "downloadable" ? "No downloadable tracks found" : `Nothing under “${FILTER_LABELS[filter]}”`}
@@ -1057,9 +1024,15 @@ export default function DownloadsPage() {
                       : "Try another playlist or source."
                   }
                 />
+              ) : shownTracks.length === 0 ? (
+                <EmptyState
+                  as="p"
+                  title="No tracks match your search"
+                  description="Try fewer or different words."
+                />
               ) : (
                 <div className="space-y-2">
-                  {(hypedditMode ? gateTracks : listedTracks).slice(0, visibleCount).map((track, index) => {
+                  {shownTracks.slice(0, visibleCount).map((track, index) => {
                     if (selectionMode) {
                       return (
                         <div key={track.id}>
@@ -1143,11 +1116,11 @@ export default function DownloadsPage() {
                       </div>
                     );
                   })}
-                  {(hypedditMode ? gateTracks : listedTracks).length > visibleCount && (
+                  {shownTracks.length > visibleCount && (
                     <div className="pt-2 text-center">
                       <Button variant="secondary" onClick={() => setVisibleCount((n) => n + ROW_STEP)}>
-                        Show {Math.min(ROW_STEP, (hypedditMode ? gateTracks : listedTracks).length - visibleCount)} more of{" "}
-                        {(hypedditMode ? gateTracks : listedTracks).length - visibleCount}
+                        Show {Math.min(ROW_STEP, shownTracks.length - visibleCount)} more of{" "}
+                        {shownTracks.length - visibleCount}
                       </Button>
                     </div>
                   )}
@@ -1157,7 +1130,7 @@ export default function DownloadsPage() {
                   a long scroll back up from the row just ticked. */}
               {isOwner && pickedTracks.length > 0 && !selectionMode && !hypedditMode && (
                 <div
-                  className={`sticky z-30 mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-3 ${hasQueue ? "bottom-[calc(var(--mobile-nav-h)+6rem)] lg:bottom-3" : "bottom-[calc(var(--mobile-nav-h)+0.75rem)]"}`}
+                  className={`sticky z-30 mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-3 ${hasQueue ? "bottom-[calc(var(--mobile-nav-h)+6rem)] lg:bottom-3" : "bottom-[calc(var(--mobile-nav-h)+0.75rem)]"}`}
                 >
                   <Button
                     onClick={downloadPicked}
@@ -1177,8 +1150,9 @@ export default function DownloadsPage() {
                   )}
                 </div>
               )}
-            </Card>
+            </div>
           </div>
+          </Panel>
         )}
 
         </div>
@@ -1199,6 +1173,7 @@ export default function DownloadsPage() {
           </aside>
         )}
         </div>
+      </div>
         {hasQueue && (
           <DownloadQueueSheet
             state={queue.state}
@@ -1223,7 +1198,7 @@ export default function DownloadsPage() {
 
       {/* The lines go in `description`, not children: that is what the dialog
           names in aria-describedby, so a screen reader reads them on open.
-          After a send, confirmGateSend moves focus to "Back to sources". */}
+          After a send, focus goes to the "Queue sent" result. */}
       <ConfirmDialog
         open={confirmSend !== null}
         title="Send these gates to the extension?"

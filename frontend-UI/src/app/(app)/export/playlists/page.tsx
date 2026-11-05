@@ -2,20 +2,25 @@
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ListMusic } from "lucide-react";
-import { Button, PageContainer, PageHeader } from "@/components/ui";
+import { ListMusic } from "lucide-react";
+import { PageContainer, PageHeader, Panel } from "@/components/ui";
 import { ExportBackLink } from "@/components/export/ExportBackLink";
 import { TrackExportCard } from "@/components/export/TrackExportCard";
-import {
-  PlaylistSelectGrid,
-  type PlaylistSummary,
-} from "@/components/playlists/PlaylistSelectGrid";
+import { PlaylistPicker } from "@/components/playlists/PlaylistPicker";
 import type { ExportTrack } from "@/lib/export";
 import {
   playlistDetailQueryOptions,
   usePlaylistsQuery,
 } from "@/lib/queries";
 import { asArray } from "@/lib/api-shape";
+
+interface PlaylistSummary {
+  id: number;
+  title: string;
+  track_count: number;
+  artwork_url?: string | null;
+  coverUrl?: string | null;
+}
 
 export default function ExportPlaylistsPage() {
   const queryClient = useQueryClient();
@@ -32,51 +37,34 @@ export default function ExportPlaylistsPage() {
   };
 
   return (
-    <PageContainer maxWidth="wide">
+    <PageContainer kind="form">
       <ExportBackLink />
       <PageHeader
+        // ExportBackLink above is the way back; the default "Back to
+        // Dashboard" would stack a second back link under it on a phone.
+        backHref=""
         title="Export Playlist"
         description="Select a playlist, then download its tracks in your preferred format."
       />
 
-      {!selectedPlaylist ? (
-        <PlaylistSelectGrid
-          playlists={playlists}
-          loading={loading}
-          loadError={loadError}
-          onRetry={() => playlistsQuery.refetch()}
-          onSelect={setSelectedPlaylist}
-          title="Select a playlist to export"
-          emptyDescription="Create some playlists on SoundCloud first."
-        />
-      ) : (
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-muted/30 px-4 py-3">
-            <img
-              src={selectedPlaylist.coverUrl || selectedPlaylist.artwork_url || "/brand/icon-192.png"}
-              alt=""
-              width={48}
-              height={48}
-              loading="lazy"
-              decoding="async"
-              className="h-12 w-12 rounded-lg object-cover"
-            />
-            <div className="min-w-0 flex-1">
-              <p className="font-semibold text-foreground truncate">{selectedPlaylist.title}</p>
-              <p className="text-sm text-muted-foreground">{selectedPlaylist.track_count} tracks</p>
-            </div>
-            <Button nowrap
-              type="button"
-              variant="secondary"
-              className="gap-2 text-sm"
-              onClick={() => setSelectedPlaylist(null)}
-            >
-              <ArrowLeft aria-hidden="true" className="h-4 w-4" />
-              Change playlist
-            </Button>
-          </div>
+      <div className="space-y-6">
+        <Panel title="Select a playlist to export">
+          <PlaylistPicker
+            playlists={playlists}
+            mode="single"
+            selectedIds={selectedPlaylist ? [selectedPlaylist.id] : []}
+            onChange={(next) => setSelectedPlaylist(next[0] ?? null)}
+            loading={loading}
+            loadError={loadError}
+            onRetry={() => playlistsQuery.refetch()}
+            emptyDescription="Create some playlists on SoundCloud first."
+          />
+        </Panel>
 
+        {selectedPlaylist ? (
           <TrackExportCard
+            // Another playlist starts from a clean card, as picking again did.
+            key={selectedPlaylist.id}
             embedded
             icon={<ListMusic className="h-6 w-6" />}
             title="Export Playlist"
@@ -88,8 +76,8 @@ export default function ExportPlaylistsPage() {
             emptyDescription="Choose another playlist or add tracks on SoundCloud."
             loadTracks={loadPlaylistTracks}
           />
-        </div>
-      )}
+        ) : null}
+      </div>
     </PageContainer>
   );
 }

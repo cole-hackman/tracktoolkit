@@ -48,7 +48,8 @@ import {
   markWhatsNewShownThisSession,
 } from "@/lib/whatsNew";
 import { isRebrandAcknowledged } from "@/lib/rebrand";
-import { dashboardSummaryQueryOptions, useDashboardSummaryQuery } from "@/lib/queries";
+import { dashboardSummaryQueryOptions } from "@/lib/queries";
+import { rankByUsage } from "@/lib/tool-ranking";
 
 const LAST_TOOLS_KEY = "sc-toolkit-last-tools";
 
@@ -61,7 +62,12 @@ interface FeatureCard {
   category: string;
 }
 
-const CATEGORY_ORDER = [
+/**
+ * The four groups are a 2026-07-08 decision and stay. Their order on the
+ * page, and the order of the tools inside each, come from `TOOL_RANKING` in
+ * lib/tool-ranking.ts (usage data), not from this list or `FEATURES`.
+ */
+const CATEGORIES = [
   "Playlists",
   "Likes & Social",
   "Library & Export",
@@ -285,6 +291,11 @@ const RECENT_PATHS: Record<string, string> = {
 
 const COMING_SOON: FeatureCard[] = [];
 
+/** "Likes & Social" → "tools-likes-social": an id with no spaces, since
+ *  `aria-labelledby` splits on them. */
+const categoryId = (category: string) =>
+  `tools-${category.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+
 // Separate Suspense component for fetching stats
 function DashboardStats() {
   const { data: stats } = useSuspenseQuery(dashboardSummaryQueryOptions());
@@ -300,7 +311,7 @@ function DashboardStats() {
   );
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
       {statsData.map((stat, index) => {
         // The key lives on whichever element the map returns (the `Link` or
         // the wrapping `div`), never here as well — a duplicate on the inner
@@ -333,7 +344,7 @@ function DashboardStats() {
 
 function StatsSkeleton() {
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
       {Array.from({ length: 4 }).map((_, index) => (
         <Card key={index} className="p-3 sm:p-4">
           <Skeleton className="mx-auto mb-2 h-8 w-8 rounded-lg" />
@@ -353,7 +364,7 @@ function StatsErrorFallback({ resetErrorBoundary }: { resetErrorBoundary: () => 
   const feedbackHref = `/feedback/?type=bug&from=${encodeURIComponent(pathname ?? "")}`;
 
   return (
-    <Card className="p-6 mb-6">
+    <Card className="p-6">
       <EmptyState
         title="Couldn't load your stats"
         description="The backend may be sleeping or unreachable. Retry to refresh your dashboard."
@@ -431,7 +442,7 @@ export default function DashboardPage() {
   }, [toolQuery]);
 
   return (
-    <PageContainer maxWidth="default">
+    <PageContainer kind="hub">
       <WhatsNewModal open={showWhatsNew} onClose={handleCloseWhatsNew} />
 
       {/*
@@ -457,11 +468,12 @@ export default function DashboardPage() {
             />
           ) : undefined
         }
-        className="mb-5"
       />
 
+      <div className="space-y-6">
+
       {/* Link Resolver Quick Input */}
-      <Card variant="glass" className="p-3 sm:p-4 mb-5">
+      <Card variant="glass" className="p-4">
         <div className="flex flex-col gap-2.5 sm:flex-row sm:items-end">
           <Field label="Resolve a SoundCloud link" className="flex-1">
             {(field) => (
@@ -499,7 +511,7 @@ export default function DashboardPage() {
 
       {/* Recently Used */}
       {recentTools.length > 0 && (
-        <div className="mb-5">
+        <div>
           <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
             Recently used
           </h2>
@@ -517,71 +529,73 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Tool search */}
-      <Field label="Search tools" className="mb-3">
-        {(field) => (
-          <div className="relative">
-            <Search
-              aria-hidden="true"
-              className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground"
-            />
-            <Input
-              {...field}
-              type="search"
-              value={toolQuery}
-              onChange={(e) => setToolQuery(e.target.value)}
-              placeholder="Search tools…"
-              className="pl-9 bg-card"
-            />
+      {/* Tool search, then the tools it filters, 16px apart: one group. */}
+      <div className="space-y-4">
+        <Field label="Search tools">
+          {(field) => (
+            <div className="relative">
+              <Search
+                aria-hidden="true"
+                className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground"
+              />
+              <Input
+                {...field}
+                type="search"
+                value={toolQuery}
+                onChange={(e) => setToolQuery(e.target.value)}
+                placeholder="Search tools…"
+                className="pl-9 bg-card"
+              />
+            </div>
+          )}
+        </Field>
+
+        {/* Quick Actions - Feature Cards, grouped by category */}
+        {filteredFeatures.length === 0 ? (
+          <Card className="p-6">
+            <EmptyState title="No tools match your search" description="Try a different keyword." />
+          </Card>
+        ) : (
+          <div className="space-y-6">
+            {rankByUsage(filteredFeatures, CATEGORIES).map(({ category, items: tools }) => {
+              if (tools.length === 0) return null;
+              return (
+                <section key={category} aria-labelledby={categoryId(category)}>
+                  <h2
+                    id={categoryId(category)}
+                    className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+                  >
+                    {category}
+                  </h2>
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    {tools.map((feature) => (
+                      <Card key={feature.id} interactive className="group p-4 sm:p-6">
+                        <Link href={feature.path} className="block">
+                          <div className="mb-3 flex items-start justify-between">
+                            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+                              <feature.icon aria-hidden="true" className="h-5 w-5" />
+                            </div>
+                            <ArrowRight aria-hidden="true" className="h-4 w-4 text-primary opacity-0 transition-opacity group-hover:opacity-100" />
+                          </div>
+                          <h3 className="mb-1 text-base font-bold text-foreground transition group-hover:text-primary-text">
+                            {feature.title}
+                          </h3>
+                          <p className="text-sm leading-relaxed text-muted-foreground">
+                            {feature.description}
+                          </p>
+                        </Link>
+                      </Card>
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
           </div>
         )}
-      </Field>
-
-      {/* Quick Actions - Feature Cards, grouped by category */}
-      {filteredFeatures.length === 0 ? (
-        <Card className="p-6">
-          <EmptyState title="No tools match your search" description="Try a different keyword." />
-        </Card>
-      ) : (
-        CATEGORY_ORDER.map((category) => {
-          const tools = filteredFeatures.filter((f) => f.category === category);
-          if (tools.length === 0) return null;
-          return (
-            <div key={category} className="mb-6">
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
-                {category}
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {tools.map((feature) => (
-                  <Card
-                    key={feature.id}
-                    interactive
-                    className="group p-4 sm:p-5"
-                  >
-                    <Link href={feature.path} className="block">
-                      <div className="flex items-start justify-between mb-3">
-                        <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center text-primary-foreground shadow-sm">
-                          <feature.icon aria-hidden="true" className="w-5 h-5" />
-                        </div>
-                        <ArrowRight aria-hidden="true" className="w-4 h-4 text-primary opacity-0 group-hover:opacity-100 transition-opacity" />
-                      </div>
-                      <h3 className="text-base font-bold mb-1 group-hover:text-primary-text transition text-foreground">
-                        {feature.title}
-                      </h3>
-                      <p className="leading-relaxed text-sm text-muted-foreground">
-                        {feature.description}
-                      </p>
-                    </Link>
-                  </Card>
-                ))}
-              </div>
-            </div>
-          );
-        })
-      )}
+      </div>
 
       {/* Feedback — the one entry point every tool page can fall back to. */}
-      <Card className="mb-6 p-4 sm:p-5">
+      <Card className="p-4 sm:p-6">
         <Link
           href="/feedback/?from=%2Fdashboard"
           className="group flex flex-wrap items-center justify-between gap-2 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/80 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
@@ -630,6 +644,7 @@ export default function DashboardPage() {
           </div>
         </div>
       )}
+      </div>
     </PageContainer>
   );
 }

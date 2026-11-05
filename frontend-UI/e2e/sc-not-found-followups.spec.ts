@@ -53,24 +53,33 @@ test("compare: a 404 PLAYLIST_NOT_FOUND shows the server text, clears the select
   );
 
   await page.goto("/playlist-compare/");
-  const a = page.getByLabel("Playlist A");
-  const b = page.getByLabel("Playlist B");
-  await expect(a.locator("option", { hasText: "Sample Playlist 2" })).toHaveCount(1);
-  await a.selectOption("1");
-  await b.selectOption("2");
+  const a = page.getByRole("button", { name: /^Playlist A/ });
+  const b = page.getByRole("button", { name: /^Playlist B/ });
+  await a.click();
+  await page.getByRole("dialog").getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
+  await b.click();
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Sample Playlist 2", exact: true })).toHaveCount(1);
+  await page.getByRole("dialog").getByRole("button", { name: "Sample Playlist 2", exact: true }).click();
 
   const before = listGets;
   await page.getByRole("button", { name: "Compare" }).click();
 
-  await expect(page.getByRole("alert").filter({ hasText: COMPARE_REASON })).toBeVisible();
+  const result = page.getByRole("region", { name: "Couldn’t compare the playlists" });
+  await expect(result).toContainText(COMPARE_REASON);
+  await expect(result).toBeFocused();
   // Playlist B was the missing one: it is cleared and gone from the refetched
   // list; Playlist A is untouched.
   await expect.poll(() => listGets).toBeGreaterThan(before);
-  await expect(b.locator("option", { hasText: "Sample Playlist 2" })).toHaveCount(0);
-  await expect(b).toHaveValue("");
+  await expect(b).toContainText("Choose a playlist...");
+  await b.click();
+  // The refetched list has rendered (another row is there) before the
+  // missing one is asserted absent, so the count cannot pass on an empty dialog.
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Sample Playlist 3", exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Sample Playlist 2", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
   // Compare reads React state, not the DOM: it is disabled only if B was cleared.
   await expect(page.getByRole("button", { name: "Compare" })).toBeDisabled();
-  await expect(a).toHaveValue("1");
+  await expect(a).toContainText("Sample Playlist 1");
 
   const results = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag22aa"])
@@ -99,11 +108,16 @@ test("likes-to-playlist: a 409 PLAYLIST_NOT_FOUND clears the target and shows th
   await page.getByRole("checkbox", { name: "Sample Track 1" }).check();
   await page.getByRole("button", { name: "Existing playlist" }).click();
   await page.getByRole("button", { name: "Choose a playlist…" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: /Sample Playlist 3/ }).click();
+  // The shared PlaylistPicker's rows are radios, not aria-pressed buttons.
+  await page.getByRole("dialog").getByRole("button", { name: "Sample Playlist 3", exact: true }).click();
   await expect(page.getByRole("button", { name: /Change/ })).toBeVisible();
 
   await page.getByRole("button", { name: "Add to Playlist" }).last().click();
 
-  await expect(page.getByRole("alert").filter({ hasText: TARGET_REASON })).toBeVisible();
+  // The failure is the shared result panel above the tool (focused, spoken
+  // through the live region) rather than a role="alert" notice.
+  const result = page.getByRole("region", { name: "Couldn't add the tracks" });
+  await expect(result).toContainText(TARGET_REASON);
+  await expect(result).toBeFocused();
   await expect(page.getByRole("button", { name: "Choose a playlist…" })).toBeVisible();
 });

@@ -1,23 +1,33 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import NextLink from "next/link";
-import { Link2, ExternalLink, Music, Users, ListMusic, Loader2, X, Download, Search, RotateCcw, Copy } from "lucide-react";
+import { Link2, ExternalLink, Music, Users, ListMusic, Loader2, X, Download, RotateCcw, Copy } from "lucide-react";
 import {
+  ActionBar,
   Button,
-  Card,
   EmptyState,
   Field,
-  InlineAlert,
-  Input,
+  ListSearch,
   PageContainer,
   PageHeader,
+  Panel,
   ResultPanel,
-  SectionHeading,
   Select,
   useAnnounce,
 } from "@/components/ui";
+import { useListSearch } from "@/lib/list-search";
 import { formatCompactNumber, formatDuration, useBatchResolver, type BatchResolveRow } from "@/lib/resolver";
+
+/** What the search box matches against: the link, the title and the artist. */
+function rowSearchText(r: BatchResolveRow): string {
+  const title = (r.data?.type === "user" ? r.data?.username : r.data?.title) || "";
+  const artist =
+    r.data?.type === "track" || r.data?.type === "playlist"
+      ? r.data.user?.username || r.data?.username || ""
+      : r.data?.username || "";
+  return `${r.url} ${title} ${artist}`;
+}
 
 export default function BatchLinkResolverPage() {
   const announce = useAnnounce();
@@ -27,6 +37,11 @@ export default function BatchLinkResolverPage() {
   const [query, setQuery] = useState("");
   const [sortBy, setSortBy] = useState<"status" | "type" | "title">("status");
   const { loading, error, result, resolve, setError } = useBatchResolver();
+  // Our own message for the 50-link limit, shown on the field; a failed
+  // request is the hook's `error` and becomes the result panel.
+  const [inputError, setInputError] = useState<string | null>(null);
+  // Per-run key: each run mounts a fresh result panel (focus + announcement).
+  const runCount = useRef(0);
 
   const handleResolve = async () => {
     const urls = input
@@ -36,22 +51,15 @@ export default function BatchLinkResolverPage() {
 
     if (urls.length === 0) return;
     if (urls.length > 50) {
-      setError("Maximum 50 URLs at a time");
+      setInputError("Maximum 50 URLs at a time");
       return;
     }
 
+    setInputError(null);
+    runCount.current += 1;
     announce(`Resolving ${urls.length} link${urls.length === 1 ? "" : "s"}…`);
     await resolve(urls);
   };
-
-  // The outcome lands in a panel below the fold with no focus change, so the
-  // only thing that ever said "done" was the appearance of some rows.
-  useEffect(() => {
-    if (loading || !result) return;
-    announce(
-      `Done: ${result.summary.ok} resolved, ${result.summary.error} failed, of ${result.summary.total}.`,
-    );
-  }, [loading, result, announce]);
 
   const results = useMemo(() => result?.results ?? [], [result]);
   const summary = result?.summary;
@@ -63,21 +71,12 @@ export default function BatchLinkResolverPage() {
     return <Link2 className="w-4 h-4" />;
   };
 
+  const { results: searched } = useListSearch(results, query, rowSearchText);
+
   const filteredResults = useMemo(() => {
-    let rows = [...results];
+    let rows = [...searched];
     if (statusFilter !== "all") rows = rows.filter((r) => r.status === statusFilter);
     if (typeFilter !== "all") rows = rows.filter((r) => r.data?.type === typeFilter);
-    if (query.trim()) {
-      const q = query.toLowerCase();
-      rows = rows.filter((r) => {
-        const title = (r.data?.type === "user" ? r.data?.username : r.data?.title) || "";
-        const artist =
-          r.data?.type === "track" || r.data?.type === "playlist"
-            ? r.data.user?.username || r.data?.username || ""
-            : r.data?.username || "";
-        return r.url.toLowerCase().includes(q) || title.toLowerCase().includes(q) || artist.toLowerCase().includes(q);
-      });
-    }
     rows.sort((a, b) => {
       if (sortBy === "status") return a.status.localeCompare(b.status);
       if (sortBy === "type") return (a.data?.type || "").localeCompare(b.data?.type || "");
@@ -86,7 +85,7 @@ export default function BatchLinkResolverPage() {
       return aTitle.localeCompare(bTitle);
     });
     return rows;
-  }, [results, statusFilter, typeFilter, query, sortBy]);
+  }, [searched, statusFilter, typeFilter, sortBy]);
 
   const copyFailedUrls = async () => {
     const text = results.filter((r) => r.status === "error").map((r) => r.url).join("\n");
@@ -99,6 +98,7 @@ export default function BatchLinkResolverPage() {
   const retryFailed = async () => {
     const failed = results.filter((r) => r.status === "error").map((r) => r.url);
     if (!failed.length) return;
+    runCount.current += 1;
     setInput(failed.join("\n"));
     await resolve(failed);
   };
@@ -138,34 +138,55 @@ export default function BatchLinkResolverPage() {
   };
 
   return (
-    <PageContainer maxWidth="narrow">
+    <PageContainer kind="form">
         <PageHeader
           title="Batch Link Resolver"
           description="Paste up to 50 SoundCloud URLs to resolve them all at once."
         />
 
+        <div className="space-y-6">
+        {/* The outcome of the run, above the tool. The table below is the
+            resolved data and stays content. */}
+        {error ? (
+          <ResultPanel
+            key={runCount.current}
+            status="error"
+            title="Could not resolve links"
+            description={error}
+            onDismiss={() => setError("")}
+          />
+        ) : !loading && summary ? (
+          <ResultPanel
+            key={runCount.current}
+            status={summary.total === 0 ? "empty" : summary.ok === 0 ? "error" : summary.error > 0 ? "partial" : "success"}
+            title={summary.error === 0 ? "Links resolved" : summary.ok === 0 ? "No links resolved" : "Links partly resolved"}
+            description={`${summary.ok} resolved, ${summary.error} failed, of ${summary.total}.`}
+            announcement={`Done: ${summary.ok} resolved, ${summary.error} failed, of ${summary.total}.`}
+          />
+        ) : null}
+
         {/* Input area */}
-        <Card className="mb-6 p-6">
-          <SectionHeading className="mb-3">Links to resolve</SectionHeading>
+        <Panel title="Links to resolve">
           <Field
             label="SoundCloud URLs (one per line)"
             hint="Up to 50 at a time."
+            error={inputError ?? undefined}
           >
             {(field) => (
               <textarea
                 {...field}
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={(e) => {
+                  setInput(e.target.value);
+                  if (inputError) setInputError(null);
+                }}
                 placeholder={"https://soundcloud.com/artist/track-name\nhttps://soundcloud.com/artist\nhttps://soundcloud.com/artist/sets/playlist-name"}
                 rows={8}
-                className="w-full px-4 py-3 border-2 border-gray-200 dark:border-border rounded-xl text-foreground bg-gray-50 dark:bg-secondary/20 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/30 resize-y font-mono text-base sm:text-sm"
+                className="w-full resize-y rounded-md border border-input bg-surface px-3 py-2 font-mono text-base text-foreground shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background dark:bg-white/5 sm:text-sm"
               />
             )}
           </Field>
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-            <span className="text-sm text-muted-foreground-subtle">
-              {input.split("\n").filter((l) => l.trim()).length} URLs entered
-            </span>
+          <ActionBar>
             <Button onClick={handleResolve} disabled={loading || !input.trim()}>
               {loading ? (
                 <>
@@ -179,19 +200,17 @@ export default function BatchLinkResolverPage() {
                 </>
               )}
             </Button>
-          </div>
-          {error && (
-            <InlineAlert variant="error" className="mt-4" onDismiss={() => setError("")}>
-              {error}
-            </InlineAlert>
-          )}
-        </Card>
+            <span className="text-sm text-muted-foreground-subtle">
+              {input.split("\n").filter((l) => l.trim()).length} URLs entered
+            </span>
+          </ActionBar>
+        </Panel>
 
         {/* Results */}
         {results.length > 0 && (
-          <ResultPanel>
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-xl font-bold text-foreground">Results</h2>
+          <Panel
+            title="Results"
+            actions={
               <div className="flex items-center gap-3 text-sm">
                 <span className="text-success-text font-medium">
                   <span aria-hidden="true">✓ </span>
@@ -202,9 +221,21 @@ export default function BatchLinkResolverPage() {
                   {summary?.error ?? 0} failed
                 </span>
               </div>
-            </div>
+            }
+          >
+            <ListSearch
+              label="Search results"
+              value={query}
+              onChange={setQuery}
+              shown={filteredResults.length}
+              total={results.length}
+              noun="links"
+              placeholder="Search by link, title or artist…"
+              className="mb-4"
+            />
 
-            <div className="grid grid-cols-1 gap-3 mb-4 sm:grid-cols-2 md:grid-cols-4">
+
+            <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
               <Select
                 label="Status"
                 value={statusFilter}
@@ -233,24 +264,6 @@ export default function BatchLinkResolverPage() {
                 <option value="type">Type</option>
                 <option value="title">Title</option>
               </Select>
-              <Field label="Search results">
-                {(field) => (
-                  <div className="relative">
-                    <Search
-                      aria-hidden="true"
-                      className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground-subtle"
-                    />
-                    <Input
-                      {...field}
-                      type="search"
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                      placeholder="Search..."
-                      className="pl-9"
-                    />
-                  </div>
-                )}
-              </Field>
             </div>
 
             <div className="grid grid-cols-1 gap-2 mb-4 sm:grid-cols-2 lg:flex lg:flex-wrap">
@@ -281,18 +294,19 @@ export default function BatchLinkResolverPage() {
                 />
               ))}
             </div>
-          </ResultPanel>
+          </Panel>
         )}
 
         {results.length === 0 && !loading && (
-          <Card className="p-8 text-center">
+          <Panel className="text-center">
             <EmptyState
               icon={<Link2 className="w-12 h-12" />}
               title="Paste URLs above to get started"
               description="Each URL will be resolved to show track, playlist, or user details."
             />
-          </Card>
+          </Panel>
         )}
+        </div>
     </PageContainer>
   );
 }

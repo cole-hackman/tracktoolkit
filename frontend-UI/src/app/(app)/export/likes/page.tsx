@@ -18,9 +18,12 @@ export default function ExportLikesPage() {
   };
 
   return (
-    <PageContainer maxWidth="narrow">
+    <PageContainer kind="form">
       <ExportBackLink />
       <PageHeader
+        // ExportBackLink above is the way back; the default "Back to
+        // Dashboard" would stack a second back link under it on a phone.
+        backHref=""
         title="Export Likes"
         description="Download all liked tracks. Use Title - Artist for Lexicon, rekordbox, or LLM matching."
       />

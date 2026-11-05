@@ -1,16 +1,17 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ExternalLink } from "lucide-react";
 import {
+  ActionBar,
   Button,
-  Card,
   Field,
   InlineAlert,
   Input,
   PageContainer,
   PageHeader,
+  Panel,
   ProgressBar,
   ResultPanel,
   SectionHeading,
@@ -95,9 +96,14 @@ export default function SetToPlaylistPage() {
   const [matching, setMatching] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // A run that did not finish (matching stopped, the playlist was not
+  // created) reports in the result slot; `runCount` keys the panel per run.
+  const [error, setError] = useState<{ title: string; text: string; announcement?: string } | null>(null);
+  // The tracklist field's own message (nothing to look up, too many tracks).
+  const [textError, setTextError] = useState<string | null>(null);
   const [partial, setPartial] = useState<PartialPlaylist | null>(null);
   const [created, setCreated] = useState<CreateResponse | null>(null);
+  const runCount = useRef(0);
 
   const parsed = useMemo(() => parseSetlist(text), [text]);
   const searchable = parsed.entries.filter((e) => e.kind !== "unidentified");
@@ -121,16 +127,18 @@ export default function SetToPlaylistPage() {
     setCreated(null);
     setPartial(null);
     setError(null);
+    setTextError(null);
   };
 
   async function runMatch() {
     resetResults();
+    runCount.current += 1;
     if (uniqueSearches.length === 0) {
-      setError("No tracks found in that text. Paste the tracklist with one “Artist - Title” per line.");
+      setTextError("No tracks found in that text. Paste the tracklist with one “Artist - Title” per line.");
       return;
     }
     if (uniqueSearches.length > MAX_SEARCHES) {
-      setError(`That is ${uniqueSearches.length} different tracks. Paste at most ${MAX_SEARCHES} at a time.`);
+      setTextError(`That is ${uniqueSearches.length} different tracks. Paste at most ${MAX_SEARCHES} at a time.`);
       return;
     }
 
@@ -186,8 +194,11 @@ export default function SetToPlaylistPage() {
 
     const picked = [...next.values()].filter((m) => m.chosen != null).length;
     if (failure) {
-      setError(`${failure} ${reached} of ${searchable.length} lines were matched before it stopped.`);
-      announce(`Matching stopped: ${failure}`, { assertive: true });
+      setError({
+        title: "Matching stopped",
+        text: `${failure} ${reached} of ${searchable.length} lines were matched before it stopped.`,
+        announcement: `Matching stopped: ${failure}`,
+      });
     } else {
       announce(`Matched ${picked} of ${searchable.length} tracks. Review the list before creating the playlist.`);
     }
@@ -236,6 +247,7 @@ export default function SetToPlaylistPage() {
     setCreating(true);
     setError(null);
     setPartial(null);
+    runCount.current += 1;
     announce(`Creating “${title.trim()}” with ${toAdd.length} tracks…`);
     try {
       const res = await apiFetch("/api/setlists/playlist", {
@@ -251,15 +263,13 @@ export default function SetToPlaylistPage() {
       if (!res.ok) {
         if (data?.partialPlaylist) setPartial(data.partialPlaylist as PartialPlaylist);
         const message = errorMessageFromBody(data, "Creating the playlist failed.");
-        setError(message);
-        announce(message, { assertive: true });
+        setError({ title: data?.partialPlaylist ? "Playlist partly created" : "Playlist not created", text: message });
         return;
       }
       const result = data as CreateResponse;
       setCreated(result);
-      announce(`Created “${result.playlist.title}” with ${result.added} tracks.`);
     } catch {
-      setError("Could not reach Track Toolkit. Check your connection and try again.");
+      setError({ title: "Playlist not created", text: "Could not reach Track Toolkit. Check your connection and try again." });
     } finally {
       setCreating(false);
       void invalidatePlaylistCaches(queryClient);
@@ -283,17 +293,86 @@ export default function SetToPlaylistPage() {
   const canCreate = !busy && !created && toAdd.length > 0 && title.trim().length > 0 && !sourceUrlError;
 
   return (
-    <PageContainer>
+    <PageContainer kind="form">
       <PageHeader
         title="Set → Playlist"
         description="Paste a DJ set's tracklist and get it as a SoundCloud playlist, in set order, with the tracklist in the description."
       />
 
-      <Card className="p-4 sm:p-6">
-        <div className="space-y-5">
+      <div className="space-y-6">
+      {created ? (
+        <ResultPanel
+          key={runCount.current}
+          status={notAdded.length > 0 ? "partial" : "success"}
+          title={`Created “${created.playlist.title}”`}
+          description={`${created.added} track${created.added === 1 ? "" : "s"} added, in set order, with the tracklist in the description.`}
+          announcement={`Created “${created.playlist.title}” with ${created.added} tracks.`}
+          actions={
+            created.playlist.permalink_url ? (
+              <a
+                href={created.playlist.permalink_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex min-h-11 items-center gap-1 font-medium text-primary-text underline"
+              >
+                Open on SoundCloud <ExternalLink className="h-4 w-4" aria-hidden="true" />
+              </a>
+            ) : undefined
+          }
+        >
+          {created.descriptionOmitted > 0 && (
+            <p className="text-sm text-muted-foreground">
+              The description lists the first {created.added - created.descriptionOmitted} and notes that{" "}
+              {created.descriptionOmitted} more follow — SoundCloud limits description length.
+            </p>
+          )}
+          {notAdded.length > 0 && (
+            <section>
+              <SectionHeading as="h3">Not added ({notAdded.length})</SectionHeading>
+              <ol className="mt-3 divide-y divide-border rounded-xl border border-border bg-card">
+                {notAdded.map((row) => (
+                  <li key={row.position} className="min-w-0 px-4 py-2 text-sm">
+                    <span className="mr-2 font-mono text-muted-foreground-subtle">{row.position}.</span>
+                    <span className="break-words text-foreground">{row.label}</span>
+                    <span className="block text-xs text-muted-foreground">{REASON_TEXT[row.reason]}</span>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
+        </ResultPanel>
+      ) : error ? (
+        <ResultPanel
+          key={runCount.current}
+          status={partial ? "partial" : "error"}
+          title={error.title}
+          description={error.text}
+          announcement={error.announcement}
+          onDismiss={() => {
+            setError(null);
+            setPartial(null);
+          }}
+          actions={
+            partial?.permalink_url ? (
+              <a
+                href={partial.permalink_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex min-h-11 items-center font-medium text-primary-text underline"
+              >
+                Open “{partial.title}”
+              </a>
+            ) : undefined
+          }
+        />
+      ) : null}
+
+      <Panel>
+        <div className="space-y-4">
           <Field
             label="Tracklist"
             required
+            error={textError ?? undefined}
             hint="On the 1001Tracklists page, select the whole tracklist and copy it, then paste it here. One “Artist - Title” per line works too, and so do SoundCloud track links."
           >
             {(field) => (
@@ -306,7 +385,7 @@ export default function SetToPlaylistPage() {
                 }}
                 rows={10}
                 placeholder={"01\nCASSIMM - Love Desire\n02\nID - ID\n…"}
-                className="w-full resize-y rounded-xl border-2 border-input bg-surface px-4 py-3 font-mono text-base text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/30 sm:text-sm"
+                className="w-full resize-y rounded-xl border border-input bg-surface px-4 py-3 font-mono text-base text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/30 sm:text-sm"
               />
             )}
           </Field>
@@ -351,12 +430,14 @@ export default function SetToPlaylistPage() {
             )}
           </Field>
 
-          <div className="flex flex-wrap items-center gap-3">
+          {/* `space-y-4` on the parent outranks ActionBar's own mt-6, so the
+              last 8px of the 24px gap comes from padding. */}
+          <ActionBar className="pt-2">
             <Button onClick={runMatch} disabled={busy || searchable.length === 0}>
               {matching ? "Matching…" : matches ? "Match again" : "Find on SoundCloud"}
             </Button>
             <span className="text-sm text-muted-foreground-subtle">Nothing is created until you review the matches.</span>
-          </div>
+          </ActionBar>
 
           {matching && (
             <ProgressBar
@@ -367,28 +448,11 @@ export default function SetToPlaylistPage() {
             />
           )}
         </div>
-      </Card>
-
-      {error && (
-        <InlineAlert variant="error" className="mt-6">
-          {error}
-          {partial && (
-            <>
-              {" "}
-              {partial.permalink_url && (
-                <a href={partial.permalink_url} target="_blank" rel="noopener noreferrer" className="font-medium underline">
-                  Open “{partial.title}”
-                </a>
-              )}
-            </>
-          )}
-        </InlineAlert>
-      )}
+      </Panel>
 
       {review && !created && (
-        <section className="mt-8">
-          <SectionHeading>Review the matches</SectionHeading>
-          <p className="mt-2 text-sm text-muted-foreground">
+        <Panel title="Review the matches">
+          <p className="text-sm text-muted-foreground">
             {toAdd.length} will be added
             {counts["not-found"] > 0 && ` · ${counts["not-found"]} not found`}
             {counts.skipped > 0 && ` · ${counts.skipped} need a pick or are left out`}
@@ -448,55 +512,16 @@ export default function SetToPlaylistPage() {
             </InlineAlert>
           )}
 
-          <div className="mt-6 flex flex-wrap items-center gap-3">
+          <ActionBar>
             <Button onClick={createPlaylist} disabled={!canCreate}>
               {creating ? "Creating…" : `Create playlist with ${toAdd.length} track${toAdd.length === 1 ? "" : "s"}`}
             </Button>
             {!title.trim() && <span className="text-sm text-warning-text">Give the playlist a name first.</span>}
-          </div>
-        </section>
+          </ActionBar>
+        </Panel>
       )}
 
-      {created && (
-        <ResultPanel
-          className="mt-8"
-          tone="success"
-          title={`Created “${created.playlist.title}”`}
-          description={`${created.added} track${created.added === 1 ? "" : "s"} added, in set order, with the tracklist in the description.`}
-        >
-          {created.playlist.permalink_url && (
-            <a
-              href={created.playlist.permalink_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 font-medium text-primary-text underline"
-            >
-              Open on SoundCloud <ExternalLink className="h-4 w-4" aria-hidden="true" />
-            </a>
-          )}
-          {created.descriptionOmitted > 0 && (
-            <p className="mt-3 text-sm text-muted-foreground">
-              The description lists the first {created.added - created.descriptionOmitted} and notes that{" "}
-              {created.descriptionOmitted} more follow — SoundCloud limits description length.
-            </p>
-          )}
-        </ResultPanel>
-      )}
-
-      {created && notAdded.length > 0 && (
-        <section className="mt-6">
-          <SectionHeading>Not added ({notAdded.length})</SectionHeading>
-          <ol className="mt-3 divide-y divide-border rounded-xl border border-border bg-card">
-            {notAdded.map((row) => (
-              <li key={row.position} className="min-w-0 px-4 py-2 text-sm">
-                <span className="mr-2 font-mono text-muted-foreground-subtle">{row.position}.</span>
-                <span className="break-words text-foreground">{row.label}</span>
-                <span className="block text-xs text-muted-foreground">{REASON_TEXT[row.reason]}</span>
-              </li>
-            ))}
-          </ol>
-        </section>
-      )}
+      </div>
     </PageContainer>
   );
 }

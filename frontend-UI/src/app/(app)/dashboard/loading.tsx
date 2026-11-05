@@ -9,7 +9,7 @@ import { Search } from "lucide-react";
  */
 export default function DashboardLoading() {
   return (
-    <PageContainer maxWidth="default">
+    <PageContainer kind="hub">
       <div role="status" aria-label="Loading">
         <span className="sr-only">Loading the dashboard…</span>
 

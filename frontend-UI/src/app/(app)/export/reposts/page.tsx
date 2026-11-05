@@ -18,9 +18,12 @@ export default function ExportRepostsPage() {
   };
 
   return (
-    <PageContainer maxWidth="narrow">
+    <PageContainer kind="form">
       <ExportBackLink />
       <PageHeader
+        // ExportBackLink above is the way back; the default "Back to
+        // Dashboard" would stack a second back link under it on a phone.
+        backHref=""
         title="Export Reposts"
         description="Export reposted tracks and playlists as Title - Artist lines, URLs, or CSV."
       />

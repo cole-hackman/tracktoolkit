@@ -487,7 +487,7 @@ export function DownloadQueuePanel({
   return (
     <section aria-labelledby={showHeading ? headingId : undefined} aria-label={showHeading ? undefined : "Download queue"} className="space-y-3">
       {showHeading && (
-        <h2 id={headingId} className="text-base font-bold text-foreground">
+        <h2 id={headingId} className="text-lg font-semibold text-foreground">
           Download queue
         </h2>
       )}

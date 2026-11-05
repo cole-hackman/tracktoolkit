@@ -9,7 +9,7 @@ import { mockApi } from "./fixtures/api";
 
 async function openPlaylistAndLike(page: Page) {
   await page.goto("/playlist-to-likes/");
-  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await page.getByRole("button", { name: "Sample Playlist 1", exact: true }).click();
   const like = page.getByRole("button", { name: /^Like \d+ Tracks?$/ });
   await expect(like).toBeEnabled();
   await like.click();
@@ -49,9 +49,10 @@ test.describe("playlist to likes — server refusals", () => {
 
     await openPlaylistAndLike(page);
 
-    const alert = page.getByRole("main").getByRole("alert");
-    await expect(alert).toContainText("SoundCloud is limiting likes");
-    await expect(alert).toContainText(/Liked 1 of \d+ tracks/);
+    const result = page.getByRole("region", { name: "Likes stopped early" });
+    await expect(result).toContainText("SoundCloud is limiting likes");
+    await expect(result).toContainText(/Liked 1 of \d+ tracks/);
+    await expect(result).toBeFocused();
     await expect(page.getByRole("heading", { name: "Tracks Liked!" })).toHaveCount(0);
     expect(calls).toBe(1);
   });
@@ -69,8 +70,8 @@ test.describe("playlist to likes — server refusals", () => {
 
     await openPlaylistAndLike(page);
 
-    await expect(page.getByRole("main").getByRole("alert")).toContainText(
-      "already running for your account",
-    );
+    const result = page.getByRole("region", { name: "Couldn't like the tracks" });
+    await expect(result).toContainText("already running for your account");
+    await expect(result).toBeFocused();
   });
 });

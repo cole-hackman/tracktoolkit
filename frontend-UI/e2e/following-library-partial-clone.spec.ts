@@ -78,9 +78,16 @@ for (const width of [1280, 360]) {
     await expect(page.getByText("at least 200 of 250 tracks", { exact: true })).toBeVisible();
     await expect(page.getByText("Cloned 1 playlist.")).toBeVisible();
     // The summary lives inside the panel; no second alert repeats it.
-    await expect(page.getByText(/not all of them finished/)).toBeVisible();
+    // (exact: the live region repeats the sentence for screen readers.)
+    await expect(
+      page.getByText("Some playlists were cloned, but not all of them finished.", { exact: true }),
+    ).toBeVisible();
     await expect(page.getByRole("alert").filter({ hasText: /not all of them finished/ })).toHaveCount(0);
     await expect(page.getByText("Sample Public Playlist 1:")).toBeVisible();
+    // A partial outcome is one focused region in the result slot.
+    const result = page.getByRole("region", { name: "Finished with problems" });
+    await expect(result).toBeFocused();
+    await expect(result).toHaveAttribute("data-result-status", "partial");
 
     await expectNoBlockingViolations(page);
     await expectNoHorizontalOverflow(page);
@@ -126,7 +133,11 @@ test("a non-JSON 502 body falls back to the generic text and does not crash", as
 
   await openAndClone(page);
 
-  await expect(page.getByRole("alert").filter({ hasText: "Failed to clone playlists" })).toBeVisible();
+  // The failure is the shared result panel above the tool (focused, spoken
+  // through the live region), not a role="alert" notice.
+  const result = page.getByRole("region", { name: "Couldn't clone the playlists" });
+  await expect(result).toContainText("Failed to clone playlists");
+  await expect(result).toBeFocused();
 });
 
 test("a 400 with only per-item errors lists each reason under its playlist's name", async ({ page }) => {
@@ -146,7 +157,8 @@ test("a 400 with only per-item errors lists each reason under its playlist's nam
 
   await openAndClone(page);
 
-  await expect(page.getByText("None of the selected playlists could be cloned.")).toBeVisible();
+  // exact: the live region repeats the sentence for screen readers.
+  await expect(page.getByText("None of the selected playlists could be cloned.", { exact: true })).toBeVisible();
   await expect(page.getByText("Sample Public Playlist 1:")).toBeVisible();
   await expect(page.getByText("This playlist no longer exists or is private.")).toBeVisible();
   await expectNoBlockingViolations(page);

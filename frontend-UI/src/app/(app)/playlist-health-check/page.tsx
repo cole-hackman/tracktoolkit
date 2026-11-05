@@ -2,20 +2,22 @@
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Stethoscope, Music, AlertTriangle, CheckCircle, Trash2 } from "lucide-react";
+import { Stethoscope, Music, AlertTriangle, CheckCircle, Trash2 } from "lucide-react";
 import {
   Button,
   BulkReviewDetails,
-  Card,
   ConfirmDialog,
   EmptyState,
   InlineAlert,
   LoadingSpinner,
   PageContainer,
   PageHeader,
+  Panel,
+  ResultPanel,
   Skeleton,
   useAnnounce,
 } from "@/components/ui";
+import { PlaylistPicker } from "@/components/playlists/PlaylistPicker";
 import { apiFetch, isApiError, readApiErrorMessage } from "@/lib/api";
 import {
   invalidatePlaylistCaches,
@@ -44,6 +46,15 @@ interface Track {
 
 type HealthFilter = "all" | "healthy" | "issues";
 
+/** The result slot's content after a save (or a refused one), fixed when it ends. */
+interface Outcome {
+  id: number;
+  status: "success" | "error";
+  title: string;
+  description: string;
+  announcement?: string;
+}
+
 export default function PlaylistHealthCheckPage() {
   const queryClient = useQueryClient();
   const announce = useAnnounce();
@@ -52,7 +63,7 @@ export default function PlaylistHealthCheckPage() {
   const [saving, setSaving] = useState(false);
   const [filter, setFilter] = useState<HealthFilter>("all");
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
-  const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
 
   // Set by a successful save to the scan announcement it makes redundant.
   const postSaveScanMessage = useRef<string | null>(null);
@@ -68,33 +79,29 @@ export default function PlaylistHealthCheckPage() {
   const loading = playlistsQuery.isLoading;
   const loadingTracks = selectedPlaylist != null && playlistDetailQuery.isLoading;
 
-  useEffect(() => {
-    if (playlistsQuery.isError) {
-      setNotice({ type: "error", text: "Couldn’t load your playlists. Try refreshing the page." });
-    }
-  }, [playlistsQuery.isError]);
+  // Loading failures stay where the thing they load would be: the playlists
+  // error with the picker, the tracks error in the report.
+  // The server's own wording for a vanished playlist (404) or a SoundCloud
+  // outage (502) says more than the generic line does.
+  const detailError = playlistDetailQuery.error;
+  const detailServerText =
+    isApiError(detailError) &&
+    (detailError.status === 404 || detailError.status === 502) &&
+    // apiFetchJson's own fallback (a non-JSON body, e.g. a proxy 502) is not
+    // the server's wording.
+    detailError.message !== `Request failed with status ${detailError.status}`
+      ? detailError.message
+      : null;
+  const detailErrorText = playlistDetailQuery.isError
+    ? (detailServerText ?? "Couldn’t load tracks for this playlist.")
+    : null;
 
   useEffect(() => {
-    if (playlistDetailQuery.isError) {
-      // The server's own wording for a vanished playlist (404) or a SoundCloud
-      // outage (502) says more than the generic line does.
-      const err = playlistDetailQuery.error;
-      const serverText =
-        isApiError(err) &&
-        (err.status === 404 || err.status === 502) &&
-        // apiFetchJson's own fallback (a non-JSON body, e.g. a proxy 502) is not
-        // the server's wording.
-        err.message !== `Request failed with status ${err.status}`
-          ? err.message
-          : null;
-      setNotice({ type: "error", text: serverText ?? "Couldn’t load tracks for this playlist." });
-      return;
-    }
-
+    if (playlistDetailQuery.isError) return;
     if (playlistDetailQuery.data) {
       setTracks(asArray<Track>(playlistDetailQuery.data.tracks));
     }
-  }, [playlistDetailQuery.data, playlistDetailQuery.isError, playlistDetailQuery.error]);
+  }, [playlistDetailQuery.data, playlistDetailQuery.isError]);
 
   // SoundCloud counts entries it will not hand back at any access level
   // (deleted or private). The server refuses to rewrite a playlist it cannot
@@ -113,6 +120,11 @@ export default function PlaylistHealthCheckPage() {
 
   const selectPlaylist = (playlist: Playlist) => {
     postSaveScanMessage.current = null;
+    setOutcome(null);
+    // The previous playlist's tracks must not survive the switch: until the
+    // new ones arrive they would be scanned, announced and offered for
+    // removal under the new playlist's name — and Remove would PUT them to it.
+    setTracks([]);
     setSelectedPlaylist(playlist);
     setFilter("all");
   };
@@ -177,9 +189,11 @@ export default function PlaylistHealthCheckPage() {
     if (!selectedPlaylist) return;
     if (healthyTracks.length === tracks.length) return;
     if (healthyTracks.length === 0) {
-      setNotice({
-        type: "error",
-        text: "Cannot remove all tracks from a playlist. Delete the playlist on SoundCloud instead.",
+      setOutcome({
+        id: Date.now(),
+        status: "error",
+        title: "Nothing was removed",
+        description: "Cannot remove all tracks from a playlist. Delete the playlist on SoundCloud instead.",
       });
       return;
     }
@@ -192,7 +206,7 @@ export default function PlaylistHealthCheckPage() {
     setShowRemoveConfirm(false);
     if (healthyTracks.length === 0) return;
     setSaving(true);
-    setNotice(null);
+    setOutcome(null);
     try {
       const response = await apiFetch(`/api/playlists/${selectedPlaylist.id}`, {
         method: "PUT",
@@ -210,20 +224,24 @@ export default function PlaylistHealthCheckPage() {
         setTracks(healthyTracks);
         const done = `Removed ${removedCount} unavailable track${removedCount === 1 ? "" : "s"}.`;
         const remaining = healthyTracks.length;
-        // One combined announcement. A status region that mounts with its
-        // text already in it is not reliably spoken, and the scan effect's
-        // own "M of M healthy" would overwrite a separate one — so that
-        // message is suppressed for this save.
+        // One combined announcement, spoken by the result panel. The scan
+        // effect's own "M of M healthy" would overwrite it — so that message
+        // is suppressed for this save.
         postSaveScanMessage.current = `${remaining} of ${remaining} tracks healthy — Healthy.`;
-        setNotice({ type: "success", text: done });
-        announce(`${done} ${postSaveScanMessage.current}`);
+        setOutcome({
+          id: Date.now(),
+          status: "success",
+          title: "Unavailable tracks removed",
+          description: done,
+          announcement: `${done} ${postSaveScanMessage.current}`,
+        });
         await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
       } else {
-        // The error notice renders as `InlineAlert variant="error"`, which is
-        // `role="alert"` — announcing as well would say it twice.
-        setNotice({
-          type: "error",
-          text: await readApiErrorMessage(response, "Failed to update playlist."),
+        setOutcome({
+          id: Date.now(),
+          status: "error",
+          title: "Couldn’t update the playlist",
+          description: await readApiErrorMessage(response, "Failed to update playlist."),
         });
         // A 409 means the server's view differs from this page's: refetch so
         // "reload and try again" has fresh data. After the message, so the
@@ -234,7 +252,12 @@ export default function PlaylistHealthCheckPage() {
       }
     } catch (error) {
       console.error("Error updating playlist:", error);
-      setNotice({ type: "error", text: "An error occurred while updating the playlist." });
+      setOutcome({
+        id: Date.now(),
+        status: "error",
+        title: "Couldn’t update the playlist",
+        description: "An error occurred while updating the playlist.",
+      });
     } finally {
       setSaving(false);
     }
@@ -260,261 +283,234 @@ export default function PlaylistHealthCheckPage() {
   }, [tracks, isHealthy, showRemoveConfirm]);
 
   return (
-    <PageContainer maxWidth="wide">
-        <PageHeader
-          title="Playlist Health Check"
-          description="Scan your playlists for blocked, preview-only, or unavailable tracks."
-        />
+    <PageContainer kind="list">
+      <PageHeader
+        title="Playlist Health Check"
+        description="Scan your playlists for blocked, preview-only, or unavailable tracks."
+      />
 
-        {notice && (
-          <InlineAlert
-            variant={notice.type}
-            className="mb-6"
-            onDismiss={() => setNotice(null)}
-          >
-            {notice.text}
-          </InlineAlert>
-        )}
+      <div className="space-y-6">
+        {outcome ? (
+          <ResultPanel
+            key={outcome.id}
+            status={outcome.status}
+            title={outcome.title}
+            description={outcome.description}
+            announcement={outcome.announcement}
+            onDismiss={() => setOutcome(null)}
+          />
+        ) : null}
 
-        {!selectedPlaylist ? (
-          /* Playlist Selection */
-          <Card className="p-6">
-            <h2 className="text-xl font-bold mb-4 text-foreground">
-              Select a Playlist to Scan
-            </h2>
-            {loading ? (
-              <div role="status" className="space-y-3">
-                <span className="sr-only">Loading your playlists…</span>
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <Skeleton
-                    key={i}
-                    aria-hidden="true"
-                    className="h-16 rounded-lg bg-gray-100 dark:bg-secondary/50"
-                  />
-                ))}
-              </div>
-            ) : playlists.length === 0 ? (
-              <EmptyState
-                icon={<Music className="w-12 h-12" />}
-                title="No playlists found"
-              />
-            ) : (
-              <div className="grid md:grid-cols-2 gap-4">
-                {playlists.map((playlist) => (
-                  <button
-                    key={playlist.id}
-                    type="button"
-                    onClick={() => selectPlaylist(playlist)}
-                    className="flex items-center gap-4 p-4 rounded-xl bg-gray-50 dark:bg-secondary/20 border-2 border-transparent hover:border-primary transition-all text-left"
-                  >
-                    <img
-                      src={playlist.artwork_url || "/brand/icon-192.png"}
-                      /* The title is right there in the button's own text. */
-                      alt=""
-                      width={64}
-                      height={64}
-                      loading="lazy"
-                      decoding="async"
-                      className="w-16 h-16 rounded-lg object-cover"
-                    />
-                    <div>
-                      <div className="font-semibold text-foreground">
-                        {playlist.title}
-                      </div>
-                      <div className="text-sm text-muted-foreground">
-                        {playlist.track_count} tracks
-                      </div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-          </Card>
-        ) : (
-          /* Health Check Results */
-          <div>
-            <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
-              <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-4">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    setSelectedPlaylist(null);
-                    setTracks([]);
-                  }}
-                >
-                  <ArrowLeft aria-hidden="true" className="h-4 w-4" />
-                  Back to playlists
-                </Button>
-                <h2 className="min-w-0 break-words text-2xl font-bold text-foreground">
-                  {selectedPlaylist.title}
-                </h2>
-              </div>
-              {issueCount > 0 && (
-                <Button
-                  onClick={() => {
-                    // aria-disabled, not `disabled`: the button stays in the
-                    // tab order so its explanation can be reached and read.
-                    if (unreadableCount > 0) return;
-                    removeDeadTracks();
-                  }}
-                  disabled={saving}
-                  aria-disabled={unreadableCount > 0 ? true : undefined}
-                  aria-describedby={unreadableCount > 0 ? "health-shortfall" : undefined}
-                  variant="destructive"
-                >
-                  {saving ? (
-                    <LoadingSpinner size="sm" className="w-4 h-4 text-white" />
-                  ) : (
-                    <Trash2 aria-hidden="true" className="w-4 h-4" />
+        {/* The picker stays on screen: switching playlists is one click. */}
+        <Panel title="Select a Playlist to Scan">
+          {/* Locked while a removal saves, so its result cannot land on a
+              playlist picked in the meantime. The picker shows its own load
+              error with Retry. */}
+          <fieldset disabled={saving} className="min-w-0">
+          <legend className="sr-only">Playlists</legend>
+          <PlaylistPicker
+            playlists={playlists}
+            mode="single"
+            selectedIds={selectedPlaylist ? [Number(selectedPlaylist.id)] : []}
+            onChange={(next) => {
+              const chosen = next[0];
+              if (chosen) selectPlaylist(chosen);
+            }}
+            loading={loading}
+            loadError={playlistsQuery.isError}
+            onRetry={() => playlistsQuery.refetch()}
+            listClassName="max-h-[40dvh]"
+          />
+          </fieldset>
+        </Panel>
+
+        {selectedPlaylist ? (
+          detailErrorText ? (
+            <InlineAlert variant="error">
+              {detailErrorText}{" "}
+              <button
+                type="button"
+                onClick={() => void playlistDetailQuery.refetch()}
+                className="touch-44 font-semibold underline underline-offset-2"
+              >
+                Retry
+              </button>
+            </InlineAlert>
+          ) : (
+            <>
+              <Panel
+                title={<span className="break-words">{selectedPlaylist.title}</span>}
+                actions={
+                  issueCount > 0 && !loadingTracks ? (
+                    <Button
+                      onClick={() => {
+                        // aria-disabled, not `disabled`: the button stays in the
+                        // tab order so its explanation can be reached and read.
+                        if (unreadableCount > 0) return;
+                        removeDeadTracks();
+                      }}
+                      disabled={saving}
+                      aria-disabled={unreadableCount > 0 ? true : undefined}
+                      aria-describedby={unreadableCount > 0 ? "health-shortfall" : undefined}
+                      variant="destructive"
+                    >
+                      {saving ? (
+                        <LoadingSpinner size="sm" className="w-4 h-4 text-white" />
+                      ) : (
+                        <Trash2 aria-hidden="true" className="w-4 h-4" />
+                      )}
+                      Remove {issueCount} Dead Track{issueCount > 1 ? "s" : ""}
+                    </Button>
+                  ) : undefined
+                }
+              >
+                <div className="space-y-4">
+                  {unreadableCount > 0 && !loadingTracks && (
+                    <InlineAlert id="health-shortfall" variant="warning">
+                      {detailReadCount < (detailTrackCount ?? 0) ? (
+                        <>
+                          SoundCloud returned {detailReadCount} of {detailTrackCount} tracks; the other{" "}
+                          {unreadableCount} can&rsquo;t be read here, so remove them on SoundCloud.
+                        </>
+                      ) : (
+                        <>
+                          SoundCloud returned {detailReadCount} tracks but counts {detailTrackCount}.
+                          Reload the page, or check the playlist on SoundCloud.
+                        </>
+                      )}{" "}
+                      Removing tracks from this page is turned off for this playlist until then.
+                    </InlineAlert>
                   )}
-                  Remove {issueCount} Dead Track{issueCount > 1 ? "s" : ""}
-                </Button>
-              )}
-            </div>
 
-            {unreadableCount > 0 && !loadingTracks && (
-              <InlineAlert id="health-shortfall" variant="warning" className="mb-6">
-                {detailReadCount < (detailTrackCount ?? 0) ? (
-                  <>
-                    SoundCloud returned {detailReadCount} of {detailTrackCount} tracks; the other{" "}
-                    {unreadableCount} can&rsquo;t be read here, so remove them on SoundCloud.
-                  </>
-                ) : (
-                  <>
-                    SoundCloud returned {detailReadCount} tracks but counts {detailTrackCount}.
-                    Reload the page, or check the playlist on SoundCloud.
-                  </>
-                )}{" "}
-                Removing tracks from this page is turned off for this playlist until then.
-              </InlineAlert>
-            )}
-
-            {/* Summary bar */}
-            {!loadingTracks && tracks.length > 0 && (
-              <Card className="mb-6 p-6">
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-3">
-                    <Stethoscope aria-hidden="true" className="w-5 h-5 text-muted-foreground" />
-                    <span className="font-semibold text-foreground">
-                      {healthyCount} of {tracks.length} tracks healthy
-                    </span>
-                  </div>
-                  <span className={`inline-flex items-center gap-1.5 text-lg font-bold ${verdictTone}`}>
-                    <VerdictIcon aria-hidden="true" className="h-5 w-5" />
-                    {healthPercent}%
-                    <span className="text-sm font-semibold">{verdict}</span>
-                  </span>
-                </div>
-                {/* Decorative: the line above is the same information in words. */}
-                <div
-                  aria-hidden="true"
-                  className="w-full bg-gray-200 dark:bg-secondary/50 rounded-full h-3"
-                >
-                  <div
-                    className={`h-3 rounded-full transition-all ${healthPercent === 100 ? "bg-green-500" : healthPercent >= 80 ? "bg-yellow-500" : "bg-red-500"}`}
-                    style={{ width: `${healthPercent}%` }}
-                  />
-                </div>
-              </Card>
-            )}
-
-            {/* Filter pills */}
-            {!loadingTracks && tracks.length > 0 && (
-              <div role="group" aria-label="Filter tracks" className="mb-4 flex flex-wrap items-center gap-2">
-                {([
-                  { key: "all" as HealthFilter, label: "All", count: tracks.length, icon: null },
-                  { key: "healthy" as HealthFilter, label: "Healthy", count: healthyCount, icon: CheckCircle },
-                  { key: "issues" as HealthFilter, label: "Issues", count: issueCount, icon: AlertTriangle },
-                ]).map(({ key, label, count, icon: Icon }) => (
-                  <button
-                    key={key}
-                    type="button"
-                    aria-pressed={filter === key}
-                    onClick={() => setFilter(key)}
-                    className={`inline-flex min-h-9 items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-all ${
-                      filter === key
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-gray-100 dark:bg-secondary/20 text-muted-foreground hover:bg-gray-200 dark:hover:bg-secondary/40"
-                    }`}
-                  >
-                    {Icon ? <Icon aria-hidden="true" className="h-3.5 w-3.5" /> : null}
-                    {label} ({count})
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <Card className="p-6">
-              {loadingTracks ? (
-                <div role="status" className="space-y-3">
-                  <span className="sr-only">Scanning this playlist…</span>
-                  {Array.from({ length: 10 }).map((_, i) => (
-                    <Skeleton
-                      key={i}
-                      aria-hidden="true"
-                      className="h-16 rounded-lg bg-gray-100 dark:bg-secondary/50"
-                    />
-                  ))}
-                </div>
-              ) : tracks.length === 0 ? (
-                <EmptyState
-                  icon={<Music className="w-12 h-12" />}
-                  title="This playlist has no tracks"
-                />
-              ) : filteredTracks.length === 0 ? (
-                <EmptyState
-                  icon={<CheckCircle className="w-12 h-12" />}
-                  title={filter === "issues" ? "No issues found!" : "No tracks match this filter"}
-                  description={filter === "issues" ? "All tracks in this playlist are playable." : undefined}
-                />
-              ) : (
-                <div className="space-y-2">
-                  {filteredTracks.map((track, index) => {
-                    const status = getTrackStatus(track);
-                    return (
-                      /* Below `sm` the badge moves under the track instead of
-                         competing with the title for the same line. */
-                      <div
-                        key={track.id}
-                        className={`flex flex-col gap-2 p-3 rounded-xl sm:flex-row sm:items-center sm:gap-4 ${status.icon === "bad" ? "bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-900/30" : status.icon === "warn" ? "bg-yellow-50 dark:bg-yellow-900/10 border border-yellow-200 dark:border-yellow-900/30" : "bg-gray-50 dark:bg-secondary/20 border border-transparent dark:border-border"}`}
-                      >
-                        <div className="flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
-                          <span className="w-8 shrink-0 text-center text-sm text-muted-foreground-subtle">
-                            {index + 1}
+                  {/* Summary bar */}
+                  {!loadingTracks && tracks.length > 0 && (
+                    <div>
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-3">
+                          <Stethoscope aria-hidden="true" className="w-5 h-5 text-muted-foreground" />
+                          <span className="font-semibold text-foreground">
+                            {healthyCount} of {tracks.length} tracks healthy
                           </span>
-                          <img
-                            src={track.artwork_url || "/brand/icon-192.png"}
-                            alt=""
-                            width={48}
-                            height={48}
-                            loading="lazy"
-                            decoding="async"
-                            className="w-12 h-12 shrink-0 rounded-lg object-cover"
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="font-semibold text-foreground truncate">
-                              {track.title}
-                            </div>
-                            <div className="text-sm text-muted-foreground truncate">
-                              {track.user?.username} • {formatDuration(track.duration)}
-                            </div>
-                          </div>
                         </div>
-                        <span className={`inline-flex w-fit shrink-0 items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium ${status.bg} ${status.color}`}>
-                          {status.icon === "ok" && <CheckCircle aria-hidden="true" className="w-3.5 h-3.5" />}
-                          {status.icon === "warn" && <AlertTriangle aria-hidden="true" className="w-3.5 h-3.5" />}
-                          {status.icon === "bad" && <AlertTriangle aria-hidden="true" className="w-3.5 h-3.5" />}
-                          {status.label}
+                        <span className={`inline-flex items-center gap-1.5 text-lg font-bold ${verdictTone}`}>
+                          <VerdictIcon aria-hidden="true" className="h-5 w-5" />
+                          {healthPercent}%
+                          <span className="text-sm font-semibold">{verdict}</span>
                         </span>
                       </div>
-                    );
-                  })}
+                      {/* Decorative: the line above is the same information in words. */}
+                      <div
+                        aria-hidden="true"
+                        className="w-full bg-gray-200 dark:bg-secondary/50 rounded-full h-3"
+                      >
+                        <div
+                          className={`h-3 rounded-full transition-all ${healthPercent === 100 ? "bg-green-500" : healthPercent >= 80 ? "bg-yellow-500" : "bg-red-500"}`}
+                          style={{ width: `${healthPercent}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Filter pills */}
+                  {!loadingTracks && tracks.length > 0 && (
+                    <div role="group" aria-label="Filter tracks" className="flex flex-wrap items-center gap-2">
+                      {([
+                        { key: "all" as HealthFilter, label: "All", count: tracks.length, icon: null },
+                        { key: "healthy" as HealthFilter, label: "Healthy", count: healthyCount, icon: CheckCircle },
+                        { key: "issues" as HealthFilter, label: "Issues", count: issueCount, icon: AlertTriangle },
+                      ]).map(({ key, label, count, icon: Icon }) => (
+                        <button
+                          key={key}
+                          type="button"
+                          aria-pressed={filter === key}
+                          onClick={() => setFilter(key)}
+                          className={`inline-flex min-h-9 items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-all ${
+                            filter === key
+                              ? "bg-primary text-primary-foreground"
+                              : "bg-gray-100 dark:bg-secondary/20 text-muted-foreground hover:bg-gray-200 dark:hover:bg-secondary/40"
+                          }`}
+                        >
+                          {Icon ? <Icon aria-hidden="true" className="h-3.5 w-3.5" /> : null}
+                          {label} ({count})
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              )}
-            </Card>
-          </div>
-        )}
+              </Panel>
+
+              <Panel>
+                {loadingTracks ? (
+                  <div role="status" className="space-y-3">
+                    <span className="sr-only">Scanning this playlist…</span>
+                    {Array.from({ length: 10 }).map((_, i) => (
+                      <Skeleton
+                        key={i}
+                        aria-hidden="true"
+                        className="h-16 rounded-lg bg-gray-100 dark:bg-secondary/50"
+                      />
+                    ))}
+                  </div>
+                ) : tracks.length === 0 ? (
+                  <EmptyState
+                    icon={<Music className="w-12 h-12" />}
+                    title="This playlist has no tracks"
+                  />
+                ) : filteredTracks.length === 0 ? (
+                  <EmptyState
+                    icon={<CheckCircle className="w-12 h-12" />}
+                    title={filter === "issues" ? "No issues found!" : "No tracks match this filter"}
+                    description={filter === "issues" ? "All tracks in this playlist are playable." : undefined}
+                  />
+                ) : (
+                  <div className="space-y-2">
+                    {filteredTracks.map((track, index) => {
+                      const status = getTrackStatus(track);
+                      return (
+                        /* Below `sm` the badge moves under the track instead of
+                           competing with the title for the same line. */
+                        <div
+                          key={track.id}
+                          className={`flex flex-col gap-2 p-3 rounded-xl sm:flex-row sm:items-center sm:gap-4 ${status.icon === "bad" ? "bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-900/30" : status.icon === "warn" ? "bg-yellow-50 dark:bg-yellow-900/10 border border-yellow-200 dark:border-yellow-900/30" : "bg-gray-50 dark:bg-secondary/20 border border-transparent dark:border-border"}`}
+                        >
+                          <div className="flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
+                            <span className="w-8 shrink-0 text-center text-sm text-muted-foreground-subtle">
+                              {index + 1}
+                            </span>
+                            <img
+                              src={track.artwork_url || "/brand/icon-192.png"}
+                              alt=""
+                              width={48}
+                              height={48}
+                              loading="lazy"
+                              decoding="async"
+                              className="w-12 h-12 shrink-0 rounded-lg object-cover"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="font-semibold text-foreground truncate">
+                                {track.title}
+                              </div>
+                              <div className="text-sm text-muted-foreground truncate">
+                                {track.user?.username} • {formatDuration(track.duration)}
+                              </div>
+                            </div>
+                          </div>
+                          <span className={`inline-flex w-fit shrink-0 items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium ${status.bg} ${status.color}`}>
+                            {status.icon === "ok" && <CheckCircle aria-hidden="true" className="w-3.5 h-3.5" />}
+                            {status.icon === "warn" && <AlertTriangle aria-hidden="true" className="w-3.5 h-3.5" />}
+                            {status.icon === "bad" && <AlertTriangle aria-hidden="true" className="w-3.5 h-3.5" />}
+                            {status.label}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </Panel>
+            </>
+          )
+        ) : null}
+      </div>
       <ConfirmDialog
         open={showRemoveConfirm}
         title="Remove unavailable tracks?"

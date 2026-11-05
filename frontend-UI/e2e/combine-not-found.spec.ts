@@ -59,7 +59,11 @@ test("combine: a 409 PLAYLIST_NOT_FOUND shows the server text, refetches the lis
   const before = listGets;
   await page.getByRole("button", { name: "Merge Playlists" }).click();
 
-  await expect(page.getByRole("alert").filter({ hasText: REASON })).toBeVisible();
+  // The failure is the shared result panel now (focused, spoken through the
+  // app's live region), not an alert inside the settings card.
+  const result = page.getByRole("region", { name: "Couldn't merge playlists" });
+  await expect(result).toContainText(REASON);
+  await expect(result).toBeFocused();
 
   // The list was refetched, the missing playlist is gone from it, and it is
   // no longer selected; the other selection is untouched.
@@ -96,12 +100,16 @@ test("combine: a 409 PLAYLIST_NOT_FOUND naming the merge target clears the targe
   await page.getByRole("checkbox", { name: "Sample Playlist 2" }).check();
   await page.getByRole("button", { name: "Existing playlist" }).click();
   await page.getByRole("button", { name: "Choose a target playlist…" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: /Sample Playlist 3/ }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Sample Playlist 3", exact: true }).click();
   await expect(page.getByRole("button", { name: /Change/ })).toBeVisible();
 
   await page.getByRole("button", { name: "Merge Playlists" }).click();
 
-  await expect(page.getByRole("alert").filter({ hasText: REASON })).toBeVisible();
+  // The failure is the shared result panel now (focused, spoken through the
+  // app's live region), not an alert inside the settings card.
+  const result = page.getByRole("region", { name: "Couldn't merge playlists" });
+  await expect(result).toContainText(REASON);
+  await expect(result).toBeFocused();
   // The target is cleared; the two sources are untouched.
   await expect(page.getByRole("button", { name: "Choose a target playlist…" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Remove Sample Playlist 1" })).toBeVisible();

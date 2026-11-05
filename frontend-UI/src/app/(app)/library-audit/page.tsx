@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { AlertTriangle, CheckCircle, ChevronLeft, ChevronRight, Download, ListChecks, RefreshCw } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { downloadCsv } from "@/lib/csv";
@@ -12,10 +12,10 @@ import {
   LoadingSpinner,
   PageContainer,
   PageHeader,
+  Panel,
   ProgressBar,
-  SectionHeading,
+  ResultPanel,
   Skeleton,
-  useAnnounce,
 } from "@/components/ui";
 
 interface AuditPlaylist {
@@ -71,14 +71,21 @@ const PAGE_SIZE = 20;
 const MAX_OFFSET = 10000;
 
 export default function LibraryAuditPage() {
-  const announce = useAnnounce();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AuditResult | null>(null);
   const [offset, setOffset] = useState(0);
   // The offset a run is currently fetching, so the progress bar can say which
   // page of the walk is in flight rather than which one finished last.
   const [pendingOffset, setPendingOffset] = useState<number | null>(null);
-  const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  // The outcome of the latest run. `key` is the run number, so each run mounts
+  // a fresh panel (which takes focus and speaks its summary).
+  const [outcome, setOutcome] = useState<{
+    key: number;
+    status: "success" | "partial" | "empty" | "error";
+    title: string;
+    text: string;
+  } | null>(null);
+  const runCount = useRef(0);
 
   // A page walk has real progress — pages done out of pages there are — but
   // only once a first run has told us how many playlists there are. Before
@@ -92,12 +99,13 @@ export default function LibraryAuditPage() {
   const runAudit = async (nextOffset = 0) => {
     setLoading(true);
     setPendingOffset(nextOffset);
-    setNotice(null);
+    setOutcome(null);
+    const runKey = ++runCount.current;
     try {
       const response = await apiFetch(`/api/library/audit?limit=${PAGE_SIZE}&offset=${nextOffset}`);
       const data = await response.json();
       if (!response.ok) {
-        setNotice({ type: "error", text: data.error || "Could not run the audit." });
+        setOutcome({ key: runKey, status: "error", title: "Audit failed", text: data.error || "Could not run the audit." });
         return;
       }
       setResult(data);
@@ -107,11 +115,19 @@ export default function LibraryAuditPage() {
         data.summary.playlists === 0
           ? "No playlists in this range."
           : `Audited playlist${data.summary.playlists === 1 ? "" : "s"} ${range}. ${data.summary.duplicates} duplicate${data.summary.duplicates === 1 ? "" : "s"}, ${data.summary.unavailable} unavailable.`;
-      setNotice({ type: "success", text: summary });
-      announce(summary);
+      setOutcome(
+        data.summary.playlists === 0
+          ? { key: runKey, status: "empty", title: "Nothing to audit", text: summary }
+          : {
+              key: runKey,
+              status: data.failed && data.failed.length > 0 ? "partial" : "success",
+              title: "Audit complete",
+              text: summary,
+            },
+      );
     } catch (error) {
       console.error("Library audit failed:", error);
-      setNotice({ type: "error", text: "Could not run the audit. Try again." });
+      setOutcome({ key: runKey, status: "error", title: "Audit failed", text: "Could not run the audit. Try again." });
     } finally {
       setLoading(false);
       setPendingOffset(null);
@@ -138,175 +154,180 @@ export default function LibraryAuditPage() {
   };
 
   return (
-    <PageContainer maxWidth="wide">
+    <PageContainer kind="list">
       <PageHeader
         title="Library Audit"
         description="Scan playlists for duplicates, unavailable tracks, download links, and playlists near SoundCloud’s 500-track cap."
       />
 
-      {notice && (
-        <InlineAlert variant={notice.type} className="mb-6" onDismiss={() => setNotice(null)}>
-          {notice.text}
-        </InlineAlert>
-      )}
-
-      <Card className="mb-6 flex flex-wrap items-center gap-3 p-4">
-        <Button onClick={() => runAudit(0)} disabled={loading}>
-          {loading ? (
-            <LoadingSpinner size="sm" className="text-white" />
-          ) : (
-            <RefreshCw aria-hidden="true" className="h-4 w-4" />
-          )}
-          {result ? "Restart from the top" : "Run playlist audit"}
-        </Button>
-        {result && (
-          <Button nowrap variant="outline" onClick={exportCsv}>
-            <Download aria-hidden="true" className="h-4 w-4" />
-            Export CSV
-          </Button>
-        )}
-        <p className="text-sm text-muted-foreground">
-          {PAGE_SIZE} playlists per run, to stay friendly to SoundCloud&apos;s rate limits. Use
-          Next to audit the following {PAGE_SIZE}.
-        </p>
-      </Card>
-
-      {loading ? (
-        <div className="space-y-6">
-          {totalPages !== null ? (
-            <ProgressBar
-              label="Checking playlists"
-              value={Math.min(pageInFlight, totalPages)}
-              max={totalPages}
-              detail={`${PAGE_SIZE} playlists per page`}
-            />
-          ) : (
-            <p role="status" className="text-sm text-muted-foreground">
-              Checking playlists…
-            </p>
-          )}
-          <div aria-hidden="true" className="grid gap-3 md:grid-cols-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Card key={i} className="p-4">
-                <Skeleton className="h-8 w-16 mb-2" />
-                <Skeleton className="h-4 w-24" />
-              </Card>
-            ))}
-          </div>
-          <Card aria-hidden="true" className="p-4 space-y-3">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <Skeleton key={i} className="h-14 rounded-lg" />
-            ))}
-          </Card>
-        </div>
-      ) : !result ? (
-        <Card className="p-8">
-          <EmptyState
-            icon={<ListChecks className="h-12 w-12" />}
-            title="No audit yet"
-            description="Run an audit to see which playlists need cleanup."
+      <div className="space-y-6">
+        {outcome && (
+          <ResultPanel
+            key={outcome.key}
+            status={outcome.status}
+            title={outcome.title}
+            description={outcome.text}
+            onDismiss={() => setOutcome(null)}
           />
-        </Card>
-      ) : (
-        <div className="space-y-6">
-          {result.page?.stale && (
-            <InlineAlert variant="info">
-              This list may be up to 15 minutes old — it is refreshing in the background.
-            </InlineAlert>
-          )}
-          {result.page?.truncated && (
-            <InlineAlert variant="warning">
-              Not all playlists were indexed, so the range below may not cover your whole
-              library.
-            </InlineAlert>
-          )}
-          {result.failed && result.failed.length > 0 && (
-            <InlineAlert variant="warning">
-              {result.failed.length} playlist{result.failed.length === 1 ? "" : "s"} could not be
-              read — these results are incomplete.
-            </InlineAlert>
-          )}
+        )}
 
-          <div className="grid gap-3 md:grid-cols-4">
-            <Metric label="Playlists" value={result.summary.playlists} />
-            <Metric label="Tracks scanned" value={result.summary.tracks} />
-            <Metric label="Duplicates" value={result.summary.duplicates} tone={result.summary.duplicates > 0 ? "warn" : "ok"} />
-            <Metric label="Unavailable" value={result.summary.unavailable} tone={result.summary.unavailable > 0 ? "warn" : "ok"} />
+        <Panel>
+          <div className="flex flex-wrap items-center gap-3">
+          <Button onClick={() => runAudit(0)} disabled={loading}>
+            {loading ? (
+              <LoadingSpinner size="sm" className="text-white" />
+            ) : (
+              <RefreshCw aria-hidden="true" className="h-4 w-4" />
+            )}
+            {result ? "Restart from the top" : "Run playlist audit"}
+          </Button>
+          {result && (
+            <Button nowrap variant="outline" onClick={exportCsv}>
+              <Download aria-hidden="true" className="h-4 w-4" />
+              Export CSV
+            </Button>
+          )}
+          <p className="text-sm text-muted-foreground">
+            {PAGE_SIZE} playlists per run, to stay friendly to SoundCloud&apos;s rate limits. Use
+            Next to audit the following {PAGE_SIZE}.
+          </p>
           </div>
+        </Panel>
 
-          <Card>
-            <SectionHeading className="border-b border-border px-4 py-3">
-              Playlist findings
-            </SectionHeading>
-            <div className="divide-y divide-border">
-              {result.playlists.map((playlist) => {
-                const hasIssues =
-                  playlist.summary.duplicateTracks > 0 ||
-                  playlist.summary.unavailableTracks > 0 ||
-                  playlist.summary.nearCap;
-                return (
-                  <div key={playlist.id} className="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-center md:justify-between">
-                    <div>
-                      <div className="font-semibold text-foreground">{playlist.title}</div>
-                      <div className="text-sm text-muted-foreground">
-                        {playlist.summary.totalTracks} tracks • {playlist.summary.directDownloads} direct downloads • {playlist.summary.purchaseLinks} purchase links
+        {loading ? (
+          <div className="space-y-6">
+            {totalPages !== null ? (
+              <ProgressBar
+                label="Checking playlists"
+                value={Math.min(pageInFlight, totalPages)}
+                max={totalPages}
+                detail={`${PAGE_SIZE} playlists per page`}
+              />
+            ) : (
+              <p role="status" className="text-sm text-muted-foreground">
+                Checking playlists…
+              </p>
+            )}
+            <div aria-hidden="true" className="grid gap-3 md:grid-cols-4">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Card key={i} className="p-4">
+                  <Skeleton className="h-8 w-16 mb-2" />
+                  <Skeleton className="h-4 w-24" />
+                </Card>
+              ))}
+            </div>
+            <Card aria-hidden="true" className="space-y-3 p-4">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <Skeleton key={i} className="h-14 rounded-lg" />
+              ))}
+            </Card>
+          </div>
+        ) : !result ? (
+          <Panel>
+            <EmptyState
+              icon={<ListChecks className="h-12 w-12" />}
+              title="No audit yet"
+              description="Run an audit to see which playlists need cleanup."
+            />
+          </Panel>
+        ) : (
+          <div className="space-y-6">
+            {result.page?.stale && (
+              <InlineAlert variant="info">
+                This list may be up to 15 minutes old — it is refreshing in the background.
+              </InlineAlert>
+            )}
+            {result.page?.truncated && (
+              <InlineAlert variant="warning">
+                Not all playlists were indexed, so the range below may not cover your whole
+                library.
+              </InlineAlert>
+            )}
+            {result.failed && result.failed.length > 0 && (
+              <InlineAlert variant="warning">
+                {result.failed.length} playlist{result.failed.length === 1 ? "" : "s"} could not be
+                read — these results are incomplete.
+              </InlineAlert>
+            )}
+
+            <div className="grid gap-3 md:grid-cols-4">
+              <Metric label="Playlists" value={result.summary.playlists} />
+              <Metric label="Tracks scanned" value={result.summary.tracks} />
+              <Metric label="Duplicates" value={result.summary.duplicates} tone={result.summary.duplicates > 0 ? "warn" : "ok"} />
+              <Metric label="Unavailable" value={result.summary.unavailable} tone={result.summary.unavailable > 0 ? "warn" : "ok"} />
+            </div>
+
+            <Panel title="Playlist findings">
+              <div className="-mb-3 divide-y divide-border">
+                {result.playlists.map((playlist) => {
+                  const hasIssues =
+                    playlist.summary.duplicateTracks > 0 ||
+                    playlist.summary.unavailableTracks > 0 ||
+                    playlist.summary.nearCap;
+                  return (
+                    <div key={playlist.id} className="flex flex-col gap-3 py-3 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <div className="font-semibold text-foreground">{playlist.title}</div>
+                        <div className="text-sm text-muted-foreground">
+                          {playlist.summary.totalTracks} tracks • {playlist.summary.directDownloads} direct downloads • {playlist.summary.purchaseLinks} purchase links
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <Finding label={`${playlist.summary.duplicateTracks} duplicates`} active={playlist.summary.duplicateTracks > 0} />
+                        <Finding label={`${playlist.summary.unavailableTracks} unavailable`} active={playlist.summary.unavailableTracks > 0} />
+                        <Finding label={playlist.summary.nearCap ? "near cap" : "under cap"} active={playlist.summary.nearCap} />
+                        {/* The verdict was a bare coloured icon — the one place on
+                            this page where a triangle and a tick were the whole
+                            difference between "fix this" and "fine". */}
+                        {hasIssues ? (
+                          <span className="inline-flex items-center gap-1 text-xs font-medium text-warning-text">
+                            <AlertTriangle aria-hidden="true" className="h-4 w-4" />
+                            Issues found
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-xs font-medium text-success-text">
+                            <CheckCircle aria-hidden="true" className="h-4 w-4" />
+                            Healthy
+                          </span>
+                        )}
                       </div>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2 text-xs">
-                      <Finding label={`${playlist.summary.duplicateTracks} duplicates`} active={playlist.summary.duplicateTracks > 0} />
-                      <Finding label={`${playlist.summary.unavailableTracks} unavailable`} active={playlist.summary.unavailableTracks > 0} />
-                      <Finding label={playlist.summary.nearCap ? "near cap" : "under cap"} active={playlist.summary.nearCap} />
-                      {/* The verdict was a bare coloured icon — the one place on
-                          this page where a triangle and a tick were the whole
-                          difference between "fix this" and "fine". */}
-                      {hasIssues ? (
-                        <span className="inline-flex items-center gap-1 text-xs font-medium text-warning-text">
-                          <AlertTriangle aria-hidden="true" className="h-4 w-4" />
-                          Issues found
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-xs font-medium text-success-text">
-                          <CheckCircle aria-hidden="true" className="h-4 w-4" />
-                          Healthy
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </Card>
-
-          {result.page && (
-            <Card className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-              <p className="text-sm text-muted-foreground">
-                {result.page.from === 0
-                  ? "No playlists in this range"
-                  : `Showing playlists ${result.page.from}–${result.page.to}`}
-                {result.page.hasMore ? " — more to audit" : " — end of your library"}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <Button nowrap
-                  variant="outline"
-                  onClick={() => runAudit(Math.max(0, offset - PAGE_SIZE))}
-                  disabled={loading || offset === 0}
-                >
-                  <ChevronLeft aria-hidden="true" className="h-4 w-4" />
-                  Previous {PAGE_SIZE}
-                </Button>
-                <Button nowrap
-                  variant="outline"
-                  onClick={() => runAudit(offset + PAGE_SIZE)}
-                  disabled={loading || !result.page.hasMore || offset + PAGE_SIZE > MAX_OFFSET}
-                >
-                  Next {PAGE_SIZE}
-                  <ChevronRight aria-hidden="true" className="h-4 w-4" />
-                </Button>
+                  );
+                })}
               </div>
-            </Card>
-          )}
-        </div>
-      )}
+            </Panel>
+
+            {result.page && (
+              <Panel className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm text-muted-foreground">
+                  {result.page.from === 0
+                    ? "No playlists in this range"
+                    : `Showing playlists ${result.page.from}–${result.page.to}`}
+                  {result.page.hasMore ? " — more to audit" : " — end of your library"}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button nowrap
+                    variant="outline"
+                    onClick={() => runAudit(Math.max(0, offset - PAGE_SIZE))}
+                    disabled={loading || offset === 0}
+                  >
+                    <ChevronLeft aria-hidden="true" className="h-4 w-4" />
+                    Previous {PAGE_SIZE}
+                  </Button>
+                  <Button nowrap
+                    variant="outline"
+                    onClick={() => runAudit(offset + PAGE_SIZE)}
+                    disabled={loading || !result.page.hasMore || offset + PAGE_SIZE > MAX_OFFSET}
+                  >
+                    Next {PAGE_SIZE}
+                    <ChevronRight aria-hidden="true" className="h-4 w-4" />
+                  </Button>
+                </div>
+              </Panel>
+            )}
+          </div>
+        )}
+      </div>
     </PageContainer>
   );
 }

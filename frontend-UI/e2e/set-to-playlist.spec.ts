@@ -132,5 +132,8 @@ test("a rate-limited match says so and keeps what was matched", async ({ page })
   await page.goto("/set-to-playlist/");
   await page.getByRole("textbox", { name: "Tracklist", exact: true }).fill("Calyx - House Breaker\nRova - Eyes On Me");
   await page.getByRole("button", { name: "Find on SoundCloud" }).click();
-  await expect(page.getByRole("alert").filter({ hasText: "Too many requests" })).toContainText("0 of 2 lines were matched before it stopped");
+  const stopped = page.getByRole("region", { name: "Matching stopped" });
+  await expect(stopped).toBeFocused();
+  await expect(stopped).toContainText("Too many requests");
+  await expect(stopped).toContainText("0 of 2 lines were matched before it stopped");
 });

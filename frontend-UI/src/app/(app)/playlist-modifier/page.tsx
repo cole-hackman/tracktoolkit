@@ -4,7 +4,6 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
-  ArrowLeft,
   Shuffle,
   Save,
   ArrowUp,
@@ -17,25 +16,28 @@ import {
   Copy,
   ArrowRightLeft,
   Heart,
-  Search,
 } from "lucide-react";
 import {
   Button,
   BulkReviewDetails,
-  Card,
   ConfirmDialog,
   Dialog,
   EmptyState,
-  Field,
   IconButton,
   InlineAlert,
-  Input,
+  ListSearch,
   LoadingSpinner,
   PageContainer,
   PageHeader,
+  Panel,
+  ResultPanel,
   Select,
   Skeleton,
+  type ResultStatus,
+  SelectableList,
 } from "@/components/ui";
+import { PlaylistChoiceRow, PlaylistPicker } from "@/components/playlists/PlaylistPicker";
+import { useListSearch } from "@/lib/list-search";
 import { apiFetch, errorMessageFromBody } from "@/lib/api";
 import { startSoundCloudDownload } from "@/lib/download";
 import {
@@ -72,7 +74,17 @@ type TrackFilter = "all" | "downloadable" | "buylink";
 
 type TransferAction = "move" | "duplicate";
 
-type BannerState = { tone: "success" | "warning" | "error"; text: string } | null;
+/** What the result slot shows. `text` is the sentence the old banner carried. */
+type Outcome = { id: number; status: ResultStatus; title: string; text: string } | null;
+
+const makeOutcome = (status: ResultStatus, title: string, text: string): Outcome => ({
+  id: Date.now(),
+  status,
+  title,
+  text,
+});
+
+const trackSearchText = (track: Track) => `${track.title ?? ""} ${track.user?.username ?? ""}`;
 
 /**
  * Row actions are visible at every width, full stop.
@@ -154,7 +166,11 @@ export default function PlaylistModifierPage() {
   } | null>(null);
   const [transferTargetId, setTransferTargetId] = useState<number | "">("");
   const [transferLoading, setTransferLoading] = useState(false);
-  const [banner, setBanner] = useState<BannerState>(null);
+  const [outcome, setOutcome] = useState<Outcome>(null);
+  // A failed transfer is reported inside its own dialog: a result panel behind
+  // a modal would take focus away from it.
+  const [transferError, setTransferError] = useState<string | null>(null);
+  const [trackQuery, setTrackQuery] = useState("");
   const [trackToRemove, setTrackToRemove] = useState<number | null>(null);
   const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const [downloadingTrackId, setDownloadingTrackId] = useState<number | null>(null);
@@ -166,11 +182,13 @@ export default function PlaylistModifierPage() {
   const [likedDurationFilter, setLikedDurationFilter] = useState("All");
   const [alsoUnlike, setAlsoUnlike] = useState(false);
 
-  const filteredTracks = useMemo(() => tracks.filter((t) => {
+  const pillFilteredTracks = useMemo(() => tracks.filter((t) => {
     if (trackFilter === "downloadable") return Boolean(t.downloadable) || t.downloadable === "true";
     if (trackFilter === "buylink") return !!t.purchase_url;
     return true;
   }), [tracks, trackFilter]);
+  // The search covers every track the playlist holds, not the rendered rows.
+  const { results: filteredTracks } = useListSearch(pillFilteredTracks, trackQuery, trackSearchText);
 
   // id -> index within the full (unfiltered) track list, built once per
   // `tracks` change instead of calling tracks.indexOf(track) inside the
@@ -239,14 +257,9 @@ export default function PlaylistModifierPage() {
   }, [isLikedTracksView, likesQuery.data?.collection]);
 
   // Filter liked tracks
+  const { results: searchedLikedTracks } = useListSearch(likedTracks, likedSearch, trackSearchText);
   const filteredLikedTracks = useMemo(() => {
-    return likedTracks
-      .filter(
-        (t) =>
-          !likedSearch ||
-          t.title.toLowerCase().includes(likedSearch.toLowerCase()) ||
-          t.user?.username?.toLowerCase().includes(likedSearch.toLowerCase())
-      )
+    return searchedLikedTracks
       .filter((t) => likedGenreFilter === "All" || (t as Track & { genre?: string }).genre === likedGenreFilter)
       .filter((t) => {
         if (likedDurationFilter === "All") return true;
@@ -257,20 +270,12 @@ export default function PlaylistModifierPage() {
         if (likedDurationFilter === "> 10 mins") return mins > 10;
         return true;
       });
-  }, [likedTracks, likedSearch, likedGenreFilter, likedDurationFilter]);
+  }, [searchedLikedTracks, likedGenreFilter, likedDurationFilter]);
 
   const likedGenres = useMemo(
     () => Array.from(new Set(likedTracks.map((t) => (t as Track & { genre?: string }).genre).filter(Boolean))) as string[],
     [likedTracks],
   );
-
-  useEffect(() => {
-    // Errors stay until dismissed: they say what to do next, and a 9 s timer
-    // can remove one before it has been read.
-    if (!banner || banner.tone === "error" || banner.tone === "warning") return;
-    const t = window.setTimeout(() => setBanner(null), 9000);
-    return () => clearTimeout(t);
-  }, [banner]);
 
   useEffect(() => {
     if (playlistsQuery.isError) {
@@ -305,26 +310,25 @@ export default function PlaylistModifierPage() {
   }, [selectedPlaylistQuery.data, selectedPlaylistQuery.isError]);
 
   const selectPlaylist = (playlist: Playlist) => {
-    setBanner(null);
+    if (selectedPlaylist?.id === playlist.id) return;
+    setOutcome(null);
     setIsLikedTracksView(false);
+    setTrackQuery("");
+    // The previous playlist's rows must not stay editable (or saveable) under
+    // the new title while its tracks load.
+    setTracks([]);
+    setBaselineIds([]);
     setSelectedPlaylist(playlist);
   };
 
   const selectLikedTracks = () => {
-    setBanner(null);
+    setOutcome(null);
     setSelectedPlaylist(null);
     setTracks([]);
     setIsLikedTracksView(true);
     setLikedSearch("");
     setLikedGenreFilter("All");
     setLikedDurationFilter("All");
-  };
-
-  const goBackToList = () => {
-    setBanner(null);
-    setSelectedPlaylist(null);
-    setTracks([]);
-    setIsLikedTracksView(false);
   };
 
   const removeTrack = (trackId: number) => {
@@ -357,6 +361,7 @@ export default function PlaylistModifierPage() {
     if (!selectedPlaylist && !isLikedTracksView) return;
     setActionsTrack(null);
     setTransfer({ action, track });
+    setTransferError(null);
     setAlsoUnlike(false);
     if (isLikedTracksView) {
       // From liked tracks: all playlists are valid targets
@@ -377,6 +382,8 @@ export default function PlaylistModifierPage() {
     if (!isLikedTracksView && transfer.action === "move" && targetId === selectedPlaylist!.id) return;
 
     setTransferLoading(true);
+    setTransferError(null);
+    setOutcome(null);
     try {
       const transferBody: Record<string, unknown> = {
         action: isLikedTracksView ? "duplicate" : transfer.action,
@@ -399,23 +406,22 @@ export default function PlaylistModifierPage() {
       }
 
       if (!res.ok) {
-        setBanner({
-          tone: "error",
-          text: typeof data.error === "string" ? data.error : "Transfer failed",
-        });
+        setTransferError(typeof data.error === "string" ? data.error : "Transfer failed");
         return;
       }
 
       if (data.partial) {
-        setBanner({
-          tone: "warning",
-          text:
+        setOutcome(
+          makeOutcome(
+            "partial",
+            "Track transfer incomplete",
             typeof data.message === "string"
               ? data.message
               : typeof data.error === "string"
                 ? data.error
                 : "The track may have been added to the target playlist, but the source could not be updated.",
-        });
+          ),
+        );
         setTransfer(null);
         if (selectedPlaylist) {
           await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
@@ -427,10 +433,7 @@ export default function PlaylistModifierPage() {
       }
 
       if (data.ok === false) {
-        setBanner({
-          tone: "error",
-          text: typeof data.error === "string" ? data.error : "Transfer failed",
-        });
+        setTransferError(typeof data.error === "string" ? data.error : "Transfer failed");
         return;
       }
 
@@ -439,13 +442,14 @@ export default function PlaylistModifierPage() {
         playlists.find((p) => p.id === targetId)?.title ||
         "playlist";
 
-      if (data.noop && typeof data.message === "string") {
-        setBanner({ tone: "success", text: data.message });
-      } else if (transfer.action === "move") {
-        setBanner({ tone: "success", text: `Track moved to “${targetTitle}”.` });
-      } else {
-        setBanner({ tone: "success", text: `Track duplicated to “${targetTitle}”.` });
-      }
+      // Held until the dialog has closed: the result panel takes focus when
+      // it mounts, and behind an open modal that focus would be lost.
+      const transferOutcome =
+        data.noop && typeof data.message === "string"
+          ? makeOutcome("empty", "Nothing to change", data.message)
+          : transfer.action === "move"
+            ? makeOutcome("success", "Track moved", `Track moved to “${targetTitle}”.`)
+            : makeOutcome("success", "Track duplicated", `Track duplicated to “${targetTitle}”.`);
 
       // Auto-unlike from liked tracks if checkbox was checked
       if (isLikedTracksView && alsoUnlike) {
@@ -461,6 +465,7 @@ export default function PlaylistModifierPage() {
       }
 
       setTransfer(null);
+      setOutcome(transferOutcome);
       if (selectedPlaylist) {
         await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
         await Promise.all([selectedPlaylistQuery.refetch(), playlistsQuery.refetch()]);
@@ -468,7 +473,7 @@ export default function PlaylistModifierPage() {
         await Promise.all([likesQuery.refetch(), playlistsQuery.refetch()]);
       }
     } catch {
-      setBanner({ tone: "error", text: "Network error — try again." });
+      setTransferError("Network error — try again.");
     } finally {
       setTransferLoading(false);
     }
@@ -497,6 +502,7 @@ export default function PlaylistModifierPage() {
     if (!selectedPlaylist) return;
     setShowSaveConfirm(false);
     setSaving(true);
+    setOutcome(null);
     const savedId = selectedPlaylist.id;
     // The user may open another playlist while the save is in flight; a result
     // about playlist A must not appear over playlist B.
@@ -514,7 +520,7 @@ export default function PlaylistModifierPage() {
       });
       if (response.ok) {
         if (!selectionChanged()) {
-          setBanner({ tone: "success", text: "Playlist saved successfully." });
+          setOutcome(makeOutcome("success", "Playlist saved", "Playlist saved successfully."));
         }
         await invalidatePlaylistCaches(queryClient, savedId);
       } else {
@@ -525,12 +531,15 @@ export default function PlaylistModifierPage() {
         // just show the server's reason.
         const outOfSync = response.status === 409 && body?.code === "PLAYLIST_OUT_OF_SYNC";
         if (!selectionChanged()) {
-          setBanner({
-            tone: "error",
-            text: outOfSync
-              ? "This playlist changed on SoundCloud and has been reloaded. Your edits were not saved — make them again."
-              : errorMessageFromBody(body, "Failed to save playlist."),
-          });
+          setOutcome(
+            makeOutcome(
+              "error",
+              outOfSync ? "Playlist reloaded" : "Couldn't save the playlist",
+              outOfSync
+                ? "This playlist changed on SoundCloud and has been reloaded. Your edits were not saved — make them again."
+                : errorMessageFromBody(body, "Failed to save playlist."),
+            ),
+          );
         }
         if (outOfSync) {
           // Reset the list explicitly from the fresh read: a payload that is
@@ -547,7 +556,7 @@ export default function PlaylistModifierPage() {
       }
     } catch (error) {
       console.error("Error saving playlist:", error);
-      setBanner({ tone: "error", text: "An error occurred while saving the playlist." });
+      setOutcome(makeOutcome("error", "Couldn't save the playlist", "An error occurred while saving the playlist."));
     } finally {
       setSaving(false);
     }
@@ -564,7 +573,7 @@ export default function PlaylistModifierPage() {
     setDownloadingTrackId(track.id);
     const result = await startSoundCloudDownload(track.download_url);
     setDownloadingTrackId(null);
-    if (!result.ok) setBanner({ tone: "error", text: result.error });
+    if (!result.ok) setOutcome(makeOutcome("error", "Couldn't start the download", result.error));
   };
 
   // Both only computed while their confirm dialog is open — no point
@@ -589,370 +598,160 @@ export default function PlaylistModifierPage() {
     }));
   }, [tracks, showSaveConfirm]);
 
-  return (
-    <PageContainer maxWidth="wide">
-        <PageHeader
-          title="Playlist Modifier"
-          description="Reorder, remove, move, or duplicate tracks between your playlists."
+  const showEditor = selectedPlaylist !== null || isLikedTracksView;
+
+  // The same pressable row as the playlists under it (and as Downloads'
+  // Liked Tracks), outside the picker so a playlist search never hides it.
+  const likedEntry = (
+    <SelectableList>
+      <PlaylistChoiceRow
+        label="Liked Tracks"
+        title="Liked Tracks"
+        subtitle="Browse and add liked tracks to your playlists"
+        artwork={
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-[#FF5500] to-[#E64A00] text-primary-foreground">
+            <Heart className="h-6 w-6" fill="currentColor" aria-hidden="true" />
+          </span>
+        }
+        selected={isLikedTracksView}
+        onChoose={selectLikedTracks}
+      />
+    </SelectableList>
+  );
+
+  const playlistPicker = (
+    <Panel title={showEditor ? "Your playlists" : "Select a Playlist to Modify"}>
+      <div className="space-y-4">
+        {playlistsQuery.isLoading || loadError || playlists.length > 0 ? likedEntry : null}
+        <PlaylistPicker
+          playlists={playlists}
+          mode="single"
+          selectedIds={selectedPlaylist ? [selectedPlaylist.id] : []}
+          onChange={(next) => {
+            if (next[0]) selectPlaylist(next[0]);
+          }}
+          loading={loading}
+          loadError={loadError}
+          onRetry={() => {
+            playlistsQuery.refetch();
+          }}
         />
+      </div>
+    </Panel>
+  );
 
-        {banner && (
-          <InlineAlert
-            variant={banner.tone}
-            className="mb-6"
-            onDismiss={() => setBanner(null)}
-          >
-            {banner.text}
-          </InlineAlert>
-        )}
+  const trackRowsEmpty = tracks.length === 0;
 
-        {!selectedPlaylist && !isLikedTracksView ? (
-          /* Playlist Selection */
-          <Card variant="outline" className="rounded-2xl p-4 sm:p-6">
-            <h2 className="text-xl font-bold mb-4 text-foreground">
-              Select a Playlist to Modify
-            </h2>
-            {loading ? (
-              <div className="space-y-3">
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <Skeleton
-                    key={i}
-                    className="h-16 rounded-lg bg-gray-100 dark:bg-secondary/40"
-                  />
-                ))}
-              </div>
-            ) : loadError ? (
-              <EmptyState
-                title="Couldn't load your playlists"
-                description="The backend may be unreachable. Retry to refresh the list."
-                action={
-                  <Button
-                    onClick={() => {
-                      playlistsQuery.refetch();
-                    }}
-                  >
-                    Retry
-                  </Button>
-                }
-              />
-            ) : playlists.length === 0 ? (
-              <EmptyState
-                icon={<Music className="w-12 h-12" />}
-                title="No playlists found"
-              />
+  const editorPanel = selectedPlaylist ? (
+    <Panel
+      title={<span className="block min-w-0 truncate">{selectedPlaylist.title}</span>}
+      actions={
+        <>
+          <Button onClick={shuffleTracks} variant="outline">
+            <Shuffle className="w-4 h-4" aria-hidden="true" />
+            Shuffle
+          </Button>
+          <Button onClick={savePlaylist} disabled={saving || loadingTracks}>
+            {saving ? (
+              <LoadingSpinner size="sm" className="w-4 h-4 text-white" />
             ) : (
-              <div className="grid md:grid-cols-2 gap-4">
-                {/* Liked Tracks virtual entry */}
-                <button
-                  type="button"
-                  onClick={selectLikedTracks}
-                  className="flex min-h-16 items-center gap-3 sm:gap-4 p-3 sm:p-4 rounded-xl bg-gradient-to-br from-red-50 to-orange-50 dark:from-red-950/20 dark:to-orange-950/20 border-2 border-transparent hover:border-primary transition-all text-left col-span-full"
-                >
-                  <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-lg bg-gradient-to-br from-[#FF5500] to-[#E64A00] flex items-center justify-center flex-shrink-0">
-                    <Heart className="w-6 h-6 sm:w-8 sm:h-8 text-white" aria-hidden="true" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="font-semibold text-foreground">Liked Tracks</div>
-                    <div className="text-sm text-muted-foreground">
-                      Browse and add liked tracks to your playlists
-                    </div>
-                  </div>
-                </button>
-                {playlists.map((playlist) => (
-                  <button
-                    key={playlist.id}
-                    type="button"
-                    onClick={() => selectPlaylist(playlist)}
-                    className="flex min-h-16 items-center gap-3 sm:gap-4 p-3 sm:p-4 rounded-xl bg-gray-50 dark:bg-secondary/20 border-2 border-transparent hover:border-primary transition-all text-left"
-                  >
-                    <img
-                      src={playlist.coverUrl || playlist.artwork_url || "/brand/icon-192.png"}
-                      alt=""
-                      width={64}
-                      height={64}
-                      loading="lazy"
-                      decoding="async"
-                      className="w-12 h-12 sm:w-16 sm:h-16 rounded-lg object-cover flex-shrink-0"
-                    />
-                    <div className="min-w-0">
-                      <div className="font-semibold text-foreground truncate">
-                        {playlist.title}
-                      </div>
-                      <div className="text-sm text-muted-foreground">
-                        {playlist.track_count} tracks
-                      </div>
-                    </div>
-                  </button>
-                ))}
-              </div>
+              <Save className="w-4 h-4" aria-hidden="true" />
             )}
-          </Card>
-        ) : isLikedTracksView ? (
-          /* Liked Tracks View */
-          <div>
-            <div className="flex flex-col gap-3 mb-6 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={goBackToList}
-                  className="self-start text-muted-foreground hover:text-primary-text"
+            Save Changes
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        {!loadingTracks && !tracksError && !trackRowsEmpty && (
+          <div className="space-y-3">
+            <ListSearch
+              label="Search this playlist's tracks"
+              value={trackQuery}
+              onChange={setTrackQuery}
+              shown={filteredTracks.length}
+              total={pillFilteredTracks.length}
+              noun={pillFilteredTracks.length === 1 ? "track" : "tracks"}
+              placeholder="Search by title or artist…"
+            />
+            {/* Filter pills */}
+            <div role="group" aria-label="Filter tracks" className="flex flex-wrap items-center gap-2">
+              {([
+                { key: "all" as TrackFilter, icon: null, label: "All", count: tracks.length },
+                { key: "downloadable" as TrackFilter, icon: "⬇", label: "Downloadable", count: downloadCount },
+                { key: "buylink" as TrackFilter, icon: "🔗", label: "Buy Link", count: buyLinkCount },
+              ]).map(({ key, icon, label, count }) => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-pressed={trackFilter === key}
+                  onClick={() => setTrackFilter(key)}
+                  className={`inline-flex min-h-9 items-center gap-1 px-3 py-1.5 rounded-full text-sm font-medium transition-all ${
+                    trackFilter === key
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-gray-100 dark:bg-secondary/20 text-muted-foreground hover:bg-gray-200 dark:hover:bg-secondary/40"
+                  }`}
                 >
-                  <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-                  Back to playlists
-                </Button>
-                <div className="flex items-center gap-2">
-                  <Heart className="h-5 w-5 shrink-0 text-[#FF5500]" aria-hidden="true" />
-                  <h2 className="text-2xl font-bold text-foreground">
-                    Liked Tracks
-                  </h2>
-                </div>
-              </div>
+                  {icon ? <span aria-hidden="true">{icon}</span> : null}
+                  {label} ({count})
+                </button>
+              ))}
             </div>
-
-            <Card variant="outline" className="rounded-2xl p-4 sm:p-6">
-              {/* Search and filter controls */}
-              <div className="grid grid-cols-1 gap-3 mb-4 sm:grid-cols-2 lg:grid-cols-3">
-                <Field label="Search liked tracks">
-                  {(field) => (
-                    <div className="relative">
-                      <Search
-                        className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground"
-                        aria-hidden="true"
-                      />
-                      <Input
-                        {...field}
-                        type="search"
-                        value={likedSearch}
-                        onChange={(e) => setLikedSearch(e.target.value)}
-                        placeholder="Title or artist"
-                        className="pl-9 h-11 bg-secondary/20 border-border"
-                      />
-                    </div>
-                  )}
-                </Field>
-                {likedGenres.length > 0 && (
-                  <Select
-                    label="Genre"
-                    value={likedGenreFilter}
-                    onChange={(e) => setLikedGenreFilter(e.target.value)}
-                    className="bg-secondary/20"
-                  >
-                    <option value="All">All Genres</option>
-                    {likedGenres.map((g) => (
-                      <option key={g} value={g}>{g}</option>
-                    ))}
-                  </Select>
-                )}
-                <Select
-                  label="Duration"
-                  value={likedDurationFilter}
-                  onChange={(e) => setLikedDurationFilter(e.target.value)}
-                  className="bg-secondary/20"
-                >
-                  <option value="All">All Durations</option>
-                  <option value="< 3 mins">&lt; 3 mins</option>
-                  <option value="3-5 mins">3-5 mins</option>
-                  <option value="5-10 mins">5-10 mins</option>
-                  <option value="> 10 mins">&gt; 10 mins</option>
-                </Select>
-              </div>
-
-              <div className="text-sm text-muted-foreground mb-2" role="status">
-                {filteredLikedTracks.length} of {likedTracks.length} tracks
-              </div>
-
-              {loadingLikes ? (
-                <div className="space-y-3">
-                  {Array.from({ length: 10 }).map((_, i) => (
-                    <Skeleton
-                      key={i}
-                      className="h-16 rounded-lg bg-gray-100 dark:bg-secondary/40"
-                    />
-                  ))}
-                </div>
-              ) : likesQuery.isError ? (
-                <EmptyState
-                  title="Couldn't load your liked tracks"
-                  description="The backend may be unreachable. Retry to refresh."
-                  action={<Button onClick={() => likesQuery.refetch()}>Retry</Button>}
-                />
-              ) : likedTracks.length === 0 ? (
-                <EmptyState
-                  icon={<Heart className="w-12 h-12" />}
-                  title="No liked tracks"
-                  description="You haven't liked any tracks yet."
-                />
-              ) : filteredLikedTracks.length === 0 ? (
-                <EmptyState
-                  icon={<Music className="w-12 h-12" />}
-                  title="No tracks match your filters"
-                  description="Try adjusting your search or filters."
-                />
-              ) : (
-                <div className="space-y-2 max-h-[60dvh] overflow-y-auto">
-                  {filteredLikedTracks.map((track) => (
-                    <div
-                      key={track.id}
-                      className="flex items-center gap-3 sm:gap-4 p-3 rounded-xl bg-gray-50 dark:bg-secondary/20"
-                    >
-                      <img
-                        src={track.artwork_url || "/brand/icon-192.png"}
-                        alt=""
-                        width={48}
-                        height={48}
-                        loading="lazy"
-                        decoding="async"
-                        className="w-12 h-12 shrink-0 rounded-lg object-cover"
-                      />
-                      <div className="flex-1 min-w-0">
-                        {/* `truncate` belongs on the title, not on this flex
-                            row — see the note on the editor row below. */}
-                        <div className="flex min-w-0 items-center gap-2 font-semibold text-foreground">
-                          <span className="min-w-0 truncate">{track.title}</span>
-                          <DownloadChip
-                            track={track}
-                            busy={downloadingTrackId === track.id}
-                            onDownload={handleDownload}
-                          />
-                        </div>
-                        <div className="text-sm text-muted-foreground truncate">
-                          {track.user?.username} •{" "}
-                          {formatDuration(track.duration)}
-                        </div>
-                      </div>
-                      <div className={ROW_ACTIONS_CLASS}>
-                        <IconButton
-                          label={`More actions for ${track.title}`}
-                          size="sm"
-                          onClick={() => setActionsTrack(track)}
-                        >
-                          <MoreVertical className="w-4 h-4" aria-hidden="true" />
-                        </IconButton>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </Card>
           </div>
-        ) : selectedPlaylist ? (
-          /* Track Editor */
-          <div>
-            <div className="flex flex-col gap-3 mb-6 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={goBackToList}
-                  className="self-start text-muted-foreground hover:text-primary-text"
-                >
-                  <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-                  Back to playlists
-                </Button>
-                <h2 className="min-w-0 truncate text-2xl font-bold text-foreground">
-                  {selectedPlaylist.title}
-                </h2>
-              </div>
-              <div className="grid grid-cols-2 gap-2 sm:flex sm:shrink-0 sm:gap-3">
-                <Button
-                  onClick={shuffleTracks}
-                  variant="outline"
-                >
-                  <Shuffle className="w-4 h-4" aria-hidden="true" />
-                  Shuffle
-                </Button>
-                <Button
-                  onClick={savePlaylist}
-                  disabled={saving}
-                >
-                  {saving ? (
-                    <LoadingSpinner size="sm" className="w-4 h-4 text-white" />
-                  ) : (
-                    <Save className="w-4 h-4" aria-hidden="true" />
-                  )}
-                  Save Changes
-                </Button>
-              </div>
-            </div>
-
-            <Card variant="outline" className="rounded-2xl p-4 sm:p-6">
-              {/* Filter pills */}
-              {!loadingTracks && tracks.length > 0 && (
-                <div role="group" aria-label="Filter tracks" className="flex items-center gap-2 mb-4 flex-wrap">
-                  {([
-                    { key: "all" as TrackFilter, icon: null, label: "All", count: tracks.length },
-                    { key: "downloadable" as TrackFilter, icon: "⬇", label: "Downloadable", count: downloadCount },
-                    { key: "buylink" as TrackFilter, icon: "🔗", label: "Buy Link", count: buyLinkCount },
-                  ]).map(({ key, icon, label, count }) => (
-                    <button
-                      key={key}
-                      type="button"
-                      aria-pressed={trackFilter === key}
-                      onClick={() => setTrackFilter(key)}
-                      className={`inline-flex min-h-9 items-center gap-1 px-3 py-1.5 rounded-full text-sm font-medium transition-all ${
-                        trackFilter === key
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-gray-100 dark:bg-secondary/20 text-muted-foreground hover:bg-gray-200 dark:hover:bg-secondary/40"
-                      }`}
-                    >
-                      {icon ? <span aria-hidden="true">{icon}</span> : null}
-                      {label} ({count})
-                    </button>
-                  ))}
-                </div>
-              )}
-              {loadingTracks ? (
-                <div className="space-y-3">
-                  {Array.from({ length: 10 }).map((_, i) => (
-                    <Skeleton
-                      key={i}
-                      className="h-16 rounded-lg bg-gray-100 dark:bg-secondary/40"
-                    />
-                  ))}
-                </div>
-              ) : tracksError ? (
-                <EmptyState
-                  title="Couldn’t load tracks for this playlist"
-                  description="The playlist data could not be fetched. Retry to try again."
-                  action={
-                    <Button onClick={() => selectedPlaylistQuery.refetch()}>Retry</Button>
-                  }
-                />
-              ) : tracks.length === 0 ? (
-                <EmptyState
-                  icon={<Music className="w-12 h-12" />}
-                  title="This playlist has no tracks"
-                />
-              ) : filteredTracks.length === 0 ? (
-                <EmptyState
-                  icon={<Music className="w-12 h-12" />}
-                  title="No tracks match this filter"
-                  description="Try a different filter."
-                />
-              ) : (
-                <div ref={listScrollRef} className="max-h-[60dvh] overflow-y-auto">
-                <div style={{ height: rowVirtualizer.getTotalSize(), position: "relative" }}>
-                  {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                    const track = filteredTracks[virtualRow.index];
-                    const globalIndex = trackIndexById.get(track.id) ?? virtualRow.index;
-                    return (
-                    <div
-                      key={virtualRow.key}
-                      data-index={virtualRow.index}
-                      ref={rowVirtualizer.measureElement}
-                      style={{
-                        position: "absolute",
-                        top: 0,
-                        left: 0,
-                        width: "100%",
-                        transform: `translateY(${virtualRow.start}px)`,
-                      }}
-                      className="pb-2"
-                    >
-                    <div
-                      className="flex items-center gap-3 sm:gap-4 p-3 rounded-xl bg-gray-50 dark:bg-secondary/20"
-                    >
+        )}
+        {loadingTracks ? (
+          <div className="space-y-3">
+            {Array.from({ length: 10 }).map((_, i) => (
+              <Skeleton
+                key={i}
+                className="h-16 rounded-lg bg-gray-100 dark:bg-secondary/40"
+              />
+            ))}
+          </div>
+        ) : tracksError ? (
+          <EmptyState
+            title="Couldn’t load tracks for this playlist"
+            description="The playlist data could not be fetched. Retry to try again."
+            action={
+              <Button onClick={() => selectedPlaylistQuery.refetch()}>Retry</Button>
+            }
+          />
+        ) : tracks.length === 0 ? (
+          <EmptyState
+            icon={<Music className="w-12 h-12" />}
+            title="This playlist has no tracks"
+          />
+        ) : filteredTracks.length === 0 ? (
+          <EmptyState
+            icon={<Music className="w-12 h-12" />}
+            title={
+              trackQuery.trim() ? "No tracks match your search" : "No tracks match this filter"
+            }
+            description={
+              trackQuery.trim() ? "Try fewer or different words." : "Try a different filter."
+            }
+          />
+        ) : (
+          <div ref={listScrollRef} className="max-h-[60dvh] overflow-y-auto">
+            <div style={{ height: rowVirtualizer.getTotalSize(), position: "relative" }}>
+              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                const track = filteredTracks[virtualRow.index];
+                const globalIndex = trackIndexById.get(track.id) ?? virtualRow.index;
+                return (
+                  <div
+                    key={virtualRow.key}
+                    data-index={virtualRow.index}
+                    ref={rowVirtualizer.measureElement}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                    className="pb-2"
+                  >
+                    <div className="flex items-center gap-3 sm:gap-4 p-3 rounded-xl bg-gray-50 dark:bg-secondary/20">
                       <span className="hidden sm:block w-8 text-center text-sm text-muted-foreground-subtle">
                         {globalIndex + 1}
                       </span>
@@ -1043,15 +842,176 @@ export default function PlaylistModifierPage() {
                         </IconButton>
                       </div>
                     </div>
-                    </div>
-                    );
-                  })}
-                </div>
-                </div>
-              )}
-            </Card>
+                  </div>
+                );
+              })}
+            </div>
           </div>
+        )}
+      </div>
+    </Panel>
+  ) : null;
+
+  const likedPanel = isLikedTracksView ? (
+    <Panel
+      title={
+        <span className="inline-flex items-center gap-2">
+          <Heart className="h-5 w-5 shrink-0 text-[#FF5500]" aria-hidden="true" />
+          Liked Tracks
+        </span>
+      }
+    >
+      <div className="space-y-4">
+        {/* Search and filter controls */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <ListSearch
+            className="sm:col-span-2"
+            label="Search liked tracks"
+            value={likedSearch}
+            onChange={setLikedSearch}
+            shown={filteredLikedTracks.length}
+            total={likedTracks.length}
+            noun={likedTracks.length === 1 ? "track" : "tracks"}
+            placeholder="Title or artist"
+          />
+          {likedGenres.length > 0 && (
+            <Select
+              label="Genre"
+              value={likedGenreFilter}
+              onChange={(e) => setLikedGenreFilter(e.target.value)}
+              className="bg-secondary/20"
+            >
+              <option value="All">All Genres</option>
+              {likedGenres.map((g) => (
+                <option key={g} value={g}>{g}</option>
+              ))}
+            </Select>
+          )}
+          <Select
+            label="Duration"
+            value={likedDurationFilter}
+            onChange={(e) => setLikedDurationFilter(e.target.value)}
+            className="bg-secondary/20"
+          >
+            <option value="All">All Durations</option>
+            <option value="< 3 mins">&lt; 3 mins</option>
+            <option value="3-5 mins">3-5 mins</option>
+            <option value="5-10 mins">5-10 mins</option>
+            <option value="> 10 mins">&gt; 10 mins</option>
+          </Select>
+        </div>
+
+        {loadingLikes ? (
+          <div className="space-y-3">
+            {Array.from({ length: 10 }).map((_, i) => (
+              <Skeleton
+                key={i}
+                className="h-16 rounded-lg bg-gray-100 dark:bg-secondary/40"
+              />
+            ))}
+          </div>
+        ) : likesQuery.isError ? (
+          <EmptyState
+            title="Couldn't load your liked tracks"
+            description="The backend may be unreachable. Retry to refresh."
+            action={<Button onClick={() => likesQuery.refetch()}>Retry</Button>}
+          />
+        ) : likedTracks.length === 0 ? (
+          <EmptyState
+            icon={<Heart className="w-12 h-12" />}
+            title="No liked tracks"
+            description="You haven't liked any tracks yet."
+          />
+        ) : filteredLikedTracks.length === 0 ? (
+          <EmptyState
+            icon={<Music className="w-12 h-12" />}
+            title="No tracks match your filters"
+            description="Try adjusting your search or filters."
+          />
+        ) : (
+          <div className="space-y-2 max-h-[60dvh] overflow-y-auto">
+            {filteredLikedTracks.map((track) => (
+              <div
+                key={track.id}
+                className="flex items-center gap-3 sm:gap-4 p-3 rounded-xl bg-gray-50 dark:bg-secondary/20"
+              >
+                <img
+                  src={track.artwork_url || "/brand/icon-192.png"}
+                  alt=""
+                  width={48}
+                  height={48}
+                  loading="lazy"
+                  decoding="async"
+                  className="w-12 h-12 shrink-0 rounded-lg object-cover"
+                />
+                <div className="flex-1 min-w-0">
+                  {/* `truncate` belongs on the title, not on this flex
+                      row — see the note on the editor row above. */}
+                  <div className="flex min-w-0 items-center gap-2 font-semibold text-foreground">
+                    <span className="min-w-0 truncate">{track.title}</span>
+                    <DownloadChip
+                      track={track}
+                      busy={downloadingTrackId === track.id}
+                      onDownload={handleDownload}
+                    />
+                  </div>
+                  <div className="text-sm text-muted-foreground truncate">
+                    {track.user?.username} •{" "}
+                    {formatDuration(track.duration)}
+                  </div>
+                </div>
+                <div className={ROW_ACTIONS_CLASS}>
+                  <IconButton
+                    label={`More actions for ${track.title}`}
+                    size="sm"
+                    onClick={() => setActionsTrack(track)}
+                  >
+                    <MoreVertical className="w-4 h-4" aria-hidden="true" />
+                  </IconButton>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </Panel>
+  ) : null;
+
+  return (
+    <PageContainer kind="workbench">
+      <PageHeader
+        title="Playlist Modifier"
+        description="Reorder, remove, move, or duplicate tracks between your playlists."
+      />
+
+      <div className="space-y-6">
+        {outcome ? (
+          <ResultPanel
+            key={outcome.id}
+            status={outcome.status}
+            title={outcome.title}
+            description={outcome.text}
+            onDismiss={() => setOutcome(null)}
+          />
         ) : null}
+
+        {/* One tree for both states, so choosing the first playlist does not
+            remount the picker (which dropped keyboard focus and its search).
+            Before a choice the picker is the whole width; after it, it is
+            the sticky aside of the ToolLayout arrangement. */}
+        <div className={showEditor ? "grid gap-6 lg:grid-cols-3" : undefined}>
+          {showEditor ? <div className="min-w-0 lg:col-span-2">{editorPanel ?? likedPanel}</div> : null}
+          <div
+            className={
+              showEditor
+                ? "min-w-0 lg:sticky lg:top-[calc(var(--announcement-h)+1.5rem)] lg:self-start"
+                : undefined
+            }
+          >
+            {playlistPicker}
+          </div>
+        </div>
+      </div>
 
       <Dialog
         open={actionsTrack !== null}
@@ -1165,25 +1125,26 @@ export default function PlaylistModifierPage() {
         }
       >
         <div className="space-y-4">
+          {transferError ? <InlineAlert variant="error">{transferError}</InlineAlert> : null}
           {transferTargetOptions.length === 0 ? (
             <InlineAlert variant="error">
               No target playlist available. Create another playlist on SoundCloud first.
             </InlineAlert>
           ) : (
-            <Select
-              label="Target playlist"
-              value={transferTargetId === "" ? "" : String(transferTargetId)}
-              onChange={(e) =>
-                setTransferTargetId(e.target.value ? Number(e.target.value) : "")
-              }
-              disabled={transferLoading}
-            >
-              {transferTargetOptions.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.title} ({p.track_count} tracks)
-                </option>
-              ))}
-            </Select>
+            <div className="space-y-2">
+              <div className="text-sm font-semibold text-foreground">Target playlist</div>
+              <PlaylistPicker
+                listLabel="Target playlist"
+                playlists={transferTargetOptions}
+                mode="single"
+                selectedIds={transferTargetId === "" ? [] : [Number(transferTargetId)]}
+                onChange={(next) => {
+                  if (next[0] && !transferLoading) setTransferTargetId(next[0].id);
+                }}
+                searchLabel="Search target playlists"
+                listClassName="max-h-[40dvh]"
+              />
+            </div>
           )}
           {isLikedTracksView && (
             <div className="flex items-center gap-3">

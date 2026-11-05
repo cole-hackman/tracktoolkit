@@ -342,8 +342,12 @@ const CASES: Case[] = [
   {
     path: "/playlist-compare/",
     drive: async (page) => {
-      await page.getByLabel("Playlist A").selectOption({ index: 1 });
-      await page.getByLabel("Playlist B").selectOption({ index: 2 });
+      await page.getByRole("button", { name: /^Playlist A/ }).click();
+      await page.getByRole("dialog").getByRole("list", { name: "Playlists" }).getByRole("button").nth(0).click();
+      await expect(page.getByRole("dialog")).toBeHidden();
+      await page.getByRole("button", { name: /^Playlist B/ }).click();
+      await page.getByRole("dialog").getByRole("list", { name: "Playlists" }).getByRole("button").nth(1).click();
+      await expect(page.getByRole("dialog")).toBeHidden();
       await page.getByRole("button", { name: "Compare" }).click();
       await page.getByRole("heading", { name: /In both playlists/ }).waitFor();
     },
@@ -361,6 +365,7 @@ const CASES: Case[] = [
   {
     path: "/export/playlists/",
     drive: async (page) => {
+      // The shared picker's rows are radios, not buttons.
       await page.getByRole("button", { name: new RegExp(LONG.slice(0, 30)) }).first().click();
       await page.getByRole("button", { name: "Load playlist tracks" }).click();
       await page.getByText(/^[\d,]+ tracks? ready$/).waitFor();
