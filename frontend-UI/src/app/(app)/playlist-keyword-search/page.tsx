@@ -314,6 +314,10 @@ export default function PlaylistKeywordSearchPage() {
       // are still in SoundCloud, so clearing them here would tell the user the
       // removal succeeded when it did not.
       const wasRemoved = (m: Match) => selected.has(matchKey(m)) && !failedPlaylists.has(m.playlistId);
+      // The scan's summary line is a sentence fixed at search time ("N
+      // matches across…"); after a removal it would claim matches that are
+      // gone. The removal's own result replaces it, as the old notice did.
+      setSummary("");
       setResult((prev) => {
         if (!prev) return prev;
         const remaining = prev.matches.filter((m) => !wasRemoved(m));
