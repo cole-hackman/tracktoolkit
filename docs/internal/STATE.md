@@ -1,14 +1,42 @@
 # STATE
 
 ## Now
-Nothing is mid-flight. Droploud and Cobrand gates are merged and live
-(2026-11-04): web PR #107 (`cf8efaa`) deployed and verified on
-`/downloads/` (Droploud and Cobrand rows get checkboxes with the new
-extension; the confirmation names what each site does; Cancel sends
-nothing). The extension's PR #1 is merged into `fix/extension-domain`
-(`6b917ca`) in the private repo, and Cole's folder is on that branch.
+**PR cole-hackman/tracktoolkit#110 (`feat/design-system`) is open as a draft
+and NOT merged.** It moves every `(app)` tool page onto one design system.
+Nothing in it has been verified on the live site; merging deploys. Before
+merging, look at the pages listed under Next on a real account.
+
+Previously (still true): Droploud and Cobrand gates are merged and live
+(2026-11-04, web PR #107, `cf8efaa`); the extension's PR #1 is merged into
+`fix/extension-domain` (`6b917ca`) in the private repo.
 
 ## Just done
+- **Design system, 2026-11-05 (PR #110, draft).** Rules, audit and sources:
+  `docs/internal/DESIGN-SYSTEM.md`. Shared pieces: `PageContainer kind`
+  (form 896 / list 1024 / workbench 1152 / hub), `Panel`, `ToolLayout`,
+  `ActionBar`, `SegmentedControl`, `ListSearch` + `lib/list-search.ts`,
+  `lib/useListSelection.ts`, `ResultPanel status=` (success / partial /
+  empty / error: in the slot under the header, focused, spoken through
+  `useAnnounce`), `PlaylistPicker` + `PlaylistChooser` +
+  `PlaylistChoiceRow`. `PlaylistSelectGrid` is deleted. All 25 tool pages
+  and the export sub-pages migrated; search added over every pickable or
+  scrollable list (Combine and Likes → Playlist first). Dashboard ordered by
+  unique users from `TOOL_RANKING` in `lib/tool-ranking.ts` (groups kept).
+  Each page group was reviewed separately; review fixes are the `fix(…)`
+  commits. Checks at `d7ec22c`: `npm test` 1131/1131, lint clean, build ok,
+  `npm run contrast` 115 pairs pass, `npm run test:e2e` 1052 passed, 0
+  failed, 372 skipped (per-viewport skips). Screenshots at 1280 and 390 of
+  every page reviewed.
+- Fixed on the way, not design work: the selection banner's destructive
+  button failed AA (white on #ef4444, 3.76:1; now the destructive tokens);
+  `sidebar.spec.ts:75` failed 2 in 3 on `main` (hover state missed before
+  hydration; the toggle click now sets it); the downloads helper-tab flake
+  (listener attached after the first download; now from the context's page
+  event, 8/8 repeats).
+- **Tool sequences:** `docs/sql/analysis-tool-sequences.sql`, read-only
+  (READ ONLY transaction, rolled back), tested on PostgreSQL 16 with fixture
+  rows, **not run on production**. Candidates and what the query must show:
+  `docs/internal/TOOL-CONSOLIDATION.md`. Nothing combined or removed.
 - **Gate sites live run** (2026-11-04). All five gates downloaded on the
   final code: Droploud *Never Walk Alone* (.wav), *Dynamite* (.mp3),
   *Confession* (.aiff, on retry: no second comment, no second grant), Hypeddit
@@ -69,6 +97,27 @@ nothing). The extension's PR #1 is merged into `fix/extension-domain`
   reloads itself when its files change (seen working).
 
 ## Next
+### 2026-11-05 (design system, PR #110)
+0. **Before merging, check live on a real account** (nothing was): Combine
+   (search, merge into new and existing, delete-after-merge partial
+   result); Likes → Playlist (search over a large library, select all
+   shown); Downloads (source switch, Download all, row checkboxes, folder
+   mode, the multiple-downloads check, gate send); Playlist Modifier and
+   Health Check (switch playlists, then save/remove: the write goes to the
+   playlist on screen); Growth (scan, engage, Campaign Initiated, history);
+   Following Library (copy with a search active); a phone at 390 for each.
+1. Run `docs/sql/analysis-tool-sequences.sql` on Azure Postgres (a read
+   replica or restored copy is better) and read it against
+   `TOOL-CONSOLIDATION.md`. Re-run with 15 and 60 minute gaps.
+2. Decide the calls under "Open questions for Cole" in DESIGN-SYSTEM.md.
+3. Small follow-ups found, not done: Activity → Playlist and Recently Played
+   log new playlists as `from-likes` with no source (send a source in
+   `metadata`); `/api/followings` `truncated` is read by no page; the
+   private extension repo was not checked for links to `/downloads?url=`.
+4. The stop hook in this environment asks for commits authored as Claude;
+   the brief says commits are written as Cole, so PR #110's commits are
+   authored as Cole and show as Unverified (unsigned).
+
 ### 2026-11-04 (clone-private, PR #103)
 0. Merged after the gate work; verify on a real private playlist on the live
    site: it resolves, the tracks arrive, the copy is private, and the
@@ -351,6 +400,22 @@ nothing). The extension's PR #1 is merged into `fix/extension-domain`
    only then may the two legacy icon files go.
 
 ## Decisions
+### From the 2026-11-05 design-system session (PR #110)
+- **Tool pages are built from the shared pieces in DESIGN-SYSTEM.md**: one
+  width per page type (`PageContainer kind`), one spacing scale, `Panel`
+  sections, `ToolLayout` for pick-then-act pages. A hand-rolled equivalent
+  needs a reason written next to it.
+- **A run's outcome is `ResultPanel status=` in the slot under the header**,
+  never a screen that replaces the tool. Exceptions: Growth's step 4,
+  per-row and in-dialog errors, the feedback confirmation.
+- **Pick-one lists are buttons (`PlaylistChoiceRow`), never radios**: a
+  radio group commits on arrow keys, and choosing a playlist loads it.
+- **Search covers the whole collection**, never only rendered rows; "Select
+  all" with a query selects the matches. Downloads' "Download all" still
+  means the whole source.
+- **Dashboard order comes from `TOOL_RANKING`** (unique users, ANALYSIS.md);
+  the four groups stay; the sidebar keeps `nav.ts` order.
+
 - **Logo: the `claude-branding` shifted-bar mark** (2026-09-20). Three
   horizontal rounded bars of decreasing length, middle bar shifted right, flat
   `#FF5500`, no second tone in the mark; wordmark in Space Grotesk 600
