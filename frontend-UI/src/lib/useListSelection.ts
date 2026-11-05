@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * Checkbox selection over a list that can be searched.
@@ -18,6 +18,13 @@ export function useListSelection<T>(
 ) {
   const [selected, setSelected] = useState<Set<number>>(() => new Set(options?.initial ?? []));
   const lastIndexRef = useRef<number | null>(null);
+
+  // The anchor is an index into `shown`. When the rows change — a search,
+  // another user's list, a refetch — it points at a different track, and a
+  // shift-click would select a range the user never saw. Forget it.
+  useEffect(() => {
+    lastIndexRef.current = null;
+  }, [shown]);
 
   const toggle = useCallback(
     (item: T, index: number, event?: React.MouseEvent | React.KeyboardEvent) => {
