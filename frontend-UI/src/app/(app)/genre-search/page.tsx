@@ -87,6 +87,8 @@ export default function GenreSearchPage() {
   // Field validation stays with the form; failed requests are outcomes.
   const [searchError, setSearchError] = useState("");
   const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const [addError, setAddError] = useState("");
+  const [loadMoreError, setLoadMoreError] = useState("");
 
   // Selection state
   const [selectedTracks, setSelectedTracks] = useState<Set<number>>(new Set());
@@ -156,13 +158,10 @@ export default function GenreSearchPage() {
   const handleLoadMore = async () => {
     if (!nextHref) return;
     setLoadingMore(true);
-    setOutcome(null);
-    const loadMoreFailed = (): Outcome => ({
-      id: Date.now(),
-      status: "error",
-      title: "Couldn’t load more tracks",
-      description: "Couldn’t load more tracks. Please try again.",
-    });
+    setLoadMoreError("");
+    // A failure to load more of the list stays beside the list's Load more
+    // button: a focused panel at the top would scroll away from 50+ rows.
+    const loadMoreFailed = () => "Couldn’t load more tracks. Please try again.";
     try {
       // next_href is a full SoundCloud URL — proxy through our search endpoint with offset
       const url = new URL(nextHref);
@@ -177,10 +176,10 @@ export default function GenreSearchPage() {
         setNextHref(data.next_href || null);
         announce(`${collection.length} more track${collection.length === 1 ? "" : "s"} loaded`);
       } else {
-        setOutcome(loadMoreFailed());
+        setLoadMoreError(loadMoreFailed());
       }
     } catch {
-      setOutcome(loadMoreFailed());
+      setLoadMoreError(loadMoreFailed());
     } finally {
       setLoadingMore(false);
     }
@@ -198,6 +197,7 @@ export default function GenreSearchPage() {
   const handleOpenAddPanel = () => {
     setShowAddPanel(true);
     setOutcome(null);
+    setAddError("");
   };
 
   const handleAddToPlaylist = async () => {
@@ -206,12 +206,6 @@ export default function GenreSearchPage() {
     if (!canAdd) return;
 
     setAdding(true);
-    const failed = (description: string): Outcome => ({
-      id: Date.now(),
-      status: "error",
-      title: "Couldn’t add the tracks",
-      description,
-    });
     try {
       const body: Record<string, unknown> = {
         trackIds: Array.from(selectedTracks),
@@ -246,8 +240,10 @@ export default function GenreSearchPage() {
         setPlaylistName("");
       } else {
         // Show the reason first: it must not wait on a cold list refetch.
-        setOutcome(failed(errorMessageFromBody(data, "Failed to add tracks.")));
-        setShowAddPanel(false);
+        // In the dialog, beside the retry, as before: a result panel behind
+        // the dialog would take focus from it, and closing the dialog lost
+        // the reason the target was cleared.
+        setAddError(errorMessageFromBody(data, "Failed to add tracks."));
         if (res.status === 409 && data?.code === "PLAYLIST_NOT_FOUND") {
           // The chosen target is gone from SoundCloud and nothing was written.
           const missingId = Number(data.playlistId);
@@ -256,8 +252,7 @@ export default function GenreSearchPage() {
         }
       }
     } catch {
-      setOutcome(failed("An error occurred. Please try again."));
-      setShowAddPanel(false);
+      setAddError("An error occurred. Please try again.");
     } finally {
       setAdding(false);
     }
@@ -457,6 +452,12 @@ export default function GenreSearchPage() {
                   })}
                 </SelectableList>
 
+                {loadMoreError ? (
+                  <InlineAlert variant="error" className="mt-6" onDismiss={() => setLoadMoreError("")}>
+                    {loadMoreError}
+                  </InlineAlert>
+                ) : null}
+
                 {nextHref && (
                   <div className="mt-6 text-center">
                     <Button
@@ -510,6 +511,11 @@ export default function GenreSearchPage() {
           </div>
         }
       >
+        {addError ? (
+          <InlineAlert variant="error" className="mb-4" onDismiss={() => setAddError("")}>
+            {addError}
+          </InlineAlert>
+        ) : null}
         <SegmentedControl label="Add to" value={addMode} options={ADD_MODES} onChange={setAddMode} />
 
         {addMode === "new" ? (
