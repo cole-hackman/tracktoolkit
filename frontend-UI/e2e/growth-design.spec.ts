@@ -303,9 +303,10 @@ test("history: sessions and a session's actions are searchable; nothing to unfol
   await actions.fill("");
   await expect(page.getByRole("checkbox", { name: "hat-loop" })).toBeChecked();
   await expect(page.getByRole("checkbox", { name: "kick-drum" })).not.toBeChecked();
-  // Cleared before the audit below: the destructive selection banner's
-  // PulsatingButton (white on #ef4444, 3.76:1) is a shared-component defect
-  // outside this page, reported separately rather than audited here.
+  // Audited with the destructive selection banner showing: its button used
+  // to be white on #ef4444 (3.76:1) and is now on the destructive tokens.
+  await expect(page.getByRole("button", { name: /Unfollow Selected|Unfollow/ }).last()).toBeVisible();
+  await expectNoBlockingViolations(page);
   await page.getByRole("checkbox", { name: "hat-loop" }).uncheck();
 
   // No follow in this session is a confirmed non-follower.
