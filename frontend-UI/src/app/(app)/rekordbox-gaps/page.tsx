@@ -6,14 +6,15 @@ import { Download, FileDown, ListChecks, Zap } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   Button,
-  Card,
   EmptyState,
   Field,
   IconButton,
-  InlineAlert,
+  ListSearch,
   LoadingSpinner,
   PageContainer,
   PageHeader,
+  Panel,
+  ResultPanel,
   Select,
   Skeleton,
   useAnnounce,
@@ -23,6 +24,7 @@ import { DownloadLinkAction, DownloadStatusLine, downloadTone } from "@/componen
 import { GateWalkthrough, type WalkthroughGate } from "@/components/downloads/GateWalkthrough";
 import { useLikesQuery, usePlaylistDetailQuery, usePlaylistsQuery } from "@/lib/queries";
 import { asArray } from "@/lib/api-shape";
+import { useListSearch } from "@/lib/list-search";
 import { downloadCsv } from "@/lib/csv";
 import { downloadHypedditQueue, gateQueueItem } from "@/lib/gate-queue";
 import { startSoundCloudDownload } from "@/lib/download";
@@ -52,6 +54,9 @@ const SHOW_LABELS: Record<MatchKind, string> = {
 };
 const ROW_STEP = 200;
 
+type Result = { track: Track; match: TrackMatch; status: DownloadStatus };
+const resultText = (r: Result) => `${r.track.title ?? ""} ${r.track.user?.username ?? ""}`;
+
 export default function RekordboxGapsPage() {
   const { user } = useAuth();
   const canUse = !!user?.canDownload;
@@ -66,7 +71,8 @@ export default function RekordboxGapsPage() {
   const [source, setSource] = useState<string>(LIKES);
   const [show, setShow] = useState<MatchKind>("missing");
   const [visible, setVisible] = useState(ROW_STEP);
-  const [rowError, setRowError] = useState<{ id: number; message: string } | null>(null);
+  const [rowError, setRowError] = useState<{ run: number; title: string; message: string } | null>(null);
+  const [query, setQuery] = useState("");
   const [downloadingId, setDownloadingId] = useState<number | null>(null);
   const [walking, setWalking] = useState(false);
 
@@ -96,7 +102,9 @@ export default function RekordboxGapsPage() {
     for (const r of results) c[r.match.kind]++;
     return c;
   }, [results]);
-  const shown = useMemo(() => results.filter((r) => r.match.kind === show), [results, show]);
+  const ofKind = useMemo(() => results.filter((r) => r.match.kind === show), [results, show]);
+  // Search runs over every track in the chosen group, not only the rows rendered.
+  const { results: shown } = useListSearch(ofKind, query, resultText);
   // "Not in Rekordbox" is missing plus a different version: a different remix
   // is a track you don't have. The same set the shopping list exports.
   const wanted = useMemo(() => results.filter((r) => r.match.kind !== "owned"), [results]);
@@ -155,7 +163,7 @@ export default function RekordboxGapsPage() {
     setDownloadingId(track.id);
     const result = await startSoundCloudDownload(track.download_url);
     setDownloadingId(null);
-    if (!result.ok) setRowError({ id: track.id, message: result.error });
+    if (!result.ok) setRowError({ run: Date.now(), title: "Couldn't start the download", message: `${track.title}: ${result.error}` });
   };
 
   // For the local runner: only gates for tracks you don't have, so it never
@@ -186,7 +194,7 @@ export default function RekordboxGapsPage() {
 
   if (!canUse) {
     return (
-      <PageContainer maxWidth="default">
+      <PageContainer kind="list">
         <PageHeader title="Rekordbox gaps" description="Find what you like on SoundCloud but don't have in Rekordbox." />
         <EmptyState
           title="Not available on this account"
@@ -197,12 +205,23 @@ export default function RekordboxGapsPage() {
   }
 
   return (
-    <PageContainer maxWidth="default">
+    <PageContainer kind="list">
       <PageHeader title="Rekordbox gaps" description="Find what you like on SoundCloud but don't have in Rekordbox, and where to get it." />
+
+      {rowError ? (
+        <ResultPanel
+          key={rowError.run}
+          status="error"
+          title={rowError.title}
+          description={rowError.message}
+          onDismiss={() => setRowError(null)}
+          className="mb-6"
+        />
+      ) : null}
 
       <div className={hasQueue ? "pb-24 lg:grid lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-6 lg:pb-0" : undefined}>
         <div className="min-w-0 space-y-6">
-          <Card className="space-y-4 p-4 sm:p-6">
+          <Panel className="space-y-4">
             <Field
               label="Rekordbox collection (XML)"
               hint="In Rekordbox: File → Export Collection in xml format. The file is read in this browser tab and never uploaded."
@@ -234,7 +253,7 @@ export default function RekordboxGapsPage() {
               )}
             </Field>
 
-            <Select label="SoundCloud source" value={source} onChange={(e) => { setSource(e.target.value); setVisible(ROW_STEP); }}>
+            <Select label="SoundCloud source" value={source} onChange={(e) => { setSource(e.target.value); setQuery(""); setVisible(ROW_STEP); }}>
               <option value={LIKES}>Liked Tracks</option>
               {playlists.map((p) => (
                 <option key={p.id} value={String(p.id)}>
@@ -242,7 +261,7 @@ export default function RekordboxGapsPage() {
                 </option>
               ))}
             </Select>
-          </Card>
+          </Panel>
 
           {!collection ? (
             <EmptyState
@@ -257,104 +276,121 @@ export default function RekordboxGapsPage() {
               ))}
             </div>
           ) : (
-            <section aria-labelledby="gaps-results" className="space-y-4">
-              <h2 id="gaps-results" className="text-xl font-bold text-foreground">
-                {sourceTitle}
-              </h2>
-              <p className="text-sm text-muted-foreground" role="status">
-                Of {results.length.toLocaleString()} tracks: {counts.owned.toLocaleString()} already in Rekordbox ·{" "}
-                {counts["other-version"].toLocaleString()} in a different version · {counts.missing.toLocaleString()} missing
-              </p>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                <div className="sm:w-72">
-                  <Select label="Show" value={show} onChange={(e) => { setShow(e.target.value as MatchKind); setVisible(ROW_STEP); }}>
-                    {(Object.keys(SHOW_LABELS) as MatchKind[]).map((k) => (
-                      <option key={k} value={k}>
-                        {SHOW_LABELS[k]} ({counts[k].toLocaleString()})
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {wantedDirect.length > 0 && (
-                    <Button
-                      onClick={() =>
-                        queue.begin(
-                          `${sourceTitle} (not in Rekordbox)`,
-                          wantedDirect.map((r) => ({
-                            trackId: r.track.id,
-                            title: r.track.title,
-                            artist: r.track.user?.username ?? "",
-                            downloadUrl: r.track.download_url!,
-                          })),
-                        )
-                      }
-                      disabled={queue.state.running}
-                    >
-                      <Download className="h-4 w-4" aria-hidden="true" />
-                      Download direct ({wantedDirect.length})
-                    </Button>
-                  )}
-                  {wantedGates.length > 0 && (
-                    <Button variant="secondary" onClick={() => setWalking((w) => !w)} aria-expanded={walking}>
-                      <ListChecks className="h-4 w-4" aria-hidden="true" />
-                      Work through gates ({wantedGates.length})
-                    </Button>
-                  )}
-                  {wantedHypeddit.length > 0 && (
-                    <Button variant="secondary" onClick={exportHypedditQueue}>
-                      <Zap className="h-4 w-4" aria-hidden="true" />
-                      Export Hypeddit queue ({wantedHypeddit.length})
-                    </Button>
-                  )}
-                  <Button variant="secondary" onClick={exportShoppingList} disabled={counts.missing + counts["other-version"] === 0}>
-                    <FileDown className="h-4 w-4" aria-hidden="true" />
-                    Export shopping list (CSV)
-                  </Button>
-                </div>
-              </div>
-              {wanted.length > 0 && (
-                <p className="text-sm text-muted-foreground">
-                  Download, Hypeddit queue and shopping list cover everything not in Rekordbox: the{" "}
-                  {counts.missing.toLocaleString()} missing and the {counts["other-version"].toLocaleString()} in a
-                  different version. The Hypeddit queue is a file for the local Hypeddit runner.
-                </p>
-              )}
-              {walking && wantedGates.length > 0 && (
-                <GateWalkthrough gates={wantedGates} onClose={() => setWalking(false)} />
-              )}
-
-              <Card className="p-4 sm:p-6">
-                {shown.length === 0 ? (
-                  <EmptyState title={`Nothing ${SHOW_LABELS[show].toLowerCase()}`} description="Change “Show” to see the other groups." />
-                ) : (
-                  <ul className="space-y-2" aria-label={SHOW_LABELS[show]}>
-                    {shown.slice(0, visible).map(({ track, match, status }) => (
-                      <li key={track.id}>
-                        <GapRow
-                          track={track}
-                          match={match}
-                          status={status}
-                          downloading={downloadingId === track.id}
-                          onDownload={() => downloadOne(track, status)}
-                        />
-                        {rowError?.id === track.id && (
-                          <InlineAlert variant="error" className="mt-1" onDismiss={() => setRowError(null)}>
-                            {`${track.title}: ${rowError.message}`}
-                          </InlineAlert>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {shown.length > visible && (
-                  <div className="pt-3 text-center">
-                    <Button variant="secondary" onClick={() => setVisible((n) => n + ROW_STEP)}>
-                      Show {Math.min(ROW_STEP, shown.length - visible)} more of {shown.length - visible}
+            <div className="space-y-6">
+              <Panel title={sourceTitle}>
+                <div className="space-y-4">
+                  <p className="text-sm text-muted-foreground" role="status">
+                    Of {results.length.toLocaleString()} tracks: {counts.owned.toLocaleString()} already in Rekordbox ·{" "}
+                    {counts["other-version"].toLocaleString()} in a different version · {counts.missing.toLocaleString()} missing
+                  </p>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                  <div className="sm:w-72">
+                    <Select label="Show" value={show} onChange={(e) => { setShow(e.target.value as MatchKind); setVisible(ROW_STEP); }}>
+                      {(Object.keys(SHOW_LABELS) as MatchKind[]).map((k) => (
+                        <option key={k} value={k}>
+                          {SHOW_LABELS[k]} ({counts[k].toLocaleString()})
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    {wantedDirect.length > 0 && (
+                      <Button
+                        onClick={() =>
+                          queue.begin(
+                            `${sourceTitle} (not in Rekordbox)`,
+                            wantedDirect.map((r) => ({
+                              trackId: r.track.id,
+                              title: r.track.title,
+                              artist: r.track.user?.username ?? "",
+                              downloadUrl: r.track.download_url!,
+                            })),
+                          )
+                        }
+                        disabled={queue.state.running}
+                      >
+                        <Download className="h-4 w-4" aria-hidden="true" />
+                        Download direct ({wantedDirect.length})
+                      </Button>
+                    )}
+                    {wantedGates.length > 0 && (
+                      <Button variant="secondary" onClick={() => setWalking((w) => !w)} aria-expanded={walking}>
+                        <ListChecks className="h-4 w-4" aria-hidden="true" />
+                        Work through gates ({wantedGates.length})
+                      </Button>
+                    )}
+                    {wantedHypeddit.length > 0 && (
+                      <Button variant="secondary" onClick={exportHypedditQueue}>
+                        <Zap className="h-4 w-4" aria-hidden="true" />
+                        Export Hypeddit queue ({wantedHypeddit.length})
+                      </Button>
+                    )}
+                    <Button variant="secondary" onClick={exportShoppingList} disabled={counts.missing + counts["other-version"] === 0}>
+                      <FileDown className="h-4 w-4" aria-hidden="true" />
+                      Export shopping list (CSV)
                     </Button>
                   </div>
+                </div>
+                {wanted.length > 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    Download, Hypeddit queue and shopping list cover everything not in Rekordbox: the{" "}
+                    {counts.missing.toLocaleString()} missing and the {counts["other-version"].toLocaleString()} in a
+                    different version. The Hypeddit queue is a file for the local Hypeddit runner.
+                  </p>
                 )}
-              </Card>
+              {walking && wantedGates.length > 0 && (
+                  <GateWalkthrough gates={wantedGates} onClose={() => setWalking(false)} />
+                )}
+                </div>
+              </Panel>
+
+              <Panel>
+                <div className="space-y-4">
+                  {ofKind.length > 0 && (
+                    <ListSearch
+                      label="Search tracks"
+                      value={query}
+                      onChange={(value) => {
+                        setQuery(value);
+                        setVisible(ROW_STEP);
+                      }}
+                      shown={shown.length}
+                      total={ofKind.length}
+                      noun={ofKind.length === 1 ? "track" : "tracks"}
+                    />
+                  )}
+                  {ofKind.length === 0 ? (
+                    <EmptyState title={`Nothing ${SHOW_LABELS[show].toLowerCase()}`} description="Change “Show” to see the other groups." />
+                  ) : shown.length === 0 ? (
+                    <EmptyState
+                      className="min-h-[160px] py-8"
+                      title="No tracks match your search"
+                      description="Try fewer or different words."
+                    />
+                  ) : (
+                    <ul className="space-y-2" aria-label={SHOW_LABELS[show]}>
+                      {shown.slice(0, visible).map(({ track, match, status }) => (
+                        <li key={track.id}>
+                          <GapRow
+                            track={track}
+                            match={match}
+                            status={status}
+                            downloading={downloadingId === track.id}
+                            onDownload={() => downloadOne(track, status)}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {shown.length > visible && (
+                    <div className="text-center">
+                      <Button variant="secondary" onClick={() => setVisible((n) => n + ROW_STEP)}>
+                        Show {Math.min(ROW_STEP, shown.length - visible)} more of {shown.length - visible}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </Panel>
               <p className="text-sm text-muted-foreground">
                 Matching is by title, artist and version. Remixes count as different versions; extended mixes and
                 radio edits count as the same record. Check a match by hand before buying twice.{" "}
@@ -362,7 +398,7 @@ export default function RekordboxGapsPage() {
                   Back to Downloads
                 </Link>
               </p>
-            </section>
+            </div>
           )}
         </div>
 
