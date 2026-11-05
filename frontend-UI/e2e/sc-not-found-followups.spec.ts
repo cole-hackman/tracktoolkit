@@ -99,11 +99,16 @@ test("likes-to-playlist: a 409 PLAYLIST_NOT_FOUND clears the target and shows th
   await page.getByRole("checkbox", { name: "Sample Track 1" }).check();
   await page.getByRole("button", { name: "Existing playlist" }).click();
   await page.getByRole("button", { name: "Choose a playlist…" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: /Sample Playlist 3/ }).click();
+  // The shared PlaylistPicker's rows are radios, not aria-pressed buttons.
+  await page.getByRole("dialog").getByRole("radio", { name: /Sample Playlist 3/ }).click();
   await expect(page.getByRole("button", { name: /Change/ })).toBeVisible();
 
   await page.getByRole("button", { name: "Add to Playlist" }).last().click();
 
-  await expect(page.getByRole("alert").filter({ hasText: TARGET_REASON })).toBeVisible();
+  // The failure is the shared result panel above the tool (focused, spoken
+  // through the live region) rather than a role="alert" notice.
+  const result = page.getByRole("region", { name: "Couldn't add the tracks" });
+  await expect(result).toContainText(TARGET_REASON);
+  await expect(result).toBeFocused();
   await expect(page.getByRole("button", { name: "Choose a playlist…" })).toBeVisible();
 });

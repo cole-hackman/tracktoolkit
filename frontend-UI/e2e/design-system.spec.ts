@@ -163,3 +163,59 @@ test("combine: a failed delete after merge is a partial result listing each fail
   await expect(result).toContainText("1 playlist could not be deleted");
   await expect(result).toContainText("ID 2: Forbidden");
 });
+
+test("likes-to-playlist: search filters every like, select-all takes only the matches", async ({ page }) => {
+  await mockApi(page);
+  const likes = Array.from({ length: 80 }, (_, i) => ({
+    id: 500 + i,
+    title: i === 71 ? "Deep Café Session" : `Liked Track ${i + 1}`,
+    user: { username: i % 2 === 0 ? "even artist" : "odd artist" },
+    artwork_url: null,
+    duration: 180000,
+  }));
+  await page.route(
+    (url) => url.pathname === "/api/likes",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ collection: likes, total: likes.length }),
+      }),
+  );
+  await page.goto("/likes-to-playlist/");
+
+  const search = page.getByRole("searchbox", { name: "Search your liked tracks" });
+  // Matches on the artist as well as the title, and ignores accents.
+  await search.fill("cafe");
+  await expect(page.getByText("Showing 1 of 80 tracks")).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Deep Café Session" })).toBeVisible();
+
+  await search.fill("odd artist");
+  await expect(page.getByText("Showing 40 of 80 tracks")).toBeVisible();
+  await page.getByRole("button", { name: "Select all 40 shown" }).click();
+  await expect(page.getByText("40", { exact: true })).toBeVisible();
+
+  await search.fill("");
+  await expect(page.getByRole("checkbox", { name: "Liked Track 2", exact: true })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Liked Track 1", exact: true })).not.toBeChecked();
+  await expectNoBlockingViolations(page);
+});
+
+test("likes-to-playlist: creating a playlist keeps the tool and focuses the result", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/likes-to-playlist/");
+  await page.getByRole("checkbox", { name: "Sample Track 1" }).check();
+  await page.getByLabel("Playlist name").fill("From my likes");
+  await page.getByRole("button", { name: "Create Playlist" }).last().click();
+
+  const result = page.getByRole("region", { name: "Playlist Created!" });
+  await expect(result).toBeFocused();
+  await expect(result).toContainText('"From my likes" has been created with 1 tracks.');
+  await expect(result.getByRole("link", { name: "Open in SoundCloud" })).toHaveAttribute(
+    "href",
+    "https://soundcloud.com/testuser/sets/sample-playlist-9",
+  );
+  await expect(page.locator("#app-live-region")).toHaveText("Playlist created");
+  await expect(page.getByRole("searchbox", { name: "Search your liked tracks" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Sample Track 1" })).not.toBeChecked();
+});
