@@ -6,18 +6,16 @@ import { useQueryClient } from "@tanstack/react-query";
 import { apiFetch, errorMessageFromBody } from "@/lib/api";
 import { invalidatePlaylistCaches } from "@/lib/queries";
 import {
+  ActionBar,
   Button,
   Card,
-  CardContent,
-  CardHeader,
   Field,
   InlineAlert,
   Input,
   PageContainer,
   PageHeader,
+  Panel,
   ResultPanel,
-  SectionHeading,
-  useAnnounce,
 } from "@/components/ui";
 
 interface ClonedPlaylist {
@@ -59,7 +57,6 @@ function copyGapMessage(stats: Record<string, unknown> | null): string | null {
 }
 
 export default function PlaylistClonerPage() {
-  const announce = useAnnounce();
   const queryClient = useQueryClient();
   const [url, setUrl] = useState("");
   const [customTitle, setCustomTitle] = useState("");
@@ -82,6 +79,10 @@ export default function PlaylistClonerPage() {
   // Results
   const [resultPlaylists, setResultPlaylists] = useState<ClonedPlaylist[]>([]);
   const [stats, setStats] = useState<Record<string, unknown> | null>(null);
+  // What the result panel says first (the sentence that used to be announced);
+  // `runCount` is the panel's key so every run mounts a fresh one.
+  const [resultNote, setResultNote] = useState<{ description: string; announcement?: string } | null>(null);
+  const runCount = useRef(0);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -95,6 +96,8 @@ export default function PlaylistClonerPage() {
     if (data?.code !== "CLONE_PARTIAL" || !Array.isArray(data.playlists) || data.playlists.length === 0) return false;
     setResultPlaylists(data.playlists);
     setStats(data.stats ?? { partial: true });
+    // The reason the copy stopped is the panel's description.
+    setResultNote({ description: errorMessageFromBody(data, "The copy stopped before it finished.") });
     void invalidatePlaylistCaches(queryClient);
     return true;
   };
@@ -112,6 +115,8 @@ export default function PlaylistClonerPage() {
     setError(null);
     setResultPlaylists([]);
     setStats(null);
+    setResultNote(null);
+    runCount.current += 1;
 
     try {
       const body: Record<string, string> = { url: url.trim() };
@@ -145,14 +150,13 @@ export default function PlaylistClonerPage() {
       setUrl("");
       setCustomTitle("");
       const gap = copyGapMessage(data.stats);
-      announce(
+      setResultNote(
         gap
-          ? `Cloned into ${plural(created.length, "playlist")}. ${gap}`
-          : `Cloned ${data.stats?.copiedTracks ?? data.stats?.totalTracks ?? 0} tracks into ${plural(created.length, "playlist")}.`,
+          ? { description: `Cloned into ${plural(created.length, "playlist")}.`, announcement: `Cloned into ${plural(created.length, "playlist")}. ${gap}` }
+          : { description: `Cloned ${data.stats?.copiedTracks ?? data.stats?.totalTracks ?? 0} tracks into ${plural(created.length, "playlist")}.` },
       );
     } catch (err: unknown) {
-      // `InlineAlert variant="error"` is `role="alert"` and is spoken on
-      // insertion, so an `announce` alongside it would say this twice.
+      // The error result panel speaks this itself.
       setError(err instanceof Error ? err.message : "An unexpected error occurred");
     } finally {
       setIsCloning(false);
@@ -172,6 +176,8 @@ export default function PlaylistClonerPage() {
     setError(null);
     setResultPlaylists([]);
     setStats(null);
+    setResultNote(null);
+    runCount.current += 1;
 
     try {
       const body: Record<string, string> = { url: likesUrl.trim() };
@@ -200,9 +206,9 @@ export default function PlaylistClonerPage() {
       setLikesUrl("");
       setLikesTitle("");
       void invalidatePlaylistCaches(queryClient);
-      announce(
-        `Cloned ${data.stats?.totalTracks ?? 0} liked tracks into ${created.length} playlist${created.length === 1 ? "" : "s"}.`,
-      );
+      setResultNote({
+        description: `Cloned ${data.stats?.totalTracks ?? 0} liked tracks into ${created.length} playlist${created.length === 1 ? "" : "s"}.`,
+      });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "An unexpected error occurred");
     } finally {
@@ -211,24 +217,50 @@ export default function PlaylistClonerPage() {
   };
 
   return (
-    <PageContainer maxWidth="narrow">
+    <PageContainer kind="form">
       <PageHeader
         title="Playlist Cloner"
         description="Clone a playlist, or all of someone's likes, into your own account."
       />
 
-      <Card className="mb-8">
-        <CardHeader>
-          <SectionHeading className="text-base">
-            <span className="flex items-center gap-2">
-              <Link2 aria-hidden="true" className="h-4 w-4 text-primary" />
-              Clone a playlist
-            </span>
-          </SectionHeading>
-        </CardHeader>
-        <CardContent>
+      <div className="space-y-6">
+      {resultPlaylists.length > 0 ? (
+        <ResultPanel
+          key={runCount.current}
+          status={
+            stats?.partial === true || stats?.truncated === true || copyGapMessage(stats) ? "partial" : "success"
+          }
+          title={stats?.partial === true || stats?.truncated === true || copyGapMessage(stats) ? "Partly cloned" : "Cloning Complete"}
+          description={resultNote?.description}
+          announcement={resultNote?.announcement}
+          onDismiss={() => {
+            setResultPlaylists([]);
+            setStats(null);
+            setResultNote(null);
+          }}
+        >
+          <ResultBody stats={stats} resultPlaylists={resultPlaylists} />
+        </ResultPanel>
+      ) : error ? (
+        <ResultPanel
+          key={runCount.current}
+          status="error"
+          title="Could not clone"
+          description={error}
+          onDismiss={() => setError(null)}
+        />
+      ) : null}
+
+      <Panel
+        title={
+          <span className="flex items-center gap-2">
+            <Link2 aria-hidden="true" className="h-4 w-4 text-primary" />
+            Clone a playlist
+          </span>
+        }
+      >
         {/* `noValidate` so the required check is ours: see `urlError`. */}
-        <form onSubmit={handleClone} noValidate className="space-y-6">
+        <form onSubmit={handleClone} noValidate>
           <div className="space-y-4">
             <Field
               label="Original playlist URL"
@@ -272,40 +304,33 @@ export default function PlaylistClonerPage() {
             </Field>
           </div>
 
-          <Button type="submit" disabled={isCloning || isCloningLikes} className="w-full sm:w-auto">
-            {isCloning ? (
-              <>
-                <Loader2 aria-hidden="true" className="w-4 h-4 animate-spin" />
-                Cloning...
-              </>
-            ) : (
-              <>
-                <CopyPlus aria-hidden="true" className="w-4 h-4" />
-                Clone Playlist
-              </>
-            )}
-          </Button>
+          <ActionBar>
+            <Button type="submit" disabled={isCloning || isCloningLikes} className="w-full sm:w-auto">
+              {isCloning ? (
+                <>
+                  <Loader2 aria-hidden="true" className="w-4 h-4 animate-spin" />
+                  Cloning...
+                </>
+              ) : (
+                <>
+                  <CopyPlus aria-hidden="true" className="w-4 h-4" />
+                  Clone Playlist
+                </>
+              )}
+            </Button>
+          </ActionBar>
         </form>
+      </Panel>
 
-        {error && (
-          <InlineAlert variant="error" className="mt-4" onDismiss={() => setError(null)}>
-            {error}
-          </InlineAlert>
-        )}
-        </CardContent>
-      </Card>
-
-      <Card className="mb-8">
-        <CardHeader>
-          <SectionHeading className="text-base">
-            <span className="flex items-center gap-2">
-              <Heart aria-hidden="true" className="h-4 w-4 text-primary" />
-              Clone someone&apos;s likes
-            </span>
-          </SectionHeading>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleCloneLikes} noValidate className="space-y-6">
+      <Panel
+        title={
+          <span className="flex items-center gap-2">
+            <Heart aria-hidden="true" className="h-4 w-4 text-primary" />
+            Clone someone&apos;s likes
+          </span>
+        }
+      >
+          <form onSubmit={handleCloneLikes} noValidate>
             <div className="space-y-4">
               <Field
                 label="Profile URL"
@@ -349,30 +374,38 @@ export default function PlaylistClonerPage() {
               </Field>
             </div>
 
-            <Button type="submit" disabled={isCloningLikes || isCloning} className="w-full sm:w-auto">
-              {isCloningLikes ? (
-                <>
-                  <Loader2 aria-hidden="true" className="w-4 h-4 animate-spin" />
-                  Cloning likes...
-                </>
-              ) : (
-                <>
-                  <Heart aria-hidden="true" className="w-4 h-4" />
-                  Clone Likes
-                </>
-              )}
-            </Button>
+            <ActionBar>
+              <Button type="submit" disabled={isCloningLikes || isCloning} className="w-full sm:w-auto">
+                {isCloningLikes ? (
+                  <>
+                    <Loader2 aria-hidden="true" className="w-4 h-4 animate-spin" />
+                    Cloning likes...
+                  </>
+                ) : (
+                  <>
+                    <Heart aria-hidden="true" className="w-4 h-4" />
+                    Clone Likes
+                  </>
+                )}
+              </Button>
+            </ActionBar>
           </form>
-        </CardContent>
-      </Card>
+      </Panel>
+      </div>
+    </PageContainer>
+  );
+}
 
-      {resultPlaylists.length > 0 && (
-        <ResultPanel
-          title={stats?.partial === true ? "Partly cloned" : "Cloning Complete"}
-          tone={stats?.partial === true ? "neutral" : "success"}
-          className="animate-in fade-in slide-in-from-bottom-4 duration-500"
-        >
-          <div className="space-y-6">
+function ResultBody({
+  stats,
+  resultPlaylists,
+}: {
+  stats: Record<string, unknown> | null;
+  resultPlaylists: ClonedPlaylist[];
+}) {
+  return (
+    <>
+
             {stats?.truncated === true && (
               <InlineAlert variant="warning">
                 SoundCloud stopped listing likes before the end, so only {String(stats?.totalTracks ?? 0)} were copied. Running it again makes a new full copy, not just the rest.
@@ -441,9 +474,6 @@ export default function PlaylistClonerPage() {
                 </Card>
               ))}
             </div>
-          </div>
-        </ResultPanel>
-      )}
-    </PageContainer>
+    </>
   );
 }
