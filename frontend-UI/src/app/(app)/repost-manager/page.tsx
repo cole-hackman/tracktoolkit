@@ -34,6 +34,7 @@ import { apiFetch } from "@/lib/api";
 import { removeItemsFromRepostsCache } from "@/lib/queries";
 import { useProgressiveReposts, progressiveStatus, selectAllLabel } from "@/lib/progressive";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { matchesSearch, searchTerms } from "@/lib/list-search";
 
 interface Repost {
   id: number;
@@ -206,16 +207,16 @@ export default function RepostManagerPage() {
   const debouncedKeepList = useDebouncedValue(keepList, 150);
 
   const filteredReposts = useMemo(() => {
-    const query = debouncedSearch.toLowerCase();
+    // The shared rule (lib/list-search.ts): case- and accent-insensitive,
+    // every word must appear in the title or the artist.
+    const terms = searchTerms(debouncedSearch);
 
     // Precompute each repost's sort timestamp once instead of parsing
     // `created_at` into a Date twice per comparison inside .sort().
     const withSortKey = reposts
       .filter(
         (r) =>
-          !query ||
-          r.title.toLowerCase().includes(query) ||
-          r.user?.username?.toLowerCase().includes(query)
+          matchesSearch(`${r.title ?? ""} ${r.user?.username ?? ""}`, terms)
       )
       .map((r) => ({
         repost: r,

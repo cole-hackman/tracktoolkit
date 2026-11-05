@@ -26,6 +26,7 @@ import { apiFetch } from "@/lib/api";
 import { invalidateDashboardSummary, removeTracksFromLikesCache } from "@/lib/queries";
 import { useProgressiveLikes, progressiveStatus, selectAllLabel } from "@/lib/progressive";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { matchesSearch, searchTerms } from "@/lib/list-search";
 
 interface Track {
   id: number;
@@ -217,16 +218,16 @@ export default function LikeManagerPage() {
   const debouncedSearch = useDebouncedValue(search, 150);
 
   const filteredLikes = useMemo(() => {
-    const query = debouncedSearch.toLowerCase();
+    // The shared rule (lib/list-search.ts): case- and accent-insensitive,
+    // every word must appear in the title or the artist.
+    const terms = searchTerms(debouncedSearch);
 
     // Precompute each track's sort key once instead of parsing `liked_at`
     // into a Date twice per comparison inside .sort().
     const withSortKey = likes
       .filter(
         (l) =>
-          !query ||
-          l.track.title.toLowerCase().includes(query) ||
-          l.track.user?.username?.toLowerCase().includes(query)
+          matchesSearch(`${l.track.title ?? ""} ${l.track.user?.username ?? ""}`, terms)
       )
       .filter((l) => genreFilter === "All" || l.track.genre === genreFilter)
       .filter((l) => {

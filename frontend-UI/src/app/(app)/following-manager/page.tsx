@@ -26,6 +26,7 @@ import { apiFetch } from "@/lib/api";
 import { invalidateDashboardSummary, removeUsersFromFollowingsCache } from "@/lib/queries";
 import { useProgressiveFollowings, useProgressiveFollowers, progressiveStatus, selectAllLabel } from "@/lib/progressive";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
+import { matchesSearch, searchTerms } from "@/lib/list-search";
 
 interface Following {
   id: number;
@@ -247,7 +248,9 @@ export default function FollowingManagerPage() {
   const debouncedSearch = useDebouncedValue(search, 150);
 
   const filteredFollowings = useMemo(() => {
-    const query = debouncedSearch.toLowerCase();
+    // The shared rule (lib/list-search.ts): case- and accent-insensitive,
+    // every word must appear in the username.
+    const terms = searchTerms(debouncedSearch);
 
     const getParseableTime = (d?: string | null) => {
       if (!d) return 0;
@@ -263,9 +266,9 @@ export default function FollowingManagerPage() {
     // (with the Safari fallback regex) twice per comparison inside .sort().
     const withSortKey = followings
       .filter((f) => {
-        const matchesSearch = !query || f.username?.toLowerCase().includes(query);
+        const matchesQuery = matchesSearch(f.username ?? "", terms);
         const matchesFilter = filterMode === "all" || !followers.has(f.id);
-        return matchesSearch && matchesFilter;
+        return matchesQuery && matchesFilter;
       })
       .map((f) => ({ following: f, lastModifiedMs: getParseableTime(f.last_modified) }));
 

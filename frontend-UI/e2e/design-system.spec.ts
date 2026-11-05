@@ -219,3 +219,40 @@ test("likes-to-playlist: creating a playlist keeps the tool and focuses the resu
   await expect(page.getByRole("searchbox", { name: "Search your liked tracks" })).toBeVisible();
   await expect(page.getByRole("checkbox", { name: "Sample Track 1" })).not.toBeChecked();
 });
+
+test("like-manager: search is accent-insensitive and a partly failed unlike is a partial result", async ({ page }) => {
+  await mockApi(page);
+  await page.route(
+    (url) => url.pathname === "/api/likes/tracks/bulk-unlike",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          results: [
+            { trackId: 100, status: "ok" },
+            { trackId: 101, status: "error", error: "Forbidden" },
+          ],
+        }),
+      }),
+  );
+  await page.goto("/like-manager/");
+
+  const search = page.getByRole("searchbox", { name: /search/i });
+  // Every word must match, in any order, across title and artist.
+  await search.fill("testartist track 1");
+  await expect(page.getByRole("checkbox", { name: "Sample Track 1" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Sample Track 2" })).toHaveCount(0);
+  await search.fill("");
+
+  await page.getByRole("checkbox", { name: "Sample Track 1" }).check();
+  await page.getByRole("checkbox", { name: "Sample Track 2" }).check();
+  await page.getByRole("button", { name: "Unlike Selected" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Unlike", exact: true }).click();
+
+  const result = page.getByRole("region", { name: "Some tracks could not be unliked" });
+  await expect(result).toBeFocused();
+  await expect(result).toHaveAttribute("data-result-status", "partial");
+  await expect(result).toContainText("Unliked 1 of 2 tracks. Some tracks could not be removed.");
+  await expectNoBlockingViolations(page);
+});
