@@ -144,6 +144,10 @@ test("the five-seed limit is reported at the seed list: /growth/", async ({ page
       .getByRole("alert")
       .filter({ hasText: "You can select a maximum of 5 seed users." }),
   ).toBeVisible();
+
+  // Freeing a slot clears it, so it cannot come back stale later.
+  await page.getByRole("checkbox", { name: "seed-6", exact: true }).uncheck();
+  await expect(page.getByText("You can select a maximum of 5 seed users.")).toHaveCount(0);
 });
 
 test("discovery results search filters every suggestion; select all acts on the matches: /growth/", async ({
@@ -305,7 +309,7 @@ test("history: sessions and a session's actions are searchable; nothing to unfol
   await expect(page.getByRole("checkbox", { name: "kick-drum" })).not.toBeChecked();
   // Audited with the destructive selection banner showing: its button used
   // to be white on #ef4444 (3.76:1) and is now on the destructive tokens.
-  await expect(page.getByRole("button", { name: /Unfollow Selected|Unfollow/ }).last()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Undo/Reverse Selected" })).toBeVisible();
   await expectNoBlockingViolations(page);
   await page.getByRole("checkbox", { name: "hat-loop" }).uncheck();
 

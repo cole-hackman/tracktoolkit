@@ -380,6 +380,7 @@ export default function GrowthPage() {
     mutationFn: async (payload: { inspirationUserIds: number[]; strategy: string; genre?: string }) => {
       setDiscoveryStartedAt(Date.now());
       setOutcome(null);
+      setSeedLimitError(null);
       setDiscoveryStep(2);
       const res = await apiFetch("/api/growth/discover", {
         method: "POST",
@@ -714,6 +715,8 @@ export default function GrowthPage() {
       const next = new Set(prev);
       if (next.has(id)) {
         next.delete(id);
+        // Room for another seed again, so the limit message no longer applies.
+        setSeedLimitError(null);
       } else {
         if (next.size >= 5) {
           setSeedLimitError("You can select a maximum of 5 seed users.");
@@ -878,6 +881,9 @@ export default function GrowthPage() {
             status={outcome.status}
             title={outcome.title}
             description={outcome.description}
+            // The sentence alone, as the old notice was read: several titles
+            // ("Engagement started") are also how the sentence begins.
+            announcement={outcome.description}
             onDismiss={() => setOutcome(null)}
           />
         ) : null}
@@ -907,6 +913,7 @@ export default function GrowthPage() {
                 <Button nowrap
                   onClick={() => {
                     setSelectedInspirations(new Set());
+                    setSeedLimitError(null);
                     setDiscoveryStep(1);
                   }}
                   className="gap-2 shadow-glow-sm"
@@ -1085,7 +1092,10 @@ export default function GrowthPage() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => setSelectedInspirations(new Set())}
+                            onClick={() => {
+                              setSelectedInspirations(new Set());
+                              setSeedLimitError(null);
+                            }}
                             className="text-primary-text"
                           >
                             Clear Selection
