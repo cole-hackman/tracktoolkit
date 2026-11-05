@@ -235,7 +235,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (stored !== null) setSidebarCollapsed(stored === "true");
   }, []);
 
-  const toggleSidebar = () => {
+  const toggleSidebar = (event?: React.MouseEvent) => {
+    // A mouse click on the toggle means the pointer is over the rail, so the
+    // rail is hovered whatever `isHovered` says. It can say otherwise when the
+    // pointer arrived before hydration attached `onMouseEnter`; collapsing
+    // then pulled the rail out from under the pointer (sidebar.spec.ts:75
+    // failed about 2 runs in 3, on main as well).
+    if (event && event.detail > 0) setIsHovered(true);
     const next = !sidebarCollapsed;
     setSidebarCollapsed(next);
     localStorage.setItem("sc-toolkit-sidebar-collapsed", String(next));
