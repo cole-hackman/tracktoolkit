@@ -73,7 +73,7 @@ export const READY: Record<string, ReadyLocator> = {
   // The scan results — summary bar, filter pills, per-row badges — only
   // exist once a playlist is picked.
   "/playlist-health-check/": async (page) => {
-    await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+    await page.getByRole("radio", { name: /Sample Playlist 1/ }).click();
     return page.getByRole("group", { name: "Filter tracks" });
   },
   // The format select and the preview only exist after the list is loaded.

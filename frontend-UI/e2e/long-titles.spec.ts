@@ -309,7 +309,7 @@ const CASES: Case[] = [
   {
     path: "/playlist-health-check/",
     drive: async (page) => {
-      await page.getByRole("button", { name: new RegExp(LONG.slice(0, 30)) }).first().click();
+      await page.getByRole("radio", { name: new RegExp(LONG.slice(0, 30)) }).first().click();
       await page.getByRole("group", { name: "Filter tracks" }).waitFor();
     },
     proof: async (page) => expect(page.locator("main")).toContainText(LONG),
