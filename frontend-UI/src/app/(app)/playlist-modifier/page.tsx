@@ -33,7 +33,6 @@ import {
   ResultPanel,
   Select,
   Skeleton,
-  ToolLayout,
   type ResultStatus,
 } from "@/components/ui";
 import { PlaylistPicker } from "@/components/playlists/PlaylistPicker";
@@ -442,13 +441,14 @@ export default function PlaylistModifierPage() {
         playlists.find((p) => p.id === targetId)?.title ||
         "playlist";
 
-      if (data.noop && typeof data.message === "string") {
-        setOutcome(makeOutcome("empty", "Nothing to change", data.message));
-      } else if (transfer.action === "move") {
-        setOutcome(makeOutcome("success", "Track moved", `Track moved to “${targetTitle}”.`));
-      } else {
-        setOutcome(makeOutcome("success", "Track duplicated", `Track duplicated to “${targetTitle}”.`));
-      }
+      // Held until the dialog has closed: the result panel takes focus when
+      // it mounts, and behind an open modal that focus would be lost.
+      const transferOutcome =
+        data.noop && typeof data.message === "string"
+          ? makeOutcome("empty", "Nothing to change", data.message)
+          : transfer.action === "move"
+            ? makeOutcome("success", "Track moved", `Track moved to “${targetTitle}”.`)
+            : makeOutcome("success", "Track duplicated", `Track duplicated to “${targetTitle}”.`);
 
       // Auto-unlike from liked tracks if checkbox was checked
       if (isLikedTracksView && alsoUnlike) {
@@ -464,6 +464,7 @@ export default function PlaylistModifierPage() {
       }
 
       setTransfer(null);
+      setOutcome(transferOutcome);
       if (selectedPlaylist) {
         await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
         await Promise.all([selectedPlaylistQuery.refetch(), playlistsQuery.refetch()]);
@@ -871,7 +872,7 @@ export default function PlaylistModifierPage() {
             label="Search liked tracks"
             value={likedSearch}
             onChange={setLikedSearch}
-            shown={searchedLikedTracks.length}
+            shown={filteredLikedTracks.length}
             total={likedTracks.length}
             noun={likedTracks.length === 1 ? "track" : "tracks"}
             placeholder="Title or artist"
@@ -997,11 +998,22 @@ export default function PlaylistModifierPage() {
           />
         ) : null}
 
-        {showEditor ? (
-          <ToolLayout main={editorPanel ?? likedPanel} aside={playlistPicker} />
-        ) : (
-          playlistPicker
-        )}
+        {/* One tree for both states, so choosing the first playlist does not
+            remount the picker (which dropped keyboard focus and its search).
+            Before a choice the picker is the whole width; after it, it is
+            the sticky aside of the ToolLayout arrangement. */}
+        <div className={showEditor ? "grid gap-6 lg:grid-cols-3" : undefined}>
+          {showEditor ? <div className="min-w-0 lg:col-span-2">{editorPanel ?? likedPanel}</div> : null}
+          <div
+            className={
+              showEditor
+                ? "min-w-0 lg:sticky lg:top-[calc(var(--announcement-h)+1.5rem)] lg:self-start"
+                : undefined
+            }
+          >
+            {playlistPicker}
+          </div>
+        </div>
       </div>
 
       <Dialog
@@ -1125,6 +1137,7 @@ export default function PlaylistModifierPage() {
             <div className="space-y-2">
               <div className="text-sm font-semibold text-foreground">Target playlist</div>
               <PlaylistPicker
+                listLabel="Target playlist"
                 playlists={transferTargetOptions}
                 mode="single"
                 selectedIds={transferTargetId === "" ? [] : [Number(transferTargetId)]}
