@@ -20,6 +20,14 @@ interface SelectableRowProps {
   disabled?: boolean;
   /** `li` inside a `SelectableList`; `div` where the parent is not a list. */
   as?: "li" | "div";
+  /**
+   * `radio` for a pick-one list (a target playlist). The rows then share
+   * `name`, so the arrow keys move the choice the way a native radio group
+   * does, and the row is announced as "radio button, 2 of 14".
+   */
+  type?: "checkbox" | "radio";
+  /** Required with `type="radio"`: the group the rows belong to. */
+  name?: string;
   className?: string;
 }
 
@@ -49,6 +57,8 @@ export function SelectableRow({
   rightSlot,
   disabled = false,
   as: Tag = "li",
+  type = "checkbox",
+  name,
   className,
 }: SelectableRowProps) {
   const reactId = useId();
@@ -107,7 +117,8 @@ export function SelectableRow({
         )}
       >
         <input
-          type="checkbox"
+          type={type}
+          name={type === "radio" ? name : undefined}
           id={inputId}
           checked={selected}
           disabled={disabled}

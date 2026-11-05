@@ -3,7 +3,7 @@
 import { AlertCircle, CheckCircle2, Info, TriangleAlert, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-type InlineAlertVariant = "success" | "warning" | "error" | "info";
+export type InlineAlertVariant = "success" | "warning" | "error" | "info";
 
 interface InlineAlertProps extends React.HTMLAttributes<HTMLDivElement> {
   variant?: InlineAlertVariant;
@@ -12,7 +12,7 @@ interface InlineAlertProps extends React.HTMLAttributes<HTMLDivElement> {
   onDismiss?: () => void;
 }
 
-const variantStyles: Record<InlineAlertVariant, string> = {
+export const inlineAlertVariantStyles: Record<InlineAlertVariant, string> = {
   success:
     "border-green-200 bg-green-50 text-green-900 dark:border-green-900/50 dark:bg-green-950/40 dark:text-green-100",
   warning:
@@ -45,7 +45,7 @@ export function InlineAlert({
       role={variant === "error" ? "alert" : "status"}
       className={cn(
         "flex items-start gap-3 rounded-xl border px-4 py-3 text-sm",
-        variantStyles[variant],
+        inlineAlertVariantStyles[variant],
         className,
       )}
       {...props}
