@@ -146,6 +146,7 @@ export function PlaylistChooser<P extends PickerPlaylist>({
             onChange(chosen);
             setOpen(false);
           }}
+          onReselect={() => setOpen(false)}
           loadError={loadError}
           onRetry={onRetry}
           disabledReasons={disabledReasons}

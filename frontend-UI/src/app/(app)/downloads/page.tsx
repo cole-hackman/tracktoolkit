@@ -267,6 +267,10 @@ export default function DownloadsPage() {
   }, [selectedSource]);
 
   const handleSelectSource = (p: Playlist) => {
+    // The previous source's tracks must not be shown, picked or removed
+    // under the new source's name while its own load; the sync effect
+    // refills this from the cache at once when the new source is cached.
+    setTracks([]);
     setSelectedSource(p);
     setFilter("downloadable");
     setVisibleCount(ROW_STEP);
@@ -740,6 +744,7 @@ export default function DownloadsPage() {
                 selected={isLikedSource}
                 disabled={isRemoving}
                 onChoose={() =>
+                  !isLikedSource &&
                   handleSelectSource({
                     id: LIKED_TRACKS_ID,
                     title: "Liked Tracks",

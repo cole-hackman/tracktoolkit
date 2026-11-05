@@ -121,6 +121,10 @@ export default function PlaylistHealthCheckPage() {
   const selectPlaylist = (playlist: Playlist) => {
     postSaveScanMessage.current = null;
     setOutcome(null);
+    // The previous playlist's tracks must not survive the switch: until the
+    // new ones arrive they would be scanned, announced and offered for
+    // removal under the new playlist's name — and Remove would PUT them to it.
+    setTracks([]);
     setSelectedPlaylist(playlist);
     setFilter("all");
   };
@@ -299,11 +303,11 @@ export default function PlaylistHealthCheckPage() {
 
         {/* The picker stays on screen: switching playlists is one click. */}
         <Panel title="Select a Playlist to Scan">
-          {playlistsQuery.isError ? (
-            <InlineAlert variant="error" className="mb-4">
-              Couldn’t load your playlists. Try refreshing the page.
-            </InlineAlert>
-          ) : null}
+          {/* Locked while a removal saves, so its result cannot land on a
+              playlist picked in the meantime. The picker shows its own load
+              error with Retry. */}
+          <fieldset disabled={saving} className="min-w-0">
+          <legend className="sr-only">Playlists</legend>
           <PlaylistPicker
             playlists={playlists}
             mode="single"
@@ -317,17 +321,27 @@ export default function PlaylistHealthCheckPage() {
             onRetry={() => playlistsQuery.refetch()}
             listClassName="max-h-[40dvh]"
           />
+          </fieldset>
         </Panel>
 
         {selectedPlaylist ? (
           detailErrorText ? (
-            <InlineAlert variant="error">{detailErrorText}</InlineAlert>
+            <InlineAlert variant="error">
+              {detailErrorText}{" "}
+              <button
+                type="button"
+                onClick={() => void playlistDetailQuery.refetch()}
+                className="touch-44 font-semibold underline underline-offset-2"
+              >
+                Retry
+              </button>
+            </InlineAlert>
           ) : (
             <>
               <Panel
                 title={<span className="break-words">{selectedPlaylist.title}</span>}
                 actions={
-                  issueCount > 0 ? (
+                  issueCount > 0 && !loadingTracks ? (
                     <Button
                       onClick={() => {
                         // aria-disabled, not `disabled`: the button stays in the

@@ -36,6 +36,8 @@ export interface PlaylistPickerProps<P extends PickerPlaylist> {
    * on focus moving. `viaPointer` says whether a mouse or touch made it.
    */
   onChange: (next: P[], info: { viaPointer: boolean; changed: P }) => void;
+  /** `single` only: the already-chosen row was activated again (no change). */
+  onReselect?: (playlist: P) => void;
   loading?: boolean;
   loadError?: boolean;
   onRetry?: () => void;
@@ -82,6 +84,7 @@ export function PlaylistPicker<P extends PickerPlaylist>({
   mode,
   selectedIds,
   onChange,
+  onReselect,
   loading = false,
   loadError = false,
   onRetry,
@@ -119,6 +122,12 @@ export function PlaylistPicker<P extends PickerPlaylist>({
     const viaPointer = Boolean(event && (event as React.MouseEvent).detail > 0);
 
     if (mode === "single") {
+      // Choosing the row that is already chosen changes nothing, as with a
+      // radio; pages reset state on a change, so it must not fire.
+      if (selected.has(id)) {
+        onReselect?.(playlist);
+        return;
+      }
       onChange([playlist], { viaPointer, changed: playlist });
       return;
     }

@@ -218,3 +218,36 @@ test.describe("playlist health check: blocked tracks", () => {
     expect(overflow).toBeLessThanOrEqual(0);
   });
 });
+
+test("switching playlists never offers the last playlist's tracks for removal under the new one", async ({ page }) => {
+  await mockApi(page);
+  const seen = await trackPlaylistRoute(page);
+  // Playlist 2 answers slowly, so there is a window in which it is chosen
+  // and its tracks have not arrived.
+  let releaseSecond: () => void = () => {};
+  const secondGate = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  await page.route(
+    (url) => url.pathname === "/api/playlists/2",
+    async (route) => {
+      if (route.request().method() === "PUT") {
+        seen.putBodies.push(route.request().postDataJSON());
+        return route.fulfill(json({}, 500));
+      }
+      await secondGate;
+      return route.fulfill(json({ id: 2, title: "Sample Playlist 2", track_count: 0, tracks: [] }));
+    },
+  );
+  await openHealthCheck(page);
+  const remove = page.getByRole("button", { name: /^Remove \d+ Dead Track/ });
+  await expect(remove).toBeVisible();
+
+  await page.getByRole("button", { name: "Sample Playlist 2", exact: true }).click();
+  // Playlist 1's two unhealthy tracks must not be offered under playlist 2.
+  await expect(remove).toHaveCount(0);
+  releaseSecond();
+  await expect(page.getByRole("region", { name: "Sample Playlist 2" })).toBeVisible();
+  await expect(remove).toHaveCount(0);
+  expect(seen.putBodies).toEqual([]);
+});
