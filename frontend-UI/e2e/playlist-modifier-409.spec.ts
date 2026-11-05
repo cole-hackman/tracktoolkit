@@ -34,7 +34,7 @@ async function setUp(
   );
 
   await page.goto("/playlist-modifier/");
-  await page.getByRole("button", { name: "Sample Playlist 1" }).click();
+  await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).check();
   await page.getByRole("group", { name: "Filter tracks" }).waitFor();
 
   // An unsaved edit: take the first track out.
@@ -61,7 +61,9 @@ test("a PLAYLIST_READ_INCOMPLETE 409 shows the server text, keeps the edit, and 
     expected: 5,
   });
 
-  await expect(page.getByRole("alert").filter({ hasText: reason })).toBeVisible();
+  const failed = page.getByRole("region", { name: "Couldn't save the playlist" });
+  await expect(failed).toContainText(reason);
+  await expect(failed).toBeFocused();
   await expect(page.getByText(/has been reloaded/)).toHaveCount(0);
 
   // The edit is still there, and nothing was fetched after the PUT.
@@ -80,9 +82,9 @@ test("a PLAYLIST_OUT_OF_SYNC 409 reloads the list and says the edits were droppe
     undeclared: 1,
   });
 
-  await expect(
-    page.getByRole("alert").filter({ hasText: "has been reloaded. Your edits were not saved" }),
-  ).toBeVisible();
+  const reloaded = page.getByRole("region", { name: "Playlist reloaded" });
+  await expect(reloaded).toContainText("has been reloaded. Your edits were not saved");
+  await expect(reloaded).toBeFocused();
 
   // Reloaded: the removed track is back, matching the server's list.
   await expect(page.getByText(FIRST_TRACK, { exact: true })).toBeVisible();

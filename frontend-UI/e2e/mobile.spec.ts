@@ -185,7 +185,7 @@ test("playlist-modifier row actions are visible and fit: /playlist-modifier/", a
   await mockApi(page);
   await page.goto("/playlist-modifier/");
 
-  await page.getByRole("button", { name: "Sample Playlist 1" }).click();
+  await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).check();
 
   const moreActions = page.getByRole("button", {
     name: "More actions for Sample Playlist Track 1",
@@ -297,7 +297,7 @@ test("playlist-modifier download control survives a long title: /playlist-modifi
 
   await mockApi(page);
   await page.goto("/playlist-modifier/");
-  await page.getByRole("button", { name: "Sample Playlist 1" }).click();
+  await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).check();
 
   const download = page.getByRole("button", { name: `Download ${LONG_TRACK_TITLE}` });
   await expect(download).toBeVisible();

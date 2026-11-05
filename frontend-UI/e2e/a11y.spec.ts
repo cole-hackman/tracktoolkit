@@ -225,7 +225,7 @@ async function openPlaylistModifierEditor(page: Page) {
   await mockApi(page);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/playlist-modifier/");
-  await page.getByRole("button", { name: "Sample Playlist 1" }).click();
+  await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).check();
   await expect(page.getByRole("group", { name: "Filter tracks" })).toBeVisible();
 }
 

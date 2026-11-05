@@ -42,7 +42,7 @@ export const READY: Record<string, ReadyLocator> = {
   // first click, so neither the audit nor the width measurement described it.
   // Same shape as the other chooser-fronted routes below.
   "/playlist-modifier/": async (page) => {
-    await page.getByRole("button", { name: "Sample Playlist 1" }).click();
+    await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).check();
     return page.getByRole("group", { name: "Filter tracks" });
   },
   // Suspends on `/api/followings`, so the h1 alone resolves against
