@@ -3,24 +3,22 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Heart, Search, Trash2, Loader2 } from "lucide-react";
+import { Heart, Trash2, Loader2 } from "lucide-react";
 import {
   ConfirmDialog,
   EmptyState,
   InlineAlert,
   BulkReviewDetails,
-  LoadingSpinner,
+  ListSearch,
   PageContainer,
   PageHeader,
+  Panel,
+  ResultPanel,
   SelectionBanner,
   Skeleton,
   TrackRow,
-  Card,
-  Input,
-  Field,
   Select,
   ProgressBar,
-  SectionHeading,
   Button
 } from "@/components/ui";
 import { ProgressiveBlur } from "@/components/ui/ProgressiveBlur";
@@ -57,7 +55,19 @@ export default function LikeManagerPage() {
   const [genreFilter, setGenreFilter] = useState("All");
   const [durationFilter, setDurationFilter] = useState("All");
   const [showUnlikeConfirm, setShowUnlikeConfirm] = useState(false);
-  const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  // The outcome of the last bulk run, shown in the result slot under the
+  // header. `id` is a fresh key per run so each outcome mounts a new panel.
+  const [outcome, setOutcome] = useState<{
+    id: number;
+    status: "success" | "partial" | "error";
+    title: string;
+    text: string;
+  } | null>(null);
+  const runCounter = useRef(0);
+  const showOutcome = (status: "success" | "partial" | "error", title: string, text: string) => {
+    runCounter.current += 1;
+    setOutcome({ id: runCounter.current, status, title, text });
+  };
   const [unlikeProgress, setUnlikeProgress] = useState<{
     completed: number;
     total: number;
@@ -86,12 +96,6 @@ export default function LikeManagerPage() {
       }),
     [likesState.items],
   );
-
-  useEffect(() => {
-    if (likesState.error) {
-      setNotice({ type: "error", text: `Couldn't load your liked tracks: ${likesState.error.message}` });
-    }
-  }, [likesState.error]);
 
   const toggleTrack = (id: number, index: number, currentFilteredLikes: Like[], event?: React.MouseEvent | React.KeyboardEvent) => {
     const isShiftKey = event && 'shiftKey' in event && event.shiftKey;
@@ -139,7 +143,7 @@ export default function LikeManagerPage() {
   const executeBulkUnlike = async () => {
     setShowUnlikeConfirm(false);
     setRemoving(true);
-    setNotice(null);
+    setOutcome(null);
     try {
       const trackIds = Array.from(selected);
       const BATCH_SIZE = 100;
@@ -185,18 +189,19 @@ export default function LikeManagerPage() {
       
       setSelected(new Set());
       if (removedIds.size === trackIds.length && trackIds.length > 0) {
-        setNotice({ type: "success", text: `Unliked ${removedIds.size} track${removedIds.size === 1 ? "" : "s"}.` });
+        showOutcome("success", "Tracks unliked", `Unliked ${removedIds.size} track${removedIds.size === 1 ? "" : "s"}.`);
       } else if (removedIds.size > 0) {
-        setNotice({
-          type: "error",
-          text: `Unliked ${removedIds.size} of ${trackIds.length} tracks. Some tracks could not be removed.`,
-        });
+        showOutcome(
+          "partial",
+          "Some tracks could not be unliked",
+          `Unliked ${removedIds.size} of ${trackIds.length} tracks. Some tracks could not be removed.`,
+        );
       } else {
-        setNotice({ type: "error", text: "Bulk unlike failed. Please try again." });
+        showOutcome("error", "Unlike failed", "Bulk unlike failed. Please try again.");
       }
     } catch (error) {
       console.error("Bulk unlike error:", error);
-      setNotice({ type: "error", text: "An error occurred while unliking tracks." });
+      showOutcome("error", "Unlike failed", "An error occurred while unliking tracks.");
     } finally {
       setRemoving(false);
       setUnlikeProgress(null);
@@ -289,25 +294,27 @@ export default function LikeManagerPage() {
   );
 
   return (
-    <PageContainer maxWidth="wide" className="pb-28">
-        <PageHeader
-          title="Like Manager"
-          description="Browse, search, and manage your liked tracks. Unlike in bulk."
-        />
+    <PageContainer kind="list" className="pb-28">
+      <PageHeader
+        title="Like Manager"
+        description="Browse, search, and manage your liked tracks. Unlike in bulk."
+      />
 
-        {notice && (
-          <InlineAlert
-            variant={notice.type}
-            className="mb-6"
-            onDismiss={() => setNotice(null)}
-          >
-            {notice.text}
-          </InlineAlert>
-        )}
+      <div className="space-y-6">
+        {outcome ? (
+          <ResultPanel
+            key={outcome.id}
+            status={outcome.status}
+            title={outcome.title}
+            description={outcome.text}
+            announcement={outcome.text}
+            onDismiss={() => setOutcome(null)}
+          />
+        ) : null}
 
         {removing && unlikeProgress && (
           <ProgressBar
-            className="mb-6 rounded-lg border-2 border-border bg-secondary/10 p-4"
+            className="rounded-lg border border-border bg-secondary/10 p-4"
             label="Unliking tracks"
             detail={`batch ${unlikeProgress.currentBatch} of ${unlikeProgress.totalBatches}`}
             value={unlikeProgress.completed}
@@ -316,103 +323,108 @@ export default function LikeManagerPage() {
         )}
 
         {likesState.isLoadingFirstPage ? (
-          <Card className="p-6">
-            <div className="flex items-center gap-3 mb-4 flex-wrap">
-              <Skeleton className="h-10 flex-1 min-w-[200px] rounded-lg" />
+          <Panel>
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <Skeleton className="h-10 min-w-[200px] flex-1 rounded-lg" />
               <Skeleton className="h-10 w-32 rounded-lg" />
               <Skeleton className="h-10 w-32 rounded-lg" />
               <Skeleton className="h-10 w-32 rounded-lg" />
               <Skeleton className="h-6 w-20" />
             </div>
-            <Skeleton className="h-4 w-32 mb-2" />
+            <Skeleton className="mb-2 h-4 w-32" />
             <div className="space-y-2">
               {Array.from({ length: 8 }).map((_, i) => (
                 <Skeleton key={i} className="h-16 w-full rounded-xl" />
               ))}
             </div>
-          </Card>
+          </Panel>
         ) : likes.length === 0 ? (
-          <Card className="p-8">
-            <EmptyState
-              icon={<Heart className="w-12 h-12" />}
-              title="No liked tracks"
-              description="You haven't liked any tracks yet."
-            />
-          </Card>
+          <Panel>
+            {likesState.error ? (
+              <InlineAlert variant="error">
+                {`Couldn't load your liked tracks: ${likesState.error.message}`}
+              </InlineAlert>
+            ) : (
+              <EmptyState
+                icon={<Heart className="h-12 w-12" />}
+                title="No liked tracks"
+                description="You haven't liked any tracks yet."
+              />
+            )}
+          </Panel>
         ) : (
-          <Card className="p-6">
-            <SectionHeading className="mb-3">Liked tracks</SectionHeading>
-
-            {/* Controls */}
-            <div className="grid grid-cols-1 gap-2 mb-4 sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-end">
-              <Field
-                label="Search likes"
-                className="lg:min-w-[200px] lg:flex-1 [&>label]:sr-only"
-              >
-                {(field) => (
-                  <div className="relative">
-                    <Search
-                      aria-hidden="true"
-                      className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground"
-                    />
-                    <Input
-                      {...field}
-                      type="text"
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                      placeholder="Search likes..."
-                      className="h-11 pl-9 bg-secondary/20 border-border"
-                    />
-                  </div>
-                )}
-              </Field>
-              <Select
-                label="Sort"
-                value={sort}
-                onChange={(e) => setSort(e.target.value as SortOption)}
-                className="bg-secondary/20"
-              >
-                <option value="recent">Most Recent</option>
-                <option value="oldest">Oldest First</option>
-                <option value="alpha">A → Z</option>
-              </Select>
-              {uniqueGenres.length > 0 && (
-                <Select
-                  label="Genre"
-                  value={genreFilter}
-                  onChange={(e) => setGenreFilter(e.target.value)}
-                  className="bg-secondary/20 lg:max-w-[150px]"
-                >
-                  <option value="All">All Genres</option>
-                  {uniqueGenres.map((g) => (
-                     <option key={g} value={g}>
-                      {g}
-                    </option>
-                  ))}
-                </Select>
-              )}
-              <Select
-                label="Show"
-                value={durationFilter}
-                onChange={(e) => setDurationFilter(e.target.value)}
-                className="bg-secondary/20"
-              >
-                <option value="All">All Durations</option>
-                <option value="< 3 mins">&lt; 3 mins</option>
-                <option value="3-5 mins">3-5 mins</option>
-                <option value="5-10 mins">5-10 mins</option>
-                <option value="> 10 mins">&gt; 10 mins</option>
-              </Select>
+          <Panel
+            title="Liked tracks"
+            actions={
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={selectAll}
-                className="whitespace-nowrap text-primary-text sm:col-span-2 lg:col-span-1"
+                className="whitespace-nowrap text-primary-text"
               >
                 {selected.size === filteredLikes.length
                   ? "Deselect All"
                   : selectAllLabel(likesState, filteredLikes.length)}
               </Button>
+            }
+          >
+            {likesState.error ? (
+              <InlineAlert variant="error" className="mb-4">
+                {`Couldn't load your liked tracks: ${likesState.error.message}`}
+              </InlineAlert>
+            ) : null}
+
+            {/* Controls */}
+            <div className="mb-3 space-y-3">
+              <ListSearch
+                label="Search likes"
+                value={search}
+                onChange={setSearch}
+                shown={filteredLikes.length}
+                total={likes.length}
+                noun={likes.length === 1 ? "track" : "tracks"}
+                placeholder="Search likes..."
+                pendingNote={likesState.isComplete ? undefined : "still loading, search covers loaded tracks only"}
+              />
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fit,minmax(10rem,1fr))]">
+                <Select
+                  label="Sort"
+                  value={sort}
+                  onChange={(e) => setSort(e.target.value as SortOption)}
+                  className="bg-secondary/20"
+                >
+                  <option value="recent">Most Recent</option>
+                  <option value="oldest">Oldest First</option>
+                  <option value="alpha">A → Z</option>
+                </Select>
+                {uniqueGenres.length > 0 && (
+                  <Select
+                    label="Genre"
+                    value={genreFilter}
+                    onChange={(e) => setGenreFilter(e.target.value)}
+                    className="bg-secondary/20"
+                  >
+                    <option value="All">All Genres</option>
+                    {uniqueGenres.map((g) => (
+                      <option key={g} value={g}>
+                        {g}
+                      </option>
+                    ))}
+                  </Select>
+                )}
+                <Select
+                  label="Show"
+                  value={durationFilter}
+                  onChange={(e) => setDurationFilter(e.target.value)}
+                  className="bg-secondary/20"
+                >
+                  <option value="All">All Durations</option>
+                  <option value="< 3 mins">&lt; 3 mins</option>
+                  <option value="3-5 mins">3-5 mins</option>
+                  <option value="5-10 mins">5-10 mins</option>
+                  <option value="> 10 mins">&gt; 10 mins</option>
+                </Select>
+              </div>
             </div>
 
             {likesStatus && (
@@ -468,8 +480,9 @@ export default function LikeManagerPage() {
                 Loading more…
               </div>
             )}
-          </Card>
+          </Panel>
         )}
+      </div>
       <SelectionBanner
         count={selected.size}
         entityName="track"
