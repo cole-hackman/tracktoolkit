@@ -105,8 +105,12 @@ export const READY: Record<string, ReadyLocator> = {
   },
   // The metrics and the three track sections only exist after a comparison.
   "/playlist-compare/": async (page) => {
-    await page.getByLabel("Playlist A").selectOption({ index: 1 });
-    await page.getByLabel("Playlist B").selectOption({ index: 2 });
+    await page.getByRole("button", { name: /^Playlist A/ }).click();
+    await page.getByRole("radio").nth(0).click();
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: /^Playlist B/ }).click();
+    await page.getByRole("radio").nth(1).click();
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
     await page.getByRole("button", { name: "Compare" }).click();
     return page.getByRole("heading", { name: /In both playlists/ });
   },

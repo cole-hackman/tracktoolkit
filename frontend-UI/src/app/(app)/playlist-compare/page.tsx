@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowRightLeft, Download, ListPlus } from "lucide-react";
 import { apiFetch, errorMessageFromBody } from "@/lib/api";
 import { downloadCsv } from "@/lib/csv";
 import {
+  ActionBar,
   Button,
   Card,
   EmptyState,
@@ -13,10 +14,11 @@ import {
   LoadingSpinner,
   PageContainer,
   PageHeader,
-  SectionHeading,
-  Select,
+  Panel,
+  ResultPanel,
   useAnnounce,
 } from "@/components/ui";
+import { PlaylistChooser } from "@/components/playlists/PlaylistChooser";
 import { invalidatePlaylistCaches, usePlaylistsQuery } from "@/lib/queries";
 import { asArray } from "@/lib/api-shape";
 
@@ -53,21 +55,18 @@ export default function PlaylistComparePage() {
   const [playlistBId, setPlaylistBId] = useState<number | "">("");
   const [comparing, setComparing] = useState(false);
   const [result, setResult] = useState<CompareResult | null>(null);
-  const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  // A failed compare is the run's outcome; `id` remounts the panel per run.
+  const [failure, setFailure] = useState<{ id: number; text: string } | null>(null);
   const playlistsQuery = usePlaylistsQuery();
   const playlists = asArray<Playlist>(playlistsQuery.data?.collection);
   const loading = playlistsQuery.isLoading;
-
-  useEffect(() => {
-    if (playlistsQuery.isError) {
-      setNotice({ type: "error", text: "Could not load playlists. Try refreshing." });
-    }
-  }, [playlistsQuery.isError]);
+  const playlistA = playlists.find((p) => Number(p.id) === Number(playlistAId)) ?? null;
+  const playlistB = playlists.find((p) => Number(p.id) === Number(playlistBId)) ?? null;
 
   const compare = async () => {
     if (!playlistAId || !playlistBId || playlistAId === playlistBId) return;
     setComparing(true);
-    setNotice(null);
+    setFailure(null);
     setResult(null);
     try {
       const response = await apiFetch("/api/playlists/compare", {
@@ -78,7 +77,7 @@ export default function PlaylistComparePage() {
       const data = await response.json().catch(() => null);
       if (!response.ok) {
         // Show the reason first: it must not wait on a cold list refetch.
-        setNotice({ type: "error", text: errorMessageFromBody(data, "Could not compare playlists.") });
+        setFailure({ id: Date.now(), text: errorMessageFromBody(data, "Could not compare playlists.") });
         if (response.status === 404 && data?.code === "PLAYLIST_NOT_FOUND") {
           // One of the two selections is gone from SoundCloud. Clear it and
           // refetch the list so it stops being offered.
@@ -96,7 +95,10 @@ export default function PlaylistComparePage() {
         `${data.summary.overlapCount} shared, ${data.summary.uniqueToACount} only in A, ${data.summary.uniqueToBCount} only in B.`,
       );
     } catch (error) {
-      setNotice({ type: "error", text: error instanceof Error ? error.message : "Could not compare playlists." });
+      setFailure({
+        id: Date.now(),
+        text: error instanceof Error ? error.message : "Could not compare playlists.",
+      });
     } finally {
       setComparing(false);
     }
@@ -117,114 +119,112 @@ export default function PlaylistComparePage() {
   };
 
   return (
-    <PageContainer maxWidth="wide">
+    <PageContainer kind="list">
       <PageHeader
         title="Playlist Compare"
         description="Compare two playlists to find overlap and tracks missing from either side."
       />
 
-      {notice && (
-        <InlineAlert variant={notice.type} className="mb-6" onDismiss={() => setNotice(null)}>
-          {notice.text}
-        </InlineAlert>
-      )}
+      <div className="space-y-6">
+        {failure ? (
+          <ResultPanel
+            key={failure.id}
+            status="error"
+            title="Couldn’t compare the playlists"
+            description={failure.text}
+            announcement={failure.text}
+            onDismiss={() => setFailure(null)}
+          />
+        ) : null}
 
-      <Card className="mb-6 p-4">
-        {loading ? (
-          <p role="status" className="flex items-center gap-3 text-sm text-muted-foreground">
-            <LoadingSpinner size="sm" />
-            Loading your playlists…
-          </p>
-        ) : (
-          <>
-            <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
-              <PlaylistSelect label="Playlist A" value={playlistAId} playlists={playlists} onChange={setPlaylistAId} />
-              <PlaylistSelect label="Playlist B" value={playlistBId} playlists={playlists} onChange={setPlaylistBId} />
-              <div className="flex items-end">
-                <Button onClick={compare} disabled={!canCompare}>
-                  {comparing ? (
-                    <LoadingSpinner size="sm" className="text-white" />
-                  ) : (
-                    <ArrowRightLeft aria-hidden="true" className="h-4 w-4" />
-                  )}
-                  Compare
-                </Button>
-              </div>
-            </div>
+        <Panel>
+          {playlistsQuery.isError ? (
+            <InlineAlert variant="error" className="mb-4">
+              Could not load playlists. Try refreshing.
+            </InlineAlert>
+          ) : null}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <PlaylistChooser
+              label="Playlist A"
+              dialogTitle="Choose Playlist A"
+              playlists={playlists}
+              value={playlistA}
+              onChange={(playlist) => setPlaylistAId(Number(playlist.id))}
+              loading={loading}
+              loadError={playlistsQuery.isError}
+              onRetry={() => playlistsQuery.refetch()}
+              className="min-w-0 [&>*]:min-w-0"
+              placeholder="Choose a playlist..."
+            />
+            <PlaylistChooser
+              label="Playlist B"
+              dialogTitle="Choose Playlist B"
+              playlists={playlists}
+              value={playlistB}
+              onChange={(playlist) => setPlaylistBId(Number(playlist.id))}
+              loading={loading}
+              loadError={playlistsQuery.isError}
+              onRetry={() => playlistsQuery.refetch()}
+              className="min-w-0 [&>*]:min-w-0"
+              placeholder="Choose a playlist..."
+            />
+          </div>
+          <ActionBar>
+            <Button onClick={compare} disabled={!canCompare}>
+              {comparing ? (
+                <LoadingSpinner size="sm" className="text-white" />
+              ) : (
+                <ArrowRightLeft aria-hidden="true" className="h-4 w-4" />
+              )}
+              Compare
+            </Button>
             {/* Why the button is off, in text. A disabled control with no
                 stated reason is a dead end. */}
-            {!canCompare && !comparing && (
-              <p className="mt-2 text-sm text-muted-foreground">
+            {!loading && !canCompare && !comparing && (
+              <p className="text-sm text-muted-foreground">
                 {playlistAId && playlistBId && playlistAId === playlistBId
                   ? "Pick two different playlists."
                   : "Pick two different playlists to compare."}
               </p>
             )}
+          </ActionBar>
+        </Panel>
+
+        {!result ? (
+          <Panel>
+            <EmptyState
+              icon={<ArrowRightLeft className="h-12 w-12" />}
+              title="Choose two playlists"
+              description="The comparison will show shared tracks and tracks unique to each playlist."
+            />
+          </Panel>
+        ) : (
+          <>
+            <div className="flex justify-end">
+              <Button nowrap variant="outline" onClick={exportCsv}>
+                <Download aria-hidden="true" className="h-4 w-4" />
+                Export CSV
+              </Button>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-3">
+              <Metric label="Overlap" value={`${result.summary.overlapCount}`} detail={`${result.summary.overlapPercent}% of combined tracks`} />
+              <Metric label="Only in A" value={`${result.summary.uniqueToACount}`} detail={result.summary.playlistA.title} />
+              <Metric label="Only in B" value={`${result.summary.uniqueToBCount}`} detail={result.summary.playlistB.title} />
+            </div>
+
+            <TrackSection title={`Only in ${result.summary.playlistA.title}`} tracks={result.uniqueToA} />
+            <TrackSection title={`Only in ${result.summary.playlistB.title}`} tracks={result.uniqueToB} />
+            <TrackSection title="In both playlists" tracks={result.overlap} />
+
+            <Card className="p-4 text-sm text-muted-foreground">
+              <ListPlus aria-hidden="true" className="mr-2 inline h-4 w-4 text-primary" />
+              Next step: use Combine Playlists or Playlist Modifier to add missing tracks after reviewing the export.
+            </Card>
           </>
         )}
-      </Card>
-
-      {!result ? (
-        <Card className="p-8">
-          <EmptyState
-            icon={<ArrowRightLeft className="h-12 w-12" />}
-            title="Choose two playlists"
-            description="The comparison will show shared tracks and tracks unique to each playlist."
-          />
-        </Card>
-      ) : (
-        <div className="space-y-6">
-          <div className="flex justify-end">
-            <Button nowrap variant="outline" onClick={exportCsv}>
-              <Download aria-hidden="true" className="h-4 w-4" />
-              Export CSV
-            </Button>
-          </div>
-
-          <div className="grid gap-3 md:grid-cols-3">
-            <Metric label="Overlap" value={`${result.summary.overlapCount}`} detail={`${result.summary.overlapPercent}% of combined tracks`} />
-            <Metric label="Only in A" value={`${result.summary.uniqueToACount}`} detail={result.summary.playlistA.title} />
-            <Metric label="Only in B" value={`${result.summary.uniqueToBCount}`} detail={result.summary.playlistB.title} />
-          </div>
-
-          <TrackSection title={`Only in ${result.summary.playlistA.title}`} tracks={result.uniqueToA} />
-          <TrackSection title={`Only in ${result.summary.playlistB.title}`} tracks={result.uniqueToB} />
-          <TrackSection title="In both playlists" tracks={result.overlap} />
-
-          <Card className="p-4 text-sm text-muted-foreground">
-            <ListPlus aria-hidden="true" className="mr-2 inline h-4 w-4 text-primary" />
-            Next step: use Combine Playlists or Playlist Modifier to add missing tracks after reviewing the export.
-          </Card>
-        </div>
-      )}
+      </div>
     </PageContainer>
-  );
-}
-
-function PlaylistSelect({
-  label,
-  value,
-  playlists,
-  onChange,
-}: {
-  label: string;
-  value: number | "";
-  playlists: Playlist[];
-  onChange: (value: number | "") => void;
-}) {
-  return (
-    <Select
-      label={label}
-      value={value}
-      onChange={(event) => onChange(event.target.value ? Number(event.target.value) : "")}
-    >
-      <option value="">Choose a playlist...</option>
-      {playlists.map((playlist) => (
-        <option key={playlist.id} value={playlist.id}>
-          {playlist.title} ({playlist.track_count} tracks)
-        </option>
-      ))}
-    </Select>
   );
 }
 
@@ -247,22 +247,21 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
 
 function TrackSection({ title, tracks }: { title: string; tracks: Track[] }) {
   return (
-    <Card>
-      <SectionHeading className="border-b border-border px-4 py-3">
-        {title} ({tracks.length})
-      </SectionHeading>
+    <Panel title={<span className="break-words">{`${title} (${tracks.length})`}</span>}>
       <div className="max-h-[60dvh] divide-y divide-border overflow-y-auto">
         {tracks.length === 0 ? (
-          <div className="px-4 py-3 text-sm text-muted-foreground">No tracks in this group.</div>
+          <div className="py-3 text-sm text-muted-foreground">No tracks in this group.</div>
         ) : (
           tracks.map((track) => (
-            <div key={track.id} className="px-4 py-3">
-              <div className="font-medium text-foreground">{track.title || `Track ${track.id}`}</div>
-              {track.user?.username && <div className="text-sm text-muted-foreground">{track.user.username}</div>}
+            <div key={track.id} className="min-w-0 py-3">
+              <div className="break-words font-medium text-foreground">{track.title || `Track ${track.id}`}</div>
+              {track.user?.username && (
+                <div className="break-words text-sm text-muted-foreground">{track.user.username}</div>
+              )}
             </div>
           ))
         )}
       </div>
-    </Card>
+    </Panel>
   );
 }

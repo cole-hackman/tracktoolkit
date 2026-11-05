@@ -342,8 +342,12 @@ const CASES: Case[] = [
   {
     path: "/playlist-compare/",
     drive: async (page) => {
-      await page.getByLabel("Playlist A").selectOption({ index: 1 });
-      await page.getByLabel("Playlist B").selectOption({ index: 2 });
+      await page.getByRole("button", { name: /^Playlist A/ }).click();
+      await page.getByRole("radio").nth(0).click();
+      await expect(page.getByRole("dialog")).toBeHidden();
+      await page.getByRole("button", { name: /^Playlist B/ }).click();
+      await page.getByRole("radio").nth(1).click();
+      await expect(page.getByRole("dialog")).toBeHidden();
       await page.getByRole("button", { name: "Compare" }).click();
       await page.getByRole("heading", { name: /In both playlists/ }).waitFor();
     },

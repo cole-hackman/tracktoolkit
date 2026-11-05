@@ -53,24 +53,30 @@ test("compare: a 404 PLAYLIST_NOT_FOUND shows the server text, clears the select
   );
 
   await page.goto("/playlist-compare/");
-  const a = page.getByLabel("Playlist A");
-  const b = page.getByLabel("Playlist B");
-  await expect(a.locator("option", { hasText: "Sample Playlist 2" })).toHaveCount(1);
-  await a.selectOption("1");
-  await b.selectOption("2");
+  const a = page.getByRole("button", { name: /^Playlist A/ });
+  const b = page.getByRole("button", { name: /^Playlist B/ });
+  await a.click();
+  await page.getByRole("radio", { name: "Sample Playlist 1" }).click();
+  await b.click();
+  await expect(page.getByRole("radio", { name: "Sample Playlist 2" })).toHaveCount(1);
+  await page.getByRole("radio", { name: "Sample Playlist 2" }).click();
 
   const before = listGets;
   await page.getByRole("button", { name: "Compare" }).click();
 
-  await expect(page.getByRole("alert").filter({ hasText: COMPARE_REASON })).toBeVisible();
+  const result = page.getByRole("region", { name: "Couldn’t compare the playlists" });
+  await expect(result).toContainText(COMPARE_REASON);
+  await expect(result).toBeFocused();
   // Playlist B was the missing one: it is cleared and gone from the refetched
   // list; Playlist A is untouched.
   await expect.poll(() => listGets).toBeGreaterThan(before);
-  await expect(b.locator("option", { hasText: "Sample Playlist 2" })).toHaveCount(0);
-  await expect(b).toHaveValue("");
+  await expect(b).toContainText("Choose a playlist...");
+  await b.click();
+  await expect(page.getByRole("radio", { name: "Sample Playlist 2" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
   // Compare reads React state, not the DOM: it is disabled only if B was cleared.
   await expect(page.getByRole("button", { name: "Compare" })).toBeDisabled();
-  await expect(a).toHaveValue("1");
+  await expect(a).toContainText("Sample Playlist 1");
 
   const results = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag22aa"])
