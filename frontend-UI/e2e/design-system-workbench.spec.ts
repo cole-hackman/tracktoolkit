@@ -63,8 +63,10 @@ test("playlist-to-likes: a finished run is a result panel above the tool", async
 
   const result = page.getByRole("region", { name: "Tracks Liked!" });
   await expect(result).toBeFocused();
-  // The tool stays on screen to run again.
-  await expect(page.getByRole("button", { name: /^Like 6 Tracks$/ })).toBeVisible();
+  // The tool stays on screen to run again, with the liked tracks unticked so
+  // the same six are not liked twice (the old success screen reset them too).
+  await expect(page.getByRole("button", { name: /^Like 0 Tracks$/ })).toBeVisible();
+  await expect(page.getByRole("searchbox", { name: "Search this playlist's tracks" })).toBeVisible();
 });
 
 for (const route of ["/activity-to-playlist/", "/recently-played/"]) {

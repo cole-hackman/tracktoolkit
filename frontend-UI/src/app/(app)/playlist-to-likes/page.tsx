@@ -58,6 +58,8 @@ interface Outcome {
   status: ResultStatus;
   title: string;
   description: string;
+  /** What is spoken, when it differs from the description. */
+  announcement?: string;
 }
 
 const trackText = (track: PlaylistTrack) => `${track.title ?? ""} ${track.user?.username ?? ""}`;
@@ -114,11 +116,18 @@ export default function PlaylistToLikesPage() {
     announce(`${tracks.length} track${tracks.length === 1 ? "" : "s"} loaded`);
   }, [selectedPlaylist, detailQuery.isSuccess, tracks.length, announce]);
 
+  // Choosing a playlist swaps the picker for its tracks, and "Change
+  // playlist" swaps back. Either way the focused control is unmounted, so
+  // focus moves to the panel that replaced it instead of falling to <body>.
+  const focusPanel = (id: string) =>
+    requestAnimationFrame(() => document.getElementById(id)?.focus({ preventScroll: false }));
+
   const choosePlaylist = (p: PlaylistOption) => {
     setSelectedPlaylist(p);
     setSelectedTracks(new Set());
     setQuery("");
     setOutcome(null);
+    focusPanel("playlist-to-likes-tracks");
   };
 
   const handleLike = async () => {
@@ -172,9 +181,13 @@ export default function PlaylistToLikesPage() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.likes() });
       await invalidatePlaylistCaches(queryClient, selectedPlaylist?.id ?? null);
 
+      // Liked tracks are done: keeping them ticked under "Like N Tracks"
+      // would invite liking them again. (The old success screen reset it.)
+      if (liked > 0) setSelectedTracks(new Set());
       setOutcome({
         id: Date.now(),
         status: liked === 0 ? (failed > 0 ? "error" : "empty") : failed > 0 ? "partial" : "success",
+        announcement: `Liked ${liked} of ${ids.length} tracks${failed > 0 ? `, ${failed} failed` : ""}`,
         title: liked === 0 ? (failed > 0 ? "No tracks were liked" : "Nothing to like") : "Tracks Liked!",
         description:
           `Liked ${liked} track${liked !== 1 ? "s" : ""} from "${selectedPlaylist?.title}".` +
@@ -224,12 +237,13 @@ export default function PlaylistToLikesPage() {
             status={outcome.status}
             title={outcome.title}
             description={outcome.description}
+            announcement={outcome.announcement}
             onDismiss={() => setOutcome(null)}
           />
         ) : null}
 
         {!selectedPlaylist ? (
-          <Panel title="Choose a Playlist">
+          <Panel title="Choose a Playlist" id="playlist-to-likes-picker" tabIndex={-1} className="focus:outline-none">
             <PlaylistPicker
               playlists={playlists}
               mode="single"
@@ -244,6 +258,9 @@ export default function PlaylistToLikesPage() {
           <ToolLayout
             main={
               <Panel
+                id="playlist-to-likes-tracks"
+                tabIndex={-1}
+                className="focus:outline-none"
                 title={
                   <>
                     {selectedPlaylist.title}{" "}
@@ -316,6 +333,7 @@ export default function PlaylistToLikesPage() {
                       setSelectedPlaylist(null);
                       setSelectedTracks(new Set());
                       setQuery("");
+                      focusPanel("playlist-to-likes-picker");
                     }}
                     className="text-primary-text"
                   >
