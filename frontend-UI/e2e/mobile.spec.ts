@@ -422,7 +422,7 @@ test("no horizontal overflow: /playlist-to-likes/ with a playlist chosen", async
 
   await mockApi(page);
   await page.goto("/playlist-to-likes/");
-  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).click();
   await expect(page.getByRole("checkbox", { name: "Sample Track 1" })).toBeVisible();
 
   await expectNoOverflow(page);

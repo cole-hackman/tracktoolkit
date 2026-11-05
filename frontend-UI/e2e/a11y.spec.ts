@@ -201,7 +201,7 @@ test("has no serious/critical violations: /playlist-to-likes/ with a playlist ch
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/playlist-to-likes/");
 
-  await page.getByRole("button", { name: /Sample Playlist 1/ }).click();
+  await page.getByRole("radio", { name: "Sample Playlist 1", exact: true }).click();
   await expect(page.getByRole("checkbox", { name: "Sample Track 1" })).toBeVisible();
 
   await expectNoBlockingViolations(page);

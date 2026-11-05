@@ -53,7 +53,7 @@ export const READY: Record<string, ReadyLocator> = {
   // The track list, from `/api/likes/paged`.
   "/likes-to-playlist/": (page) => page.getByRole("checkbox", { name: "Sample Track 1" }),
   // Opens on a playlist chooser, from `/api/playlists`.
-  "/playlist-to-likes/": (page) => page.getByRole("button", { name: /Sample Playlist 1/ }),
+  "/playlist-to-likes/": (page) => page.getByRole("radio", { name: "Sample Playlist 1", exact: true }),
   // The track list, from `/api/recently-played`.
   "/recently-played/": (page) => page.getByRole("checkbox", { name: "Sample Track 1" }),
   // The track list, from `/api/activities`.
