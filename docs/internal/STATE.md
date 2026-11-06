@@ -1,17 +1,21 @@
 # STATE
 
 ## Now
-**PR cole-hackman/tracktoolkit#110 (`feat/design-system`) is open as a draft
-and NOT merged.** It moves every `(app)` tool page onto one design system.
-Nothing in it has been verified on the live site; merging deploys. Before
-merging, look at the pages listed under Next on a real account.
+**PR cole-hackman/tracktoolkit#110 (`feat/design-system`) is merged and
+deployed** (`8054e50`, 2026-11-05; the Azure deploy run succeeded). It moves
+every `(app)` tool page onto one design system. The live-page checks under
+Next have no recorded result, so treat them as still to do.
+
+**Tool-sequence analysis ran on production 2026-11-06.** Results and the
+recommendation are in `docs/internal/TOOL-CONSOLIDATION.md`, "Results (run
+2026-11-06)". Nothing has been combined yet.
 
 Previously (still true): Droploud and Cobrand gates are merged and live
 (2026-11-04, web PR #107, `cf8efaa`); the extension's PR #1 is merged into
 `fix/extension-domain` (`6b917ca`) in the private repo.
 
 ## Just done
-- **Design system, 2026-11-05 (PR #110, draft).** Rules, audit and sources:
+- **Design system, 2026-11-05 (PR #110, merged and deployed).** Rules, audit and sources:
   `docs/internal/DESIGN-SYSTEM.md`. Shared pieces: `PageContainer kind`
   (form 896 / list 1024 / workbench 1152 / hub), `Panel`, `ToolLayout`,
   `ActionBar`, `SegmentedControl`, `ListSearch` + `lib/list-search.ts`,
@@ -98,7 +102,8 @@ Previously (still true): Droploud and Cobrand gates are merged and live
 
 ## Next
 ### 2026-11-05 (design system, PR #110)
-0. **Before merging, check live on a real account** (nothing was): Combine
+0. **Check live on a real account** (no result recorded; PR #110 merged
+   without one): Combine
    (search, merge into new and existing, delete-after-merge partial
    result); Likes → Playlist (search over a large library, select all
    shown); Downloads (source switch, Download all, row checkboxes, folder
@@ -106,9 +111,13 @@ Previously (still true): Droploud and Cobrand gates are merged and live
    Health Check (switch playlists, then save/remove: the write goes to the
    playlist on screen); Growth (scan, engage, Campaign Initiated, history);
    Following Library (copy with a search active); a phone at 390 for each.
-1. Run `docs/sql/analysis-tool-sequences.sql` on Azure Postgres (a read
-   replica or restored copy is better) and read it against
-   `TOOL-CONSOLIDATION.md`. Re-run with 15 and 60 minute gaps.
+1. Done 2026-11-06: `docs/sql/analysis-tool-sequences.sql` ran on production
+   at 15, 30 and 60 minute gaps. Results are in `TOOL-CONSOLIDATION.md`,
+   "Results (run 2026-11-06)". 1, 5 and 6 confirmed; 4 and 7 not supported; 2
+   and 3 can't tell yet. Recommended order: merge the resolvers, then log the
+   from-likes `source` and the `PUT /api/playlists/:id` saves, then the
+   library manager with 5 folded in. Re-run after the logging has a few weeks
+   of data.
 2. Decide the calls under "Open questions for Cole" in DESIGN-SYSTEM.md.
 3. Small follow-ups found, not done: Activity → Playlist and Recently Played
    log new playlists as `from-likes` with no source (send a source in
