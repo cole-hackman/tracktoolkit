@@ -6,6 +6,7 @@ import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 
 import { mountStaticSite } from '../../server/lib/static-site.js';
+import { RETIRED_PATH_ALIASES } from '../../server/lib/retired-paths.js';
 
 let buildPath;
 let app;
@@ -53,13 +54,8 @@ beforeAll(async () => {
   writeFileSync(outsideFile, 'SENTINEL_SHOULD_NEVER_BE_SERVED');
 
   app = express();
-  mountStaticSite(app, buildPath, {
-    aliases: {
-      '/sc-toolkit': '/faq/#rebrand',
-      '/soundcloud-toolkit': '/faq/#rebrand',
-      '/rebrand': '/faq/#rebrand',
-    },
-  });
+  // The production map, so a retired path that loses its entry fails here.
+  mountStaticSite(app, buildPath, { aliases: RETIRED_PATH_ALIASES });
   // Registered after mountStaticSite, like server/index.js's real 404 API
   // handler and /health route — proves the static middleware passes these
   // through instead of swallowing them.
