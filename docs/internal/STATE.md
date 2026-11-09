@@ -1,17 +1,20 @@
 # STATE
 
 ## Now
-**PR cole-hackman/tracktoolkit#110 (`feat/design-system`) is open as a draft
-and NOT merged.** It moves every `(app)` tool page onto one design system.
-Nothing in it has been verified on the live site; merging deploys. Before
-merging, look at the pages listed under Next on a real account.
+**PR #110 (`feat/design-system`) is merged and live** (`8054e50`, deploy run
+42101143953, success 2026-11-05 20:14 UTC). It moves every `(app)` tool page
+onto one design system. Checked live 2026-11-10, signed in as Cole at about
+1000 px: Combine renders the new layout and its playlist search filters
+("Showing 4 of 33 playlists" for "ukg"); the dashboard renders with the tool
+search. **No write flow was run live**; the list under Next (2026-11-05,
+item 0) is still open.
 
 Previously (still true): Droploud and Cobrand gates are merged and live
 (2026-11-04, web PR #107, `cf8efaa`); the extension's PR #1 is merged into
 `fix/extension-domain` (`6b917ca`) in the private repo.
 
 ## Just done
-- **Design system, 2026-11-05 (PR #110, draft).** Rules, audit and sources:
+- **Design system, 2026-11-05 (PR #110, merged `8054e50`).** Rules, audit and sources:
   `docs/internal/DESIGN-SYSTEM.md`. Shared pieces: `PageContainer kind`
   (form 896 / list 1024 / workbench 1152 / hub), `Panel`, `ToolLayout`,
   `ActionBar`, `SegmentedControl`, `ListSearch` + `lib/list-search.ts`,
@@ -97,9 +100,18 @@ Previously (still true): Droploud and Cobrand gates are merged and live
   reloads itself when its files change (seen working).
 
 ## Next
+### 2026-11-10
+1. **Set → Playlist merged (#98, `4738e14`) without its pre-merge check.**
+   Create one real playlist on Cole's account from each fixture set: confirm
+   SoundCloud accepts the description (`SC_PLAYLIST_DESCRIPTION_MAX` is 4000,
+   assumed, not documented) and note match quality.
+2. The dashboard tile read 6 playlists while Combine listed 33 (seen live
+   2026-11-10). Not investigated; may be public count against all.
+
 ### 2026-11-05 (design system, PR #110)
-0. **Before merging, check live on a real account** (nothing was): Combine
-   (search, merge into new and existing, delete-after-merge partial
+0. **Merged without this check; still to do live on a real account** (only
+   Combine's search and the dashboard were looked at, 2026-11-10): Combine
+   (merge into new and existing, delete-after-merge partial
    result); Likes → Playlist (search over a large library, select all
    shown); Downloads (source switch, Download all, row checkboxes, folder
    mode, the multiple-downloads check, gate send); Playlist Modifier and
@@ -177,7 +189,8 @@ Previously (still true): Droploud and Cobrand gates are merged and live
    keep the artist's upload name, not "Artist - Title".
 
 ### 2026-10-08
-0. ~~After #89 and #92 merge~~ **Done 2026-10-08 (see Just done).** What
+0. ~~After #89 and #92 merge~~ **Done 2026-10-08 (`3d062cc`; the record is
+   in `94978c8`, PR #96).** What
    remains is a real folder-mode run by Cole: pick a folder in the native
    dialog, confirm the names land on disk, and re-download *SION - FADE*
    (its history row exists without a file). Original steps, still valid: on Chrome, Downloads → a
@@ -242,9 +255,10 @@ Previously (still true): Droploud and Cobrand gates are merged and live
    `main` (`git merge-tree --write-tree origin/main <branch>` gives
    main's own tree), plus 17 clean worktrees.
 3. **Carried from #68 (closed), still open:**
-   - The extension repair (`~/Developer/tracktoolkit-extension-work`, branch
-     `fix/extension-domain`) and the Hypeddit runner are unpushed because the
-     repo is public. Make the repo private, or move both to a private repo.
+   - ~~The extension repair is unpushed~~ Done 2026-11-04: it is in the
+     private repo `cole-hackman/tracktoolkit-extension`, and
+     `~/Developer/tracktoolkit-extension-work` is its clone. The Hypeddit
+     runner is still local only, because this repo is public.
    - ~~Add the sideloaded extension's ID to `CHROME_EXTENSION_IDS`~~ Done
      2026-10-08: `ckjliacjcpfmjdefabdhicmhmpdckccb`, the unpacked load of
      `~/Developer/tracktoolkit-extension-work` (v1.5.0). Verified: a CORS
