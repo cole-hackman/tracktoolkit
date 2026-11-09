@@ -8,4 +8,6 @@ export const RETIRED_PATH_ALIASES = Object.freeze({
   '/sc-toolkit': '/faq/#rebrand',
   '/soundcloud-toolkit': '/faq/#rebrand',
   '/rebrand': '/faq/#rebrand',
+  // Merged into the Link Resolver, which takes one link or up to 50.
+  '/batch-link-resolver': '/link-resolver/',
 });

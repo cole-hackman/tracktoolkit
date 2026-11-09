@@ -1,23 +1,16 @@
 "use client";
 
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import NextLink from "next/link";
-import { Link2, ExternalLink, Music, Users, ListMusic, Loader2, X, Download, RotateCcw, Copy } from "lucide-react";
-import {
-  ActionBar,
-  Button,
-  EmptyState,
-  Field,
-  ListSearch,
-  PageContainer,
-  PageHeader,
-  Panel,
-  ResultPanel,
-  Select,
-  useAnnounce,
-} from "@/components/ui";
+import { Link2, ExternalLink, Music, Users, ListMusic, X, Download, RotateCcw, Copy } from "lucide-react";
+import { Button, ListSearch, Panel, Select, useAnnounce } from "@/components/ui";
 import { useListSearch } from "@/lib/list-search";
-import { formatCompactNumber, formatDuration, useBatchResolver, type BatchResolveRow } from "@/lib/resolver";
+import {
+  formatCompactNumber,
+  formatDuration,
+  type BatchResolveRow,
+  type BatchResolveV2Response,
+} from "@/lib/resolver";
 
 /** What the search box matches against: the link, the title and the artist. */
 function rowSearchText(r: BatchResolveRow): string {
@@ -29,37 +22,24 @@ function rowSearchText(r: BatchResolveRow): string {
   return `${r.url} ${title} ${artist}`;
 }
 
-export default function BatchLinkResolverPage() {
+/**
+ * The table for several resolved links: search, filters, sort, export, copy
+ * and retry of the failures, one row per link. The resolver page shows it
+ * when two or more links were resolved; one link gets `ResolvedCard`.
+ */
+export function ResolvedList({
+  result,
+  onRetryFailed,
+}: {
+  result: BatchResolveV2Response;
+  /** Runs the failed links again; the page owns the input and the request. */
+  onRetryFailed: (urls: string[]) => void;
+}) {
   const announce = useAnnounce();
-  const [input, setInput] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "ok" | "error">("all");
   const [typeFilter, setTypeFilter] = useState<"all" | "track" | "playlist" | "user">("all");
   const [query, setQuery] = useState("");
   const [sortBy, setSortBy] = useState<"status" | "type" | "title">("status");
-  const { loading, error, result, resolve, setError } = useBatchResolver();
-  // Our own message for the 50-link limit, shown on the field; a failed
-  // request is the hook's `error` and becomes the result panel.
-  const [inputError, setInputError] = useState<string | null>(null);
-  // Per-run key: each run mounts a fresh result panel (focus + announcement).
-  const runCount = useRef(0);
-
-  const handleResolve = async () => {
-    const urls = input
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-
-    if (urls.length === 0) return;
-    if (urls.length > 50) {
-      setInputError("Maximum 50 URLs at a time");
-      return;
-    }
-
-    setInputError(null);
-    runCount.current += 1;
-    announce(`Resolving ${urls.length} link${urls.length === 1 ? "" : "s"}…`);
-    await resolve(urls);
-  };
 
   const results = useMemo(() => result?.results ?? [], [result]);
   const summary = result?.summary;
@@ -92,15 +72,16 @@ export default function BatchLinkResolverPage() {
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
-    } catch {}
+      const n = text.split("\n").length;
+      announce(`Copied ${n} failed link${n === 1 ? "" : "s"}`);
+    } catch {
+      announce("Couldn't reach the clipboard");
+    }
   };
 
-  const retryFailed = async () => {
+  const retryFailed = () => {
     const failed = results.filter((r) => r.status === "error").map((r) => r.url);
-    if (!failed.length) return;
-    runCount.current += 1;
-    setInput(failed.join("\n"));
-    await resolve(failed);
+    if (failed.length) onRetryFailed(failed);
   };
 
   const exportResults = (type: "json" | "csv") => {
@@ -137,177 +118,96 @@ export default function BatchLinkResolverPage() {
     URL.revokeObjectURL(href);
   };
 
+  if (results.length === 0) return null;
+
   return (
-    <PageContainer kind="form">
-        <PageHeader
-          title="Batch Link Resolver"
-          description="Paste up to 50 SoundCloud URLs to resolve them all at once."
+      <Panel
+        title="Results"
+        actions={
+          <div className="flex items-center gap-3 text-sm">
+            <span className="text-success-text font-medium">
+              <span aria-hidden="true">✓ </span>
+              {summary?.ok ?? 0} resolved
+            </span>
+            <span className="text-destructive-text font-medium">
+              <span aria-hidden="true">✗ </span>
+              {summary?.error ?? 0} failed
+            </span>
+          </div>
+        }
+      >
+        <ListSearch
+          label="Search results"
+          value={query}
+          onChange={setQuery}
+          shown={filteredResults.length}
+          total={results.length}
+          noun="links"
+          placeholder="Search by link, title or artist…"
+          className="mb-4"
         />
 
-        <div className="space-y-6">
-        {/* The outcome of the run, above the tool. The table below is the
-            resolved data and stays content. */}
-        {error ? (
-          <ResultPanel
-            key={runCount.current}
-            status="error"
-            title="Could not resolve links"
-            description={error}
-            onDismiss={() => setError("")}
-          />
-        ) : !loading && summary ? (
-          <ResultPanel
-            key={runCount.current}
-            status={summary.total === 0 ? "empty" : summary.ok === 0 ? "error" : summary.error > 0 ? "partial" : "success"}
-            title={summary.error === 0 ? "Links resolved" : summary.ok === 0 ? "No links resolved" : "Links partly resolved"}
-            description={`${summary.ok} resolved, ${summary.error} failed, of ${summary.total}.`}
-            announcement={`Done: ${summary.ok} resolved, ${summary.error} failed, of ${summary.total}.`}
-          />
-        ) : null}
 
-        {/* Input area */}
-        <Panel title="Links to resolve">
-          <Field
-            label="SoundCloud URLs (one per line)"
-            hint="Up to 50 at a time."
-            error={inputError ?? undefined}
+        <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <Select
+            label="Status"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as "all" | "ok" | "error")}
           >
-            {(field) => (
-              <textarea
-                {...field}
-                value={input}
-                onChange={(e) => {
-                  setInput(e.target.value);
-                  if (inputError) setInputError(null);
-                }}
-                placeholder={"https://soundcloud.com/artist/track-name\nhttps://soundcloud.com/artist\nhttps://soundcloud.com/artist/sets/playlist-name"}
-                rows={8}
-                className="w-full resize-y rounded-md border border-input bg-surface px-3 py-2 font-mono text-base text-foreground shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background dark:bg-white/5 sm:text-sm"
-              />
-            )}
-          </Field>
-          <ActionBar>
-            <Button onClick={handleResolve} disabled={loading || !input.trim()}>
-              {loading ? (
-                <>
-                  <Loader2 aria-hidden="true" className="w-4 h-4 animate-spin" />
-                  Resolving...
-                </>
-              ) : (
-                <>
-                  <Link2 aria-hidden="true" className="w-4 h-4" />
-                  Resolve All
-                </>
-              )}
-            </Button>
-            <span className="text-sm text-muted-foreground-subtle">
-              {input.split("\n").filter((l) => l.trim()).length} URLs entered
-            </span>
-          </ActionBar>
-        </Panel>
-
-        {/* Results */}
-        {results.length > 0 && (
-          <Panel
-            title="Results"
-            actions={
-              <div className="flex items-center gap-3 text-sm">
-                <span className="text-success-text font-medium">
-                  <span aria-hidden="true">✓ </span>
-                  {summary?.ok ?? 0} resolved
-                </span>
-                <span className="text-destructive-text font-medium">
-                  <span aria-hidden="true">✗ </span>
-                  {summary?.error ?? 0} failed
-                </span>
-              </div>
-            }
+            <option value="all">All status</option>
+            <option value="ok">Success only</option>
+            <option value="error">Errors only</option>
+          </Select>
+          <Select
+            label="Type"
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value as "all" | "track" | "playlist" | "user")}
           >
-            <ListSearch
-              label="Search results"
-              value={query}
-              onChange={setQuery}
-              shown={filteredResults.length}
-              total={results.length}
-              noun="links"
-              placeholder="Search by link, title or artist…"
-              className="mb-4"
-            />
-
-
-            <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <Select
-                label="Status"
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as "all" | "ok" | "error")}
-              >
-                <option value="all">All status</option>
-                <option value="ok">Success only</option>
-                <option value="error">Errors only</option>
-              </Select>
-              <Select
-                label="Type"
-                value={typeFilter}
-                onChange={(e) => setTypeFilter(e.target.value as "all" | "track" | "playlist" | "user")}
-              >
-                <option value="all">All types</option>
-                <option value="track">Track</option>
-                <option value="playlist">Playlist</option>
-                <option value="user">User</option>
-              </Select>
-              <Select
-                label="Sort by"
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as "status" | "type" | "title")}
-              >
-                <option value="status">Status</option>
-                <option value="type">Type</option>
-                <option value="title">Title</option>
-              </Select>
-            </div>
-
-            <div className="grid grid-cols-1 gap-2 mb-4 sm:grid-cols-2 lg:flex lg:flex-wrap">
-              <Button nowrap variant="secondary" size="sm" onClick={() => exportResults("csv")}>
-                <Download aria-hidden="true" className="w-4 h-4" />
-                Export CSV
-              </Button>
-              <Button nowrap variant="secondary" size="sm" onClick={() => exportResults("json")}>
-                <Download aria-hidden="true" className="w-4 h-4" />
-                Export JSON
-              </Button>
-              <Button nowrap variant="secondary" size="sm" onClick={copyFailedUrls}>
-                <Copy aria-hidden="true" className="w-4 h-4" />
-                Copy Failed URLs
-              </Button>
-              <Button nowrap variant="secondary" size="sm" onClick={retryFailed}>
-                <RotateCcw aria-hidden="true" className="w-4 h-4" />
-                Retry Failed
-              </Button>
-            </div>
-
-            <div className="space-y-2">
-              {filteredResults.map((result) => (
-                <ResultRow
-                  key={`${result.index}-${result.url}`}
-                  result={result}
-                  iconForType={iconForType}
-                />
-              ))}
-            </div>
-          </Panel>
-        )}
-
-        {results.length === 0 && !loading && (
-          <Panel className="text-center">
-            <EmptyState
-              icon={<Link2 className="w-12 h-12" />}
-              title="Paste URLs above to get started"
-              description="Each URL will be resolved to show track, playlist, or user details."
-            />
-          </Panel>
-        )}
+            <option value="all">All types</option>
+            <option value="track">Track</option>
+            <option value="playlist">Playlist</option>
+            <option value="user">User</option>
+          </Select>
+          <Select
+            label="Sort by"
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as "status" | "type" | "title")}
+          >
+            <option value="status">Status</option>
+            <option value="type">Type</option>
+            <option value="title">Title</option>
+          </Select>
         </div>
-    </PageContainer>
+
+        <div className="grid grid-cols-1 gap-2 mb-4 sm:grid-cols-2 lg:flex lg:flex-wrap">
+          <Button nowrap variant="secondary" size="sm" onClick={() => exportResults("csv")}>
+            <Download aria-hidden="true" className="w-4 h-4" />
+            Export CSV
+          </Button>
+          <Button nowrap variant="secondary" size="sm" onClick={() => exportResults("json")}>
+            <Download aria-hidden="true" className="w-4 h-4" />
+            Export JSON
+          </Button>
+          <Button nowrap variant="secondary" size="sm" onClick={copyFailedUrls}>
+            <Copy aria-hidden="true" className="w-4 h-4" />
+            Copy Failed URLs
+          </Button>
+          <Button nowrap variant="secondary" size="sm" onClick={retryFailed}>
+            <RotateCcw aria-hidden="true" className="w-4 h-4" />
+            Retry Failed
+          </Button>
+        </div>
+
+        <div className="space-y-2">
+          {filteredResults.map((result) => (
+            <ResultRow
+              key={`${result.index}-${result.url}`}
+              result={result}
+              iconForType={iconForType}
+            />
+          ))}
+        </div>
+      </Panel>
   );
 }
 

@@ -98,6 +98,15 @@ describe('mountStaticSite', () => {
     expect(res.headers.location).toBe('/faq/#rebrand');
   });
 
+  test.each(['/batch-link-resolver', '/batch-link-resolver/'])(
+    '301s %s to the merged /link-resolver/',
+    async (path) => {
+      const res = await request(app).get(path);
+      expect(res.status).toBe(301);
+      expect(res.headers.location).toBe('/link-resolver/');
+    },
+  );
+
   test('leaves /api/* paths to a handler mounted after it', async () => {
     const res = await request(app).get('/api/x');
     expect(res.status).toBe(200);

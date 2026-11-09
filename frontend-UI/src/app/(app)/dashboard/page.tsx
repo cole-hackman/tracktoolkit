@@ -15,7 +15,6 @@ import {
   ThumbsUp,
   Users,
   Stethoscope,
-  ListChecks,
   ClipboardCheck,
   Download,
   Music,
@@ -134,7 +133,7 @@ const FEATURES: FeatureCard[] = [
   {
     id: "resolver",
     title: "Link Resolver",
-    description: "Get detailed info from any SoundCloud link",
+    description: "Get details from one SoundCloud link, or up to 50 at once",
     icon: LinkIcon,
     path: "/link-resolver",
     category: "Discovery & Links",
@@ -186,14 +185,6 @@ const FEATURES: FeatureCard[] = [
     icon: Search,
     path: "/playlist-keyword-search",
     category: "Playlists",
-  },
-  {
-    id: "batch-resolver",
-    title: "Batch Link Resolver",
-    description: "Resolve up to 50 SoundCloud URLs at once",
-    icon: ListChecks,
-    path: "/batch-link-resolver",
-    category: "Discovery & Links",
   },
   {
     id: "set-to-playlist",
@@ -258,7 +249,6 @@ const RECENT_LABELS: Record<string, string> = {
   "following-library": "Following Library",
   "health-check": "Playlist Health Check",
   "playlist-keyword-search": "Keyword Search",
-  "batch-resolver": "Batch Link Resolver",
   "playlist-cloner": "Playlist Cloner",
   "playlist-compare": "Playlist Compare",
   "genre-search": "Genre Search",
@@ -280,7 +270,6 @@ const RECENT_PATHS: Record<string, string> = {
   "following-library": "/following-library",
   "health-check": "/playlist-health-check",
   "playlist-keyword-search": "/playlist-keyword-search",
-  "batch-resolver": "/batch-link-resolver",
   "playlist-cloner": "/playlist-cloner",
   "playlist-compare": "/playlist-compare",
   "genre-search": "/genre-search",
@@ -419,7 +408,11 @@ export default function DashboardPage() {
   useEffect(() => {
     try {
       const stored = localStorage.getItem(LAST_TOOLS_KEY);
-      setRecentTools(stored ? JSON.parse(stored) : []);
+      const parsed: unknown = stored ? JSON.parse(stored) : [];
+      const slugs = Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === "string") : [];
+      // The batch resolver merged into the Link Resolver; a slug saved
+      // before that points at the one page, and is not listed twice.
+      setRecentTools([...new Set(slugs.map((s) => (s === "batch-resolver" ? "resolver" : s)))]);
     } catch {
       setRecentTools([]);
     }
