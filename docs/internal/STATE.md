@@ -104,6 +104,24 @@ Previously (still true): Droploud and Cobrand gates are merged and live
   reloads itself when its files change (seen working).
 
 ## Next
+### 2026-11-10 (one resolver, PR #113)
+Link Resolver and Batch Link Resolver are one page, `/link-resolver`
+(candidate 1 in `TOOL-CONSOLIDATION.md`; the run that confirmed it is in
+its "Results" section, PR #111). One text box: one link shows the old card
+(`components/resolver/ResolvedCard.tsx`), 2–50 show the old table
+(`ResolvedList.tsx`). Enter resolves, Shift+Enter adds a line, and a
+space-separated paste counts as several links. `/batch-link-resolver` 301s
+to `/link-resolver/` (`server/lib/retired-paths.js`, the one alias map,
+which `tests/routes/static-404.test.js` now imports). The endpoints and
+their logging are unchanged, so `resolve` and `batch-resolve` stay apart in
+`operation_logs`. A saved `batch-resolver` recent-tools slug maps to the
+resolver. Admin labels for `batch-resolver` stay, for old rows.
+0. Not verified live: merging deploys. After merging, check on the live
+   site that one link shows the card, two show the table, Enter and
+   Shift+Enter behave, and the old URL redirects.
+1. One unrelated e2e flake seen: `growth-genre.spec.ts` axe contrast at m390
+   (a button mid-hover, `#ff6b2f`); it passed 128 of 128 on a rerun.
+
 ### 2026-11-10
 1. **Set → Playlist merged (#98, `4738e14`) without its pre-merge check.**
    Create one real playlist on Cole's account from each fixture set: confirm
