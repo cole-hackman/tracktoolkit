@@ -414,6 +414,14 @@ Previously (still true): Droploud and Cobrand gates are merged and live
    only then may the two legacy icon files go.
 
 ## Decisions
+### From the 2026-11-10 downloads-usage session
+- **Gate downloads are logged server-side, via the page** (Cole, 2026-11-10):
+  the extension stays server-free; the Downloads page forwards per-track gate
+  outcomes to `POST /api/downloads/gate-results`. Cole chose not to change the
+  privacy policy because the accounts using it are internal testers he has
+  briefed. **The policy's line "the download queue you build … is never sent to
+  us" (`app/privacy/page.tsx`) is no longer literally true for gate outcomes**,
+  so revisit it before the extension or the allowlist goes beyond those testers.
 ### From the 2026-11-05 design-system session (PR #110)
 - **Tool pages are built from the shared pieces in DESIGN-SYSTEM.md**: one
   width per page type (`PageContainer kind`), one spacing scale, `Panel`

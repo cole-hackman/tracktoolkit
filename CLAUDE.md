@@ -309,6 +309,29 @@ downloads in the same selection included. The queue items are
 and the Hypeddit export for the local runner stays Hypeddit-only and
 unchanged.
 
+**Gate downloads are logged from the page, because the extension never calls
+the server.** The extension already tells the page, per track, how each gate
+ended (progress v2: `{ runId, items: [{ id, site, status, reason?, actions? }] }`,
+the `sc-toolkit-progress-update` event, kept in `sc-toolkit-hypeddit-progress`).
+`GateUsageReporter` (mounted by `(app)/AppGroupLayout`, so it works on any app
+page and in a tab opened after the run) forwards the finished ones — `done` and
+`failed` only — to `POST /api/downloads/gate-results` (`authenticateUser,
+requireCanDownload, validateGateResults, gateResultsLimiter`, ≤50 per call,
+120/hour per user). One `OperationLog` row per outcome,
+`action: 'gate-download'`, track id in `metadata.trackIds`, and
+`{ runId, site, via: 'extension', title?, artist?, reason?, actions? }` beside
+it; `failed` is status `error` with `errorCode: 'GATE_FAILED'`. `done` is the
+extension's meaning: Chrome reported the file complete. A repeat of the same
+(user, run, track, outcome) is skipped server-side (JSON-path lookup on
+`metadata.runId`) and client-side (`track-toolkit-gate-reported`), and a
+failure followed by a retry's success logs both. Pure logic is in
+`frontend-UI/src/lib/gate-usage.ts`, constants in `server/lib/gate-results.js`.
+**A gate only reaches the server if the person has a Track Toolkit tab open
+during the run or opens one before the next run replaces the extension's
+stored results**; an older extension that sends no per-track items reports
+nothing. Because `trackIds` is set, the catalog's touch counts and the
+`action=gate-download` filter pick these rows up with no extra work.
+
 ### Growth & Discovery (`routes/growth.js`)
 
 All `/growth/*` routes are `authenticateUser`; the write-heavy ones also carry
@@ -434,8 +457,8 @@ strip, KPI tiles, activity trend, outcome bar, feature usage/reach, errors),
 **Operations** (the searchable log with an inspector drawer), **Performance**
 (the `readLatency` p95 ranking and write health), **Catalog**, **Feedback**
 (the live in-app inbox) and **Archive** (closed rebrand vote, retired beta
-survey). The active view is the URL hash
-(`/admin#operations`); keys 1–6 switch views. Catalog has its own sub-views
+survey), with **Downloads** between Catalog and Feedback. The active view is
+the URL hash (`/admin#operations`); keys 1–7 switch views. Catalog has its own sub-views
 in the hash (`#catalog/tracks|playlists|artists|health`): the touches
 time-series, genre/access bars that filter, Tracks with optional
 duration/first-seen/last-seen columns and CSV export, Playlists, the Artists
@@ -452,6 +475,19 @@ pins that. Each view fetches only what it
 needs through the hooks in `queries.ts` (react-query; live views re-poll every
 30 s while the tab is visible and keep stale data on screen while refetching —
 never a skeleton flash). Archive queries are all-time and never poll.
+
+**Downloads is the console's usage view for the Downloads tool**
+(`views/DownloadsView.tsx`, `/api/admin/downloads/summary|tracks|events`). It
+reads one normalised event stream built in `downloadEventsCte` (admin.js):
+`proxy-download` (one click) and `download-links` (the queue) are channel
+`direct`, `gate-download` is its gate site (`hypeddit|droploud|cobrand`), one
+row per track. It shows totals, a per-day series, a per-channel bar list that
+filters the track table, the tracks table (downloads, people, failures, last,
+CSV export; title/artist from the catalog, else from the gate report), people
+(per-channel counts and an `extension` badge = any gate report from that
+account, ever) and a recent-events trail. `tests/routes/downloads-usage.integration.test.js`
+runs the SQL against a real Postgres when `TT_TEST_DATABASE_URL` points at a
+throwaway database; without it the suite skips.
 
 **Feedback is a view, not a panel in Archive.** `views/FeedbackView.tsx` reads
 the four `/api/admin/feedback-items*` routes: status tabs (with counts from
