@@ -49,7 +49,7 @@ export const READY: Record<string, ReadyLocator> = {
   // `growth/loading.tsx`'s own PageHeader while the skeleton is up.
   "/growth/": (page) => page.getByRole("checkbox", { name: "testfollowing1" }),
   // This route's settled load state is its form.
-  "/link-resolver/": (page) => page.getByLabel("SoundCloud URL"),
+  "/link-resolver/": (page) => page.getByLabel("SoundCloud links"),
   // The track list, from `/api/likes/paged`.
   "/likes-to-playlist/": (page) => page.getByRole("checkbox", { name: "Sample Track 1" }),
   // Opens on a playlist chooser, from `/api/playlists`.
@@ -113,15 +113,6 @@ export const READY: Record<string, ReadyLocator> = {
     await page.getByRole("dialog").waitFor({ state: "hidden" });
     await page.getByRole("button", { name: "Compare" }).click();
     return page.getByRole("heading", { name: /In both playlists/ });
-  },
-  // Resolve something: the filters, the row actions and the error styling
-  // only exist once there are results.
-  "/batch-link-resolver/": async (page) => {
-    await page
-      .getByLabel("SoundCloud URLs (one per line)")
-      .fill("https://soundcloud.com/testartist/sample-track-1");
-    await page.getByRole("button", { name: "Resolve All" }).click();
-    return page.getByRole("heading", { name: "Results" });
   },
   // Switch to the Playlists tab: it exercises the tab strip, the tabpanel
   // and the selectable playlist rows in one go, and none of that exists

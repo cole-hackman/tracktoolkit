@@ -22,6 +22,7 @@ import { apiRateLimiter, authRateLimiter, heavyOperationRateLimiter, healthCheck
 import { securityHeaders, preventKeyLeakage, validateEnv, rejectUntrustedOrigin } from './middleware/security.js';
 import { legacyHostRedirect } from './middleware/legacy-redirect.js';
 import { mountStaticSite } from './lib/static-site.js';
+import { RETIRED_PATH_ALIASES } from './lib/retired-paths.js';
 import logger from './lib/logger.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { createScMetrics } from './lib/token-context.js';
@@ -166,15 +167,8 @@ app.get('/health', healthCheckRateLimiter, (req, res) => {
 if (existsSync(FRONTEND_BUILD_PATH)) {
   logger.info(`Serving frontend from ${FRONTEND_BUILD_PATH}`);
 
-  // Retired paths -> the page that replaced them. 301 (not a client-side
-  // redirect) so search engines and old bookmarks converge on the new URL.
-  mountStaticSite(app, FRONTEND_BUILD_PATH, {
-    aliases: {
-      '/sc-toolkit': '/faq/#rebrand',
-      '/soundcloud-toolkit': '/faq/#rebrand',
-      '/rebrand': '/faq/#rebrand',
-    },
-  });
+  // Retired paths -> the page that replaced them (see retired-paths.js).
+  mountStaticSite(app, FRONTEND_BUILD_PATH, { aliases: RETIRED_PATH_ALIASES });
 } else {
   logger.info(`Frontend build not found at ${FRONTEND_BUILD_PATH} - API only mode`);
   

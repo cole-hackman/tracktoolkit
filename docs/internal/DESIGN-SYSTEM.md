@@ -24,7 +24,7 @@ lists, result display and search. Line counts are for `page.tsx`.
 | combine | 701 | wide | list + sticky panel | playlists (checkbox rows), target (dialog of buttons) | **none** | success screen **replaces the page** (h1, "Back to Dashboard" / "Merge More") |
 | likes-to-playlist | 584 | wide | list + sticky panel | likes (rows), target (dialog of buttons) | **none** | success screen replaces the page |
 | library-audit | 331 | wide | toolbar + results | — (scans all) | none | inline cards, notice at top |
-| link-resolver | 484 | narrow | form → output | — | — | output card below the form |
+| link-resolver | 195 | narrow | form → output card (one link) or result table (2–50) | — | results (table) | ResultPanel below; the batch resolver merged in 2026-11-10 |
 | like-manager | 500 | wide | toolbar + virtual list + bottom bar | likes | yes (progressive) | notice at top |
 | playlist-cloner | 449 | narrow | two forms → output | — | — | ResultPanel at the bottom |
 | genre-search | 574 | default | form → result list + bottom bar | results; target playlist (`Select` in a dialog) | form | success alert above the list |
@@ -33,7 +33,6 @@ lists, result display and search. Line counts are for `page.tsx`.
 | playlist-modifier | 1239 | wide | playlist grid → editor | playlists (button grid) | tracks only | notice at top |
 | playlist-to-likes | 408 | wide | playlist list → list + panel | playlists (button list), tracks | none | success screen replaces the page |
 | following-library | 1092 | wide | 320px rail + detail | followings, their playlists/likes, target | followings | ResultPanel in the detail column |
-| batch-link-resolver | 410 | narrow | form → result table | — | results | ResultPanel below |
 | growth | 1696 | wide | tabs, multi-step | seed users (grid), suggestions | seeds | "Campaign Initiated!" card replaces the step |
 | repost-manager | 581 | wide | toolbar + virtual list + bottom bar | reposts | yes (progressive) | notice at top |
 | downloads | 1272 | default | source grid → list (+ queue column) | playlists (button grid, own search) | playlists | inline alerts |
@@ -96,7 +95,7 @@ PageContainer kind=…          ← width for the page type, 16/24px gutters
 
 | `kind` | Max width | Use for | Pages |
 |---|---|---|---|
-| `form` | 896px (`max-w-4xl`) | one column: inputs, then their output | link-resolver, batch-link-resolver, playlist-cloner, set-to-playlist, export (+ sub-pages), account, feedback |
+| `form` | 896px (`max-w-4xl`) | one column: inputs, then their output | link-resolver, playlist-cloner, set-to-playlist, export (+ sub-pages), account, feedback |
 | `list` | 1024px (`max-w-5xl`) | one list or table with a toolbar | like-manager, following-manager, repost-manager, playlist-keyword-search, library-audit, playlist-compare, playlist-health-check, genre-search, downloads, rekordbox-gaps |
 | `workbench` | 1152px (`max-w-6xl`) | a list to pick from beside a sticky action panel (`ToolLayout`) | combine, likes-to-playlist, playlist-to-likes, activity-to-playlist, recently-played, playlist-modifier, following-library, growth |
 | `hub` | 1024px | grid of cards | dashboard |
@@ -286,7 +285,7 @@ at the end are in `docs/internal/STATE.md`.
 | combine | workbench | PlaylistPicker multi + search; PlaylistChooser target | yes |
 | likes-to-playlist | workbench | likes search + select shown; chooser | yes |
 | library-audit | list | — (≤20 per run) | yes |
-| link-resolver | form | — | errors (output stays content) |
+| link-resolver | form | results search (table) | errors; the table run is partial/success (the card stays content) |
 | like / following / repost manager | list | ListSearch (progressive note) | yes |
 | playlist-cloner | form | — | yes |
 | genre-search | list | inline picker in the add dialog | yes |
@@ -294,7 +293,6 @@ at the end are in `docs/internal/STATE.md`.
 | playlist-modifier | workbench | single picker (stays as aside); track search | yes |
 | playlist-to-likes | workbench | single picker; track search + select shown | yes |
 | following-library | workbench (rail kept) | followings / likes / playlists search; chooser | yes |
-| batch-link-resolver | form | results search | yes |
 | growth | workbench | seed, suggestion, session, action search | yes (step 4 kept) |
 | downloads | list | single picker + Liked Tracks row; track search | yes |
 | export (+4) | form | single picker on export/playlists | — |
@@ -350,7 +348,8 @@ what a tool sends to SoundCloud.
 - *Playlist Cloner:* a truncated likes copy, or one with a copy gap, is now
   titled "Partly cloned" (was "Cloning Complete"). A `CLONE_PARTIAL` shows
   one partial panel (was an alert plus a result).
-- *Batch Resolver:* the summary panel repeats the counts on the Results
+- *Batch Resolver* (merged into Link Resolver on 2026-11-10; the table
+  is `components/resolver/ResolvedList.tsx`): the summary panel repeats the counts on the Results
   header. The 50-link limit is a field error (same text). The "Showing N of
   M" count includes the status/type filters.
 - *Set → Playlist:* "no tracks found" / "more than 150" are Tracklist field

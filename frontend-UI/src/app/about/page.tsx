@@ -110,12 +110,8 @@ export default function AboutPage() {
               <ul className="list-disc list-inside space-y-2 ml-4">
                 <li>
                   <strong className="text-foreground">Link Resolver:</strong>{" "}
-                  Extract detailed metadata from any SoundCloud URL
-                </li>
-                <li>
-                  <strong className="text-foreground">Batch Link Resolver:</strong>{" "}
-                  Resolve up to 50 SoundCloud URLs at once and view details for
-                  each
+                  Extract detailed metadata from any SoundCloud URL, or paste
+                  up to 50 at once and see them all in one table
                 </li>
               </ul>
             </section>

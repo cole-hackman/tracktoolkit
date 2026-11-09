@@ -39,13 +39,36 @@ test("link-resolver: a failed resolve is an error result above the form", async 
     route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "Nothing found at that link" }) }),
   );
   await page.goto("/link-resolver/");
-  await page.getByLabel("SoundCloud URL").fill("https://soundcloud.com/nobody/nothing");
-  await page.getByRole("button", { name: "Resolve" }).click();
+  await page.getByLabel("SoundCloud links").fill("https://soundcloud.com/nobody/nothing");
+  // Enter resolves, as the one-line field this replaced did.
+  await page.getByLabel("SoundCloud links").press("Enter");
 
   const result = page.getByRole("region", { name: "Could not resolve link" });
   await expect(result).toBeFocused();
   await expect(result).toContainText("Nothing found at that link");
-  await expect(page.getByLabel("SoundCloud URL")).toBeVisible();
+  await expect(page.getByLabel("SoundCloud links")).toHaveValue("https://soundcloud.com/nobody/nothing");
+});
+
+test("link-resolver: one link shows the card, several show the table, and only one is on screen", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/link-resolver/");
+  const box = page.getByLabel("SoundCloud links");
+
+  await box.fill("https://soundcloud.com/testartist/sample-resolved-track");
+  await page.getByRole("button", { name: "Resolve", exact: true }).click();
+  await expect(page.getByRole("heading", { level: 2, name: "Sample Resolved Track" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Results" })).toHaveCount(0);
+
+  // Shift+Enter is a new line, not a run.
+  await box.press("End");
+  await box.press("Shift+Enter");
+  await box.pressSequentially("https://soundcloud.com/testartist/sets/sample-playlist-1");
+  await expect(box).toHaveValue(
+    "https://soundcloud.com/testartist/sample-resolved-track\nhttps://soundcloud.com/testartist/sets/sample-playlist-1",
+  );
+  await page.getByRole("button", { name: "Resolve 2 links" }).click();
+  await expect(page.getByRole("heading", { name: "Results" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "Sample Resolved Track" })).toHaveCount(0);
 });
 
 test("playlist-cloner: the clone result is a focused region and the forms stay", async ({ page }) => {
@@ -76,11 +99,11 @@ test("playlist-cloner: a failed clone is an error result", async ({ page }) => {
   await expect(result).toContainText("That playlist is not reachable");
 });
 
-test("batch-link-resolver: the run is a partial result and the search covers the rows", async ({ page }) => {
+test("link-resolver: several links are a partial result and the search covers the rows", async ({ page }) => {
   await mockApi(page);
-  await page.goto("/batch-link-resolver/");
-  await page.getByLabel("SoundCloud URLs (one per line)").fill("https://soundcloud.com/testartist/sample-track-1");
-  await page.getByRole("button", { name: "Resolve All" }).click();
+  await page.goto("/link-resolver/");
+  await page.getByLabel("SoundCloud links").fill("https://soundcloud.com/testartist/sample-track-1\nhttps://soundcloud.com/testartist/sets/sample-playlist-1");
+  await page.getByRole("button", { name: "Resolve 2 links" }).click();
 
   const result = page.getByRole("region", { name: "Links partly resolved" });
   await expect(result).toBeFocused();
@@ -128,20 +151,20 @@ test("playlist-cloner: dismissing a partial clone does not turn it into a failur
   await expect(page.getByRole("region", { name: "Could not clone" })).toHaveCount(0);
 });
 
-test("batch-link-resolver: over 50 links is refused on the field, a failed request is an error result", async ({ page }) => {
+test("link-resolver: over 50 links is refused on the field, a failed batch request is an error result", async ({ page }) => {
   await mockApi(page);
-  await page.goto("/batch-link-resolver/");
+  await page.goto("/link-resolver/");
   const links = Array.from({ length: 51 }, (_, i) => `https://soundcloud.com/a/t-${i}`).join("\n");
-  await page.getByLabel("SoundCloud URLs (one per line)").fill(links);
-  await page.getByRole("button", { name: "Resolve All" }).click();
-  await expect(page.getByText("Maximum 50 URLs at a time")).toBeVisible();
+  await page.getByLabel("SoundCloud links").fill(links);
+  await page.getByRole("button", { name: "Resolve 51 links" }).click();
+  await expect(page.getByText("Up to 50 links at a time. This has 51.")).toBeVisible();
   await expect(page.getByRole("region", { name: "Could not resolve links" })).toHaveCount(0);
 
   await page.route("**/api/resolve/batch*", (route) =>
     route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "Batch is down" }) }),
   );
-  await page.getByLabel("SoundCloud URLs (one per line)").fill("https://soundcloud.com/a/t-1");
-  await page.getByRole("button", { name: "Resolve All" }).click();
+  await page.getByLabel("SoundCloud links").fill("https://soundcloud.com/a/t-1 https://soundcloud.com/a/t-2");
+  await page.getByRole("button", { name: "Resolve 2 links" }).click();
   const result = page.getByRole("region", { name: "Could not resolve links" });
   await expect(result).toBeFocused();
   await expect(result).toContainText("Batch is down");

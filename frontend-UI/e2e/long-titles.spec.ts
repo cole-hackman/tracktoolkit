@@ -331,10 +331,10 @@ const CASES: Case[] = [
     proof: async (page) => expect(page.locator("main")).toContainText(LONG_USER),
   },
   {
-    path: "/batch-link-resolver/",
+    path: "/link-resolver/",
     drive: async (page) => {
-      await page.getByLabel("SoundCloud URLs (one per line)").fill("https://soundcloud.com/a/b");
-      await page.getByRole("button", { name: "Resolve All" }).click();
+      await page.getByLabel("SoundCloud links").fill("https://soundcloud.com/a/b\nhttps://soundcloud.com/a/c");
+      await page.getByRole("button", { name: "Resolve 2 links" }).click();
       await page.getByRole("heading", { name: "Results" }).waitFor();
     },
     proof: async (page) => expect(page.locator("main")).toContainText(LONG),

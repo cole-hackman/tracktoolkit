@@ -27,7 +27,7 @@ const LAST_REVIEWED = "2026-09-22";
  * `bg-primary/10` + `text-primary` on an icon measures 2.75:1 and appears on
  * the dashboard tiles, four places on the public landing page (`app/(home)/page.tsx`
  * — the feature cards and the step markers), the "What's new" modal, and two
- * result rows (batch-link-resolver, growth). Naming only the dashboard while
+ * result rows (the link resolver's table, growth). Naming only the dashboard while
  * the same thing sits on the page most visitors see first would understate
  * it on the one page where understating is the exposure.
  */

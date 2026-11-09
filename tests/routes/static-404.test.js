@@ -6,6 +6,7 @@ import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 
 import { mountStaticSite } from '../../server/lib/static-site.js';
+import { RETIRED_PATH_ALIASES } from '../../server/lib/retired-paths.js';
 
 let buildPath;
 let app;
@@ -53,13 +54,8 @@ beforeAll(async () => {
   writeFileSync(outsideFile, 'SENTINEL_SHOULD_NEVER_BE_SERVED');
 
   app = express();
-  mountStaticSite(app, buildPath, {
-    aliases: {
-      '/sc-toolkit': '/faq/#rebrand',
-      '/soundcloud-toolkit': '/faq/#rebrand',
-      '/rebrand': '/faq/#rebrand',
-    },
-  });
+  // The production map, so a retired path that loses its entry fails here.
+  mountStaticSite(app, buildPath, { aliases: RETIRED_PATH_ALIASES });
   // Registered after mountStaticSite, like server/index.js's real 404 API
   // handler and /health route — proves the static middleware passes these
   // through instead of swallowing them.
@@ -101,6 +97,15 @@ describe('mountStaticSite', () => {
     expect(res.status).toBe(301);
     expect(res.headers.location).toBe('/faq/#rebrand');
   });
+
+  test.each(['/batch-link-resolver', '/batch-link-resolver/'])(
+    '301s %s to the merged /link-resolver/',
+    async (path) => {
+      const res = await request(app).get(path);
+      expect(res.status).toBe(301);
+      expect(res.headers.location).toBe('/link-resolver/');
+    },
+  );
 
   test('leaves /api/* paths to a handler mounted after it', async () => {
     const res = await request(app).get('/api/x');

@@ -64,7 +64,6 @@ const PAGES: PageCase[] = [
   { path: "/export/reposts/", needsMock: true },
   { path: "/playlist-cloner/", needsMock: true },
   { path: "/playlist-compare/", needsMock: true },
-  { path: "/batch-link-resolver/", needsMock: true },
   { path: "/following-library/", needsMock: true },
   { path: "/library-audit/", needsMock: true },
 ];
@@ -329,7 +328,7 @@ test("link-resolver result does not overflow: /link-resolver/", async ({
   await page.goto("/link-resolver/");
 
   await page
-    .getByLabel("SoundCloud URL")
+    .getByLabel("SoundCloud links")
     .fill("https://soundcloud.com/testartist/sample-resolved-track");
   await page.getByRole("button", { name: "Resolve" }).click();
   await expect(

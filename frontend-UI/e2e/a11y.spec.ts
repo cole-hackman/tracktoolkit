@@ -63,7 +63,6 @@ const PAGES: PageCase[] = [
   { path: "/export/reposts/", needsMock: true },
   { path: "/playlist-cloner/", needsMock: true },
   { path: "/playlist-compare/", needsMock: true },
-  { path: "/batch-link-resolver/", needsMock: true },
   { path: "/following-library/", needsMock: true },
   { path: "/library-audit/", needsMock: true },
 ];
@@ -148,12 +147,30 @@ test("has no serious/critical WCAG 2.2 AA violations: /link-resolver/ result", a
   await page.goto("/link-resolver/");
 
   await page
-    .getByLabel("SoundCloud URL")
+    .getByLabel("SoundCloud links")
     .fill("https://soundcloud.com/testartist/sample-resolved-track");
   await page.getByRole("button", { name: "Resolve" }).click();
   await expect(
     page.getByRole("heading", { level: 2, name: "Sample Resolved Track" }),
   ).toBeVisible();
+
+  await expectNoBlockingViolations(page);
+});
+
+/**
+ * Two or more links show the table instead of the card: the filters, the row
+ * actions and the error styling only exist once there are results.
+ */
+test("has no serious/critical WCAG 2.2 AA violations: /link-resolver/ table", async ({
+  page,
+}) => {
+  await mockApi(page);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/link-resolver/");
+
+  await page.getByLabel("SoundCloud links").fill("https://soundcloud.com/testartist/sample-track-1\nhttps://soundcloud.com/testartist/sets/sample-playlist-1");
+  await page.getByRole("button", { name: "Resolve 2 links" }).click();
+  await expect(page.getByRole("heading", { name: "Results" })).toBeVisible();
 
   await expectNoBlockingViolations(page);
 });
@@ -171,7 +188,7 @@ test("link-resolver: copying swaps the label and announces it", async ({ page, c
   await page.goto("/link-resolver/");
 
   await page
-    .getByLabel("SoundCloud URL")
+    .getByLabel("SoundCloud links")
     .fill("https://soundcloud.com/testartist/sample-resolved-track");
   await page.getByRole("button", { name: "Resolve" }).click();
 

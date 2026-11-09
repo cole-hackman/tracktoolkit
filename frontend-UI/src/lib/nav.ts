@@ -30,7 +30,6 @@ import {
   HelpCircle,
   LayoutDashboard,
   Link as LinkIcon,
-  ListChecks,
   ListMusic,
   ListOrdered,
   ListPlus,
@@ -105,7 +104,6 @@ export const NAV: NavEntry[] = [
     label: "Links",
     items: [
       { href: "/link-resolver", label: "Link Resolver", icon: LinkIcon },
-      { href: "/batch-link-resolver", label: "Batch Resolver", icon: ListChecks },
     ],
   },
 ];

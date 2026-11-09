@@ -29,6 +29,8 @@ export const TOOL_RANKING: readonly ToolRank[] = [
   { id: "combine", users: 820, action: "merge" },
   { id: "likes", users: 717, action: "from-likes" },
   { id: "library-audit", users: 204, action: "library-audit" },
+  // Includes what was the Batch Link Resolver (23 users, batch-resolve), now
+  // the same page.
   { id: "resolver", users: 202, action: "resolve" },
   { id: "like-manager", users: 135, action: "bulk-unlike" },
   { id: "playlist-cloner", users: 127, action: "clone" },
@@ -40,7 +42,6 @@ export const TOOL_RANKING: readonly ToolRank[] = [
   // followed-likes-to-playlist (24) and followed-playlist-clone (11); the
   // overlap is unknown, so the larger figure is a floor for the tool.
   { id: "following-library", users: 24, action: "followed-likes-to-playlist" },
-  { id: "batch-resolver", users: 23, action: "batch-resolve" },
   { id: "repost-manager", users: 14, action: "bulk-remove-reposts" },
   // No figure yet.
   { id: "downloads", users: null },
