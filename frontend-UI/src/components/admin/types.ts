@@ -384,13 +384,120 @@ export interface FeedbackFilter {
  */
 export const DEFAULT_FEEDBACK_FILTER: FeedbackFilter = { status: "new", type: "", page: 1 };
 
-export type View = "overview" | "operations" | "performance" | "catalog" | "feedback" | "archive";
+export type View = "overview" | "operations" | "performance" | "catalog" | "downloads" | "feedback" | "archive";
 
 export const VIEWS: ReadonlyArray<{ id: View; label: string; hint: string }> = [
   { id: "overview", label: "Overview", hint: "Health, growth and what people use" },
   { id: "operations", label: "Operations", hint: "Every logged operation, searchable" },
   { id: "performance", label: "Performance", hint: "Latency by action, p95 first" },
   { id: "catalog", label: "Catalog", hint: "The harvested track catalog" },
+  { id: "downloads", label: "Downloads", hint: "Which tracks are downloaded, by whom, and how" },
   { id: "feedback", label: "Feedback", hint: "The live in-app feedback inbox" },
   { id: "archive", label: "Archive", hint: "Closed votes and retired surveys" },
 ];
+
+/* ── Downloads usage ─────────────────────────────────────────────────── */
+
+export type DownloadChannel = "direct" | "hypeddit" | "droploud" | "cobrand";
+
+export const DOWNLOAD_CHANNELS: ReadonlyArray<{ id: DownloadChannel; label: string; hint: string }> = [
+  { id: "direct", label: "Direct", hint: "SoundCloud's own download, through the site (one click or the queue)" },
+  { id: "hypeddit", label: "Hypeddit", hint: "A Hypeddit gate, worked by the extension" },
+  { id: "droploud", label: "Droploud", hint: "A Droploud gate, worked by the extension" },
+  { id: "cobrand", label: "Cobrand", hint: "A Cobrand gate, worked by the extension" },
+];
+
+export interface DownloadChannelStat {
+  channel: DownloadChannel;
+  downloads: number;
+  failures: number;
+  tracks: number;
+  users: number;
+}
+
+export interface DownloadUserRow {
+  userId: string;
+  username: string;
+  displayName: string | null;
+  soundcloudId: number | null;
+  direct: number;
+  hypeddit: number;
+  droploud: number;
+  cobrand: number;
+  failures: number;
+  lastAt: string | null;
+  usesExtension: boolean;
+}
+
+export interface DownloadsSummary {
+  period: Period;
+  totals: { downloads: number; failures: number; tracks: number; users: number; extensionUsers: number };
+  channels: DownloadChannelStat[];
+  daily: Array<{ date: string } & Record<DownloadChannel, number>>;
+  users: DownloadUserRow[];
+}
+
+export type DownloadTrackSort = "downloads" | "users" | "failures" | "lastAt" | "title";
+
+export interface DownloadTrack {
+  trackId: string;
+  title: string | null;
+  artist: string | null;
+  permalinkUrl: string | null;
+  downloads: number;
+  failures: number;
+  users: number;
+  channels: DownloadChannel[];
+  lastAt: string | null;
+}
+
+export interface DownloadTracksResponse {
+  tracks: DownloadTrack[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface DownloadEvent {
+  operationId: string;
+  at: string;
+  ok: boolean;
+  trackId: string;
+  title: string | null;
+  artist: string | null;
+  channel: DownloadChannel;
+  via: "click" | "queue" | "extension";
+  reason: string | null;
+  user: { id: string; username: string; displayName: string | null };
+}
+
+export interface DownloadEventsResponse {
+  events: DownloadEvent[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface DownloadsTrackFilter {
+  channel: DownloadChannel | "";
+  q: string;
+  sort: DownloadTrackSort;
+  order: "asc" | "desc";
+  page: number;
+}
+
+export const DEFAULT_DOWNLOADS_TRACK_FILTER: DownloadsTrackFilter = {
+  channel: "",
+  q: "",
+  sort: "downloads",
+  order: "desc",
+  page: 1,
+};
+
+export interface DownloadsEventFilter {
+  channel: DownloadChannel | "";
+  userId: string;
+  page: number;
+}
+
+export const DEFAULT_DOWNLOADS_EVENT_FILTER: DownloadsEventFilter = { channel: "", userId: "", page: 1 };

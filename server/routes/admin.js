@@ -29,6 +29,7 @@ const ACTION_NAMES = {
   'batch-resolve': 'Batch Resolve',
   'proxy-download': 'Proxy Download',
   'download-links': 'Download Queue',
+  'gate-download': 'Gate Download (extension)',
   'bulk-remove-reposts': 'Remove Reposts',
   'library-audit': 'Library Audit',
   'playlist-compare': 'Playlist Compare',
@@ -60,6 +61,7 @@ const ACTION_COLORS = {
   'batch-resolve': '#F19A0F',
   'proxy-download': '#4DA6FF',
   'download-links': '#4DA6FF',
+  'gate-download': '#4DA6FF',
   'bulk-remove-reposts': '#E74C3C',
   'library-audit': '#16A34A',
   'playlist-compare': '#7C3AED',
@@ -1471,6 +1473,324 @@ router.get('/feedback-items.csv', authenticateUser, adminAuth, async (req, res) 
   } catch (err) {
     logger.error('[admin/feedback-items.csv] Error:', safeError(err));
     res.status(500).json({ error: 'Failed to export feedback' });
+  }
+});
+
+// ─── Downloads usage ─────────────────────────────────────────────────────────
+
+const DOWNLOAD_CHANNELS = ['direct', 'hypeddit', 'droploud', 'cobrand'];
+
+/**
+ * One row per (track, download event) in the window, whichever way it was
+ * downloaded. Three sources, one shape:
+ *   proxy-download  one click on the Downloads page       -> channel 'direct'
+ *   download-links  the page's queue, success rows only    -> channel 'direct'
+ *   gate-download   a gate the extension worked, reported
+ *                   by the page (routes/api.js)            -> its gate site
+ * `ok` means the download got going for the direct paths (a link was handed
+ * out, as the history reads it) and, for a gate, that Chrome finished the file.
+ * A failed one-click row or failed gate counts as a failure, never a download.
+ * Free text (title, artist, reason) is only present on gate rows.
+ */
+function downloadEventsCte(cutoff) {
+  return Prisma.sql`
+    SELECT ol.id AS op_id,
+           ol."userId" AS user_id,
+           ol."createdAt" AS at,
+           (ol.status IN ('success', 'partial')) AS ok,
+           (jsonb_array_elements_text(ol.metadata->'trackIds'))::bigint AS track_id,
+           CASE ol.action
+             WHEN 'gate-download' THEN COALESCE(ol.metadata->>'site', 'gate')
+             ELSE 'direct'
+           END AS channel,
+           CASE ol.action
+             WHEN 'proxy-download' THEN 'click'
+             WHEN 'download-links' THEN 'queue'
+             ELSE 'extension'
+           END AS via,
+           ol.metadata->>'title' AS meta_title,
+           ol.metadata->>'artist' AS meta_artist,
+           COALESCE(ol.metadata->>'reason', ol."errorMessage") AS reason
+    FROM operation_logs ol
+    WHERE ol."createdAt" >= ${cutoff}
+      AND ol.action IN ('proxy-download', 'download-links', 'gate-download')
+      AND jsonb_typeof(ol.metadata->'trackIds') = 'array'
+  `;
+}
+
+const channelParam = (v) => (DOWNLOAD_CHANNELS.includes(v) ? v : null);
+
+/**
+ * GET /api/admin/downloads/summary?period=
+ *
+ * The Downloads tab's header: totals, one row per channel, a zero-filled
+ * per-day series by channel, and the people behind them with how many of each
+ * kind they ran. `usesExtension` is all-time (any gate report ever), because
+ * "has the extension" is a property of the person, not of the window.
+ */
+router.get('/downloads/summary', authenticateUser, adminAuth, async (req, res) => {
+  try {
+    const period = validPeriod(req.query.period);
+    const cutoff = periodToCutoff(period);
+
+    const [totalRows, channelRows, dayRows, userRows] = await Promise.all([
+      prisma.$queryRaw`
+        WITH ev AS (${downloadEventsCte(cutoff)})
+        SELECT COUNT(*) FILTER (WHERE ok)::int AS downloads,
+               COUNT(*) FILTER (WHERE NOT ok)::int AS failures,
+               COUNT(DISTINCT track_id) FILTER (WHERE ok)::int AS tracks,
+               COUNT(DISTINCT user_id)::int AS users,
+               COUNT(DISTINCT user_id) FILTER (WHERE via = 'extension')::int AS extension_users
+        FROM ev
+      `,
+      prisma.$queryRaw`
+        WITH ev AS (${downloadEventsCte(cutoff)})
+        SELECT channel,
+               COUNT(*) FILTER (WHERE ok)::int AS downloads,
+               COUNT(*) FILTER (WHERE NOT ok)::int AS failures,
+               COUNT(DISTINCT track_id) FILTER (WHERE ok)::int AS tracks,
+               COUNT(DISTINCT user_id)::int AS users
+        FROM ev
+        GROUP BY channel
+      `,
+      prisma.$queryRaw`
+        WITH ev AS (${downloadEventsCte(cutoff)})
+        SELECT DATE_TRUNC('day', at) AS day, channel, COUNT(*)::int AS downloads
+        FROM ev
+        WHERE ok
+        GROUP BY 1, 2
+        ORDER BY 1 ASC
+      `,
+      prisma.$queryRaw`
+        WITH ev AS (${downloadEventsCte(cutoff)}),
+        per AS (
+          SELECT user_id,
+                 COUNT(*) FILTER (WHERE ok AND channel = 'direct')::int AS direct,
+                 COUNT(*) FILTER (WHERE ok AND channel = 'hypeddit')::int AS hypeddit,
+                 COUNT(*) FILTER (WHERE ok AND channel = 'droploud')::int AS droploud,
+                 COUNT(*) FILTER (WHERE ok AND channel = 'cobrand')::int AS cobrand,
+                 COUNT(*) FILTER (WHERE NOT ok)::int AS failures,
+                 MAX(at) AS last_at
+          FROM ev
+          GROUP BY user_id
+        )
+        SELECT per.*, u.username, u."displayName" AS display_name, u."soundcloudId" AS soundcloud_id,
+               EXISTS (
+                 SELECT 1 FROM operation_logs g WHERE g."userId" = per.user_id AND g.action = 'gate-download'
+               ) AS uses_extension
+        FROM per
+        JOIN users u ON u.id = per.user_id
+        ORDER BY (per.direct + per.hypeddit + per.droploud + per.cobrand) DESC, per.last_at DESC
+        LIMIT 50
+      `,
+    ]);
+
+    const t = totalRows[0] || {};
+    const byChannel = new Map(channelRows.map((r) => [r.channel, r]));
+    const days = periodDayCount(period, cutoff, dayRows);
+    const dayIndex = DOWNLOAD_CHANNELS.map((channel) => dayRows.filter((r) => r.channel === channel));
+    const daily = fillDays(days, dayIndex, (...rows) => Object.fromEntries(
+      DOWNLOAD_CHANNELS.map((channel, i) => [channel, rows[i] ? Number(rows[i].downloads) : 0]),
+    ));
+
+    res.json({
+      period,
+      totals: {
+        downloads: Number(t.downloads ?? 0),
+        failures: Number(t.failures ?? 0),
+        tracks: Number(t.tracks ?? 0),
+        users: Number(t.users ?? 0),
+        extensionUsers: Number(t.extension_users ?? 0),
+      },
+      channels: DOWNLOAD_CHANNELS.map((channel) => {
+        const r = byChannel.get(channel);
+        return {
+          channel,
+          downloads: Number(r?.downloads ?? 0),
+          failures: Number(r?.failures ?? 0),
+          tracks: Number(r?.tracks ?? 0),
+          users: Number(r?.users ?? 0),
+        };
+      }),
+      daily,
+      users: userRows.map((r) => ({
+        userId: r.user_id,
+        username: r.username,
+        displayName: r.display_name,
+        soundcloudId: r.soundcloud_id,
+        direct: Number(r.direct),
+        hypeddit: Number(r.hypeddit),
+        droploud: Number(r.droploud),
+        cobrand: Number(r.cobrand),
+        failures: Number(r.failures),
+        lastAt: r.last_at ? new Date(r.last_at).toISOString() : null,
+        usesExtension: !!r.uses_extension,
+      })),
+    });
+  } catch (err) {
+    logger.error('[admin/downloads/summary] Error:', safeError(err));
+    res.status(500).json({ error: 'Failed to fetch downloads summary' });
+  }
+});
+
+const DOWNLOAD_TRACK_SORTS = {
+  downloads: 'downloads',
+  users: 'users',
+  failures: 'failures',
+  lastAt: 'last_at',
+  title: 'title',
+};
+
+/**
+ * GET /api/admin/downloads/tracks
+ *   ?period=&channel=direct|hypeddit|droploud|cobrand&q=&sort=&order=&page=&pageSize=&format=csv
+ *
+ * Which tracks are being downloaded: one row per track with how many times it
+ * was downloaded, by how many people, which channels, and when last. Title and
+ * artist come from the catalog when the track is in it, otherwise from what the
+ * gate report carried. `q` matches either.
+ */
+router.get('/downloads/tracks', authenticateUser, adminAuth, async (req, res) => {
+  try {
+    const period = validPeriod(req.query.period);
+    const cutoff = periodToCutoff(period);
+    const { csv, page, pageSize, sortKey, order } = listParams(req, DOWNLOAD_TRACK_SORTS, 'downloads');
+    const channel = channelParam(req.query.channel);
+    const q = strParam(req.query.q);
+
+    const filters = [];
+    if (channel) filters.push(Prisma.sql`ev.channel = ${channel}`);
+    const whereSql = filters.length ? Prisma.sql`WHERE ${Prisma.join(filters, ' AND ')}` : Prisma.empty;
+    const havingSql = q
+      ? Prisma.sql`HAVING COALESCE(MAX(t.title), MAX(ev.meta_title), '') ILIKE ${'%' + q + '%'}
+                      OR COALESCE(MAX(t."artistName"), MAX(ev.meta_artist), '') ILIKE ${'%' + q + '%'}`
+      : Prisma.empty;
+    const orderSql = Prisma.raw(`${DOWNLOAD_TRACK_SORTS[sortKey]} ${order} NULLS LAST, track_id ASC`);
+    const grouped = Prisma.sql`
+      FROM ev
+      LEFT JOIN "tracks" t ON t.id = ev.track_id
+      ${whereSql}
+      GROUP BY ev.track_id
+      ${havingSql}
+    `;
+
+    const [rows, countRows] = await Promise.all([
+      prisma.$queryRaw`
+        WITH ev AS (${downloadEventsCte(cutoff)})
+        SELECT ev.track_id,
+               COALESCE(MAX(t.title), MAX(ev.meta_title)) AS title,
+               COALESCE(MAX(t."artistName"), MAX(ev.meta_artist)) AS artist,
+               MAX(t."permalinkUrl") AS permalink_url,
+               COUNT(*) FILTER (WHERE ev.ok)::int AS downloads,
+               COUNT(*) FILTER (WHERE NOT ev.ok)::int AS failures,
+               COUNT(DISTINCT ev.user_id)::int AS users,
+               ARRAY_AGG(DISTINCT ev.channel) AS channels,
+               MAX(ev.at) AS last_at
+        ${grouped}
+        ORDER BY ${orderSql}
+        LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}
+      `,
+      csv ? Promise.resolve([{ total: 0 }]) : prisma.$queryRaw`
+        WITH ev AS (${downloadEventsCte(cutoff)})
+        SELECT COUNT(*)::int AS total FROM (SELECT ev.track_id ${grouped}) x
+      `,
+    ]);
+
+    const tracks = rows.map((r) => ({
+      trackId: String(r.track_id),
+      title: r.title ?? null,
+      artist: r.artist ?? null,
+      permalinkUrl: r.permalink_url ?? null,
+      downloads: Number(r.downloads),
+      failures: Number(r.failures),
+      users: Number(r.users),
+      channels: (r.channels || []).filter((c) => DOWNLOAD_CHANNELS.includes(c)),
+      lastAt: r.last_at ? new Date(r.last_at).toISOString() : null,
+    }));
+
+    if (csv) {
+      return sendCsv(
+        res,
+        `downloads-tracks-${period}.csv`,
+        ['trackId', 'title', 'artist', 'downloads', 'failures', 'users', 'channels', 'lastAt'],
+        tracks.map((r) => ({ ...r, channels: r.channels.join(' ') })),
+      );
+    }
+    res.json({
+      tracks,
+      total: Number(countRows[0]?.total ?? 0),
+      page,
+      pageSize,
+      sort: sortKey,
+      order: order.toLowerCase(),
+    });
+  } catch (err) {
+    logger.error('[admin/downloads/tracks] Error:', safeError(err));
+    res.status(500).json({ error: 'Failed to fetch downloaded tracks' });
+  }
+});
+
+/**
+ * GET /api/admin/downloads/events?period=&channel=&userId=&page=&pageSize=
+ *
+ * The raw trail, newest first: when, who, which track, which channel (and
+ * whether it was a one-click, a queue or the extension), and the failure
+ * reason when there was one.
+ */
+router.get('/downloads/events', authenticateUser, adminAuth, async (req, res) => {
+  try {
+    const period = validPeriod(req.query.period);
+    const cutoff = periodToCutoff(period);
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(req.query.pageSize) || 25, 1), 100);
+    const channel = channelParam(req.query.channel);
+    const userId = strParam(req.query.userId);
+
+    const filters = [];
+    if (channel) filters.push(Prisma.sql`ev.channel = ${channel}`);
+    if (userId) filters.push(Prisma.sql`ev.user_id = ${userId}`);
+    const whereSql = filters.length ? Prisma.sql`WHERE ${Prisma.join(filters, ' AND ')}` : Prisma.empty;
+
+    const [rows, countRows] = await Promise.all([
+      prisma.$queryRaw`
+        WITH ev AS (${downloadEventsCte(cutoff)})
+        SELECT ev.op_id, ev.at, ev.ok, ev.track_id, ev.channel, ev.via, ev.reason,
+               COALESCE(t.title, ev.meta_title) AS title,
+               COALESCE(t."artistName", ev.meta_artist) AS artist,
+               u.id AS user_id, u.username, u."displayName" AS display_name
+        FROM ev
+        JOIN users u ON u.id = ev.user_id
+        LEFT JOIN "tracks" t ON t.id = ev.track_id
+        ${whereSql}
+        ORDER BY ev.at DESC, ev.track_id ASC
+        LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}
+      `,
+      prisma.$queryRaw`
+        WITH ev AS (${downloadEventsCte(cutoff)})
+        SELECT COUNT(*)::int AS total FROM ev ${whereSql}
+      `,
+    ]);
+
+    res.json({
+      events: rows.map((r) => ({
+        operationId: r.op_id,
+        at: new Date(r.at).toISOString(),
+        ok: !!r.ok,
+        trackId: String(r.track_id),
+        title: r.title ?? null,
+        artist: r.artist ?? null,
+        channel: r.channel,
+        via: r.via,
+        reason: r.reason ?? null,
+        user: { id: r.user_id, username: r.username, displayName: r.display_name },
+      })),
+      total: Number(countRows[0]?.total ?? 0),
+      page,
+      pageSize,
+    });
+  } catch (err) {
+    logger.error('[admin/downloads/events] Error:', safeError(err));
+    res.status(500).json({ error: 'Failed to fetch download events' });
   }
 });
 
