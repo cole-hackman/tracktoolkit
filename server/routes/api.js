@@ -32,6 +32,7 @@ import {
   invalidatePlaylistState,
 } from '../lib/social-cache.js';
 import { safeError } from '../lib/safe-error.js';
+import { GATE_ACTION_NAME, gateResultKey } from '../lib/gate-results.js';
 import { downloadTrackIdFromUrl, isAllowedDownloadRedirectTarget, isAllowedDownloadUrl } from '../lib/download-utils.js';
 import { cursorEndpoint, InvalidCursorError } from '../lib/sc-cursor.js';
 import { buildDashboardSummary } from '../lib/dashboard-summary.js';
@@ -71,6 +72,7 @@ import {
   validateBulkUnlike,
   validateBulkLike,
   validateDownloadLinks,
+  validateGateResults,
   validateUserUrnParam,
   validateBulkUnfollow,
   validateBulkUnrepost,
@@ -1654,6 +1656,83 @@ router.post('/downloads/links', authenticateUser, requireCanDownload, validateDo
     if (!res.headersSent) res.status(500).json({ error: 'Failed to fetch download links' });
   } finally {
     downloadLinksInFlight.delete(userId);
+  }
+});
+
+// Per user. A run reports a few times (once per progress change the page sees,
+// batched), so this is generous; it only has to stop a runaway loop.
+const gateResultsLimiter = createUserLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 120,
+  message: 'Too many gate reports this hour.',
+});
+
+/**
+ * POST /api/downloads/gate-results — how each gate in an extension run ended.
+ *
+ * The extension never calls this server; the Downloads page forwards what the
+ * extension already tells it (progress v2, per track), so the admin console
+ * can see gate downloads next to the direct ones. One OperationLog row per
+ * track outcome, with the track in `metadata.trackIds` and the site, run and
+ * reason beside it.
+ *
+ * "done" is the extension's own meaning: Chrome reported the gate's download
+ * complete (the extension holds it in "saving" until then). A gate that never
+ * delivered a file is "failed", with the reason it gave.
+ *
+ * Repeats are expected (the page re-sends a run's progress on every change),
+ * so a (run, track, outcome) already logged for this user is skipped. A track
+ * that failed and later succeeded on a retry logs both, which is the truth.
+ *
+ * Order is load-bearing, as on `/downloads/links`: authenticateUser, then
+ * requireCanDownload, then the validator (an empty or form-encoded body dies
+ * here before it can spend the limiter), then the per-user limiter.
+ */
+router.post('/downloads/gate-results', authenticateUser, requireCanDownload, validateGateResults, gateResultsLimiter, async (req, res) => {
+  try {
+    const { runId, results } = req.body;
+    const prior = await prisma.operationLog.findMany({
+      where: { userId: req.user.id, action: GATE_ACTION_NAME, metadata: { path: ['runId'], equals: runId } },
+      select: { status: true, metadata: true },
+      take: 2000,
+    });
+    const seen = new Set(
+      prior.map((row) => gateResultKey(row.metadata?.trackIds?.[0], row.status === 'success' ? 'done' : 'failed')),
+    );
+
+    let logged = 0;
+    let duplicates = 0;
+    for (const result of results) {
+      const key = gateResultKey(result.id, result.status);
+      if (seen.has(key)) {
+        duplicates++;
+        continue;
+      }
+      seen.add(key);
+      const ok = result.status === 'done';
+      await logOperation({
+        req,
+        action: GATE_ACTION_NAME,
+        status: ok ? 'success' : 'error',
+        trackIds: [result.id],
+        errorCode: ok ? undefined : 'GATE_FAILED',
+        errorMessage: ok ? undefined : result.reason,
+        metadata: {
+          runId,
+          site: result.site,
+          via: 'extension',
+          ...(result.title ? { title: result.title } : {}),
+          ...(result.artist ? { artist: result.artist } : {}),
+          ...(result.reason ? { reason: result.reason } : {}),
+          ...(Array.isArray(result.actions) && result.actions.length ? { actions: result.actions } : {}),
+        },
+      });
+      logged++;
+    }
+    res.json({ logged, duplicates });
+  } catch (error) {
+    logger.error('Gate results error:', safeError(error));
+    res.status(500).json({ error: 'Failed to record gate results' });
   }
 });
 

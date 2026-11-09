@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { AppLayout } from "@/components/AppLayout";
 import { AppShell } from "@/components/AppShell";
+import { GateUsageReporter } from "@/components/GateUsageReporter";
 import { RebrandAnnouncement } from "@/components/RebrandAnnouncement";
 import { apiFetch } from "@/lib/api";
 import { markNavigated } from "@/lib/navigation-state";
@@ -96,6 +97,7 @@ export function AppGroupLayout({
           The dashboard holds "What's new" back until this is acknowledged, so
           the two never stack. */}
       <RebrandAnnouncement />
+      <GateUsageReporter />
       <AppShell>{children}</AppShell>
     </AppLayout>
   );
