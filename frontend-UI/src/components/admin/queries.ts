@@ -12,6 +12,11 @@ import type {
   CatalogPlaylistsResponse,
   CatalogSummary,
   CatalogTracksResponse,
+  DownloadEventsResponse,
+  DownloadsEventFilter,
+  DownloadsSummary,
+  DownloadsTrackFilter,
+  DownloadTracksResponse,
   FeedbackFilter,
   FeedbackItem,
   FeedbackItemsResponse,
@@ -77,6 +82,11 @@ export const adminKeys = {
     ["admin", "catalog", "artists", period, filter] as const,
   rebrandSummary: () => ["admin", "rebrand", "summary"] as const,
   rebrandVotes: () => ["admin", "rebrand", "votes"] as const,
+  downloadsSummary: (period: Period) => ["admin", "downloads", "summary", period] as const,
+  downloadsTracks: (period: Period, filter: DownloadsTrackFilter) =>
+    ["admin", "downloads", "tracks", period, filter] as const,
+  downloadsEvents: (period: Period, filter: DownloadsEventFilter) =>
+    ["admin", "downloads", "events", period, filter] as const,
   betaSurvey: () => ["admin", "feedback", "summary"] as const,
   // "feedback-items", not "feedback": `betaSurvey` above already owns the
   // ["admin","feedback",…] prefix, and invalidating one must not sweep the
@@ -381,5 +391,60 @@ export function useFeedbackPatch() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["admin", "feedback-items"] });
     },
+  });
+}
+
+/* ── Downloads usage ─────────────────────────────────────────────────── */
+
+export const DOWNLOADS_PAGE_SIZE = 25;
+
+export function useDownloadsSummary(period: Period, enabled: boolean) {
+  return useQuery({
+    queryKey: adminKeys.downloadsSummary(period),
+    queryFn: () => adminGet<DownloadsSummary>(`/api/admin/downloads/summary?period=${period}`),
+    enabled,
+    ...live,
+  });
+}
+
+/** Query string for the track listing; shared by the table and its CSV link. */
+export function downloadsTracksParams(period: Period, filter: DownloadsTrackFilter): URLSearchParams {
+  const params = new URLSearchParams({ period, sort: filter.sort, order: filter.order });
+  if (filter.channel) params.set("channel", filter.channel);
+  if (filter.q.trim()) params.set("q", filter.q.trim());
+  return params;
+}
+
+export function downloadsTracksCsvUrl(period: Period, filter: DownloadsTrackFilter): string {
+  const params = downloadsTracksParams(period, filter);
+  params.set("format", "csv");
+  return `${API_BASE}/api/admin/downloads/tracks?${params.toString()}`;
+}
+
+export function useDownloadsTracks(period: Period, filter: DownloadsTrackFilter, enabled: boolean) {
+  return useQuery({
+    queryKey: adminKeys.downloadsTracks(period, filter),
+    queryFn: () => {
+      const params = downloadsTracksParams(period, filter);
+      params.set("page", String(filter.page));
+      params.set("pageSize", String(DOWNLOADS_PAGE_SIZE));
+      return adminGet<DownloadTracksResponse>(`/api/admin/downloads/tracks?${params.toString()}`);
+    },
+    enabled,
+    ...live,
+  });
+}
+
+export function useDownloadsEvents(period: Period, filter: DownloadsEventFilter, enabled: boolean) {
+  return useQuery({
+    queryKey: adminKeys.downloadsEvents(period, filter),
+    queryFn: () => {
+      const params = new URLSearchParams({ period, page: String(filter.page), pageSize: String(DOWNLOADS_PAGE_SIZE) });
+      if (filter.channel) params.set("channel", filter.channel);
+      if (filter.userId) params.set("userId", filter.userId);
+      return adminGet<DownloadEventsResponse>(`/api/admin/downloads/events?${params.toString()}`);
+    },
+    enabled,
+    ...live,
   });
 }

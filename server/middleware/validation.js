@@ -1,6 +1,7 @@
 import { body, param, query, validationResult } from 'express-validator';
 import { parseKeywords } from '../lib/playlist-search.js';
 import { isAllowedDownloadUrl } from '../lib/download-utils.js';
+import { GATE_ACTIONS, GATE_OUTCOMES, GATE_RESULTS_MAX, GATE_SITES } from '../lib/gate-results.js';
 import { GENRE_FOCUS_SLUGS } from '../lib/genres.js';
 import { isSoundCloudApiUrl } from '../lib/sc-cursor.js';
 import { isAllowedSourceUrl } from '../lib/setlist.js';
@@ -543,6 +544,58 @@ export const validateDownloadLinks = [
     .bail()
     .custom((value) => isAllowedDownloadUrl(value))
     .withMessage('Each url must be a SoundCloud track download URL'),
+  handleValidationErrors
+];
+
+/**
+ * POST /api/downloads/gate-results — how each gate in a run ended, as the
+ * extension reported it to the page. `.isString()` leads every text field
+ * (express-validator applies a validator element-wise to an array), and the
+ * free text is plain: control characters go before the length is measured,
+ * and nothing is `.escape()`d because it is stored, never rendered as HTML.
+ */
+export const validateGateResults = [
+  body('runId')
+    .isString()
+    .bail()
+    .matches(/^[A-Za-z0-9_-]{1,64}$/)
+    .withMessage('runId must be 1-64 letters, digits, - or _'),
+  body('results')
+    .isArray({ min: 1, max: GATE_RESULTS_MAX })
+    .withMessage(`results must be an array with 1-${GATE_RESULTS_MAX} items`),
+  body('results.*.id')
+    .isInt({ min: 1, max: Number.MAX_SAFE_INTEGER, allow_leading_zeroes: false })
+    .withMessage('Each result needs a positive integer id')
+    .toInt(),
+  body('results.*.site')
+    .isString()
+    .bail()
+    .isIn(GATE_SITES)
+    .withMessage('Unknown gate site'),
+  body('results.*.status')
+    .isString()
+    .bail()
+    .isIn(GATE_OUTCOMES)
+    .withMessage('status must be done or failed'),
+  ...['reason', 'title', 'artist'].map((field) =>
+    body(`results.*.${field}`)
+      .optional({ nullable: true })
+      .isString()
+      .withMessage(`${field} must be text`)
+      .customSanitizer((value) => stripControlChars(value))
+      .trim()
+      .isLength({ max: field === 'reason' ? 300 : 200 })
+      .withMessage(`${field} is too long`),
+  ),
+  body('results.*.actions')
+    .optional({ nullable: true })
+    .isArray({ max: GATE_ACTIONS.length })
+    .withMessage('actions must be a short list'),
+  body('results.*.actions.*')
+    .isString()
+    .bail()
+    .isIn(GATE_ACTIONS)
+    .withMessage('Unknown gate action'),
   handleValidationErrors
 ];
 

@@ -15,6 +15,7 @@ import { POLL_MS } from "./queries";
 import { DEFAULT_OPS_FILTER, PERIODS, VIEWS, type OperationsFilter, type Period, type View } from "./types";
 import { ArchiveView } from "./views/ArchiveView";
 import { CatalogView } from "./views/catalog/CatalogView";
+import { DownloadsView } from "./views/DownloadsView";
 import { FeedbackView } from "./views/FeedbackView";
 import { OperationsView } from "./views/OperationsView";
 import { OverviewView } from "./views/OverviewView";
@@ -268,6 +269,7 @@ export function AdminConsole() {
           {view === "operations" && <OperationsView period={period} enabled={enabled} filter={opsFilter} onFilterChange={setOpsFilter} />}
           {view === "performance" && <PerformanceView period={period} enabled={enabled} onInspectAction={inspectAction} />}
           {view === "catalog" && <CatalogView period={period} enabled={enabled} />}
+          {view === "downloads" && <DownloadsView period={period} enabled={enabled} />}
           {/* The inbox takes no period: it is a queue, not a time series. */}
           {view === "feedback" && <FeedbackView enabled={enabled} />}
           {view === "archive" && <ArchiveView enabled={enabled} />}
