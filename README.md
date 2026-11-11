@@ -143,10 +143,12 @@ flowchart LR
 
 Both badges read [`/api/stats/public`](https://tracktoolkit.com/api/stats/public),
 which serves counters the production retention job recomputes every day.
-**Users** is everyone who has ever run an operation. **Tracks processed** is
-the running total of tracks across every operation. Both live in the
-`metrics` table so neither goes down when old `operation_logs` rows age out
-(see `server/lib/retention.js`).
+**Users** is every account that has ever signed in, including ones since
+deleted. **Tracks processed** is the running total of tracks across every
+operation, including those of deleted accounts. Both live in the `metrics`
+table so neither goes down when an account and its `operation_logs` rows are
+deleted (see `server/lib/retention.js`). The admin dashboard's all-time
+figures read the same two rows.
 
 </details>
 

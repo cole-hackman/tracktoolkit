@@ -257,14 +257,14 @@ export interface DownloadHistoryEntry {
 export function downloadHistoryQueryOptions() {
   return {
     queryKey: queryKeys.downloadHistory(),
-    queryFn: () => apiFetchJson<{ tracks: DownloadHistoryEntry[]; retentionDays: number }>("/api/downloads/history"),
+    queryFn: () => apiFetchJson<{ tracks: DownloadHistoryEntry[]; retentionDays: number | null }>("/api/downloads/history"),
     ...timings.downloadHistory,
   };
 }
 
 /** Admin only on the server; pass `enabled: isAdmin` so nobody else asks. */
 export function useDownloadHistoryQuery(
-  options?: QueryOverrides<{ tracks: DownloadHistoryEntry[]; retentionDays: number }>,
+  options?: QueryOverrides<{ tracks: DownloadHistoryEntry[]; retentionDays: number | null }>,
 ) {
   return useQuery({ ...downloadHistoryQueryOptions(), ...options });
 }

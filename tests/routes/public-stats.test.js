@@ -8,7 +8,7 @@ jest.unstable_mockModule('../../server/lib/prisma.js', () => ({
 }));
 
 const { default: statsRoutes } = await import('../../server/routes/stats.js');
-const { LIFETIME_METRIC_KEY, TRACKS_METRIC_KEY } = await import('../../server/lib/retention.js');
+const { USERS_METRIC_KEY, TRACKS_METRIC_KEY } = await import('../../server/lib/retention.js');
 
 const app = express();
 app.use('/api/stats', statsRoutes);
@@ -24,7 +24,7 @@ beforeEach(() => {
 describe('GET /api/stats/public', () => {
   test('serves both counters from the metrics table, raw and grouped', async () => {
     findMany.mockResolvedValue([
-      { key: LIFETIME_METRIC_KEY, value: 3570n, updatedAt: new Date('2026-10-06T12:10:00Z') },
+      { key: USERS_METRIC_KEY, value: 3570n, updatedAt: new Date('2026-10-06T12:10:00Z') },
       { key: TRACKS_METRIC_KEY, value: 2032233n, updatedAt: new Date('2026-10-06T12:10:01Z') },
     ]);
 
@@ -45,7 +45,7 @@ describe('GET /api/stats/public', () => {
     await request(app).get('/api/stats/public');
 
     expect(findMany).toHaveBeenCalledWith({
-      where: { key: { in: [LIFETIME_METRIC_KEY, TRACKS_METRIC_KEY] } },
+      where: { key: { in: [USERS_METRIC_KEY, TRACKS_METRIC_KEY] } },
     });
   });
 
@@ -59,7 +59,7 @@ describe('GET /api/stats/public', () => {
 
   test('a counter the retention job has not written yet is null, not 0', async () => {
     findMany.mockResolvedValue([
-      { key: LIFETIME_METRIC_KEY, value: 12n, updatedAt: new Date('2026-10-06T12:10:00Z') },
+      { key: USERS_METRIC_KEY, value: 12n, updatedAt: new Date('2026-10-06T12:10:00Z') },
     ]);
 
     const res = await request(app).get('/api/stats/public');

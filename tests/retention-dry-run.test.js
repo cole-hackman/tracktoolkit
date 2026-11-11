@@ -49,7 +49,6 @@ const MUTATING = [
   'libraryCachePage.deleteMany',
   'libraryCacheState.deleteMany',
   'user.deleteMany',
-  'operationLog.deleteMany',
   'growthAction.deleteMany',
   'feedback.deleteMany',
   'betaSignup.updateMany',
@@ -62,7 +61,6 @@ const READING = [
   'libraryCachePage.count',
   'libraryCacheState.count',
   'user.count',
-  'operationLog.count',
   'growthAction.count',
   'feedback.count',
   'betaSignup.count',
@@ -142,7 +140,6 @@ beforeEach(() => {
     'libraryCachePage.count': 3,
     'libraryCacheState.count': 2,
     'user.count': 12,
-    'operationLog.count': 40,
     'growthAction.count': 7,
     'feedback.count': 1,
     'betaSignup.count': 5,
@@ -150,7 +147,7 @@ beforeEach(() => {
   };
   for (const [path, value] of Object.entries(counts)) at(path).mockReset().mockResolvedValue(value);
   at('metric.findUnique').mockReset().mockResolvedValue(null);
-  declared.$queryRaw.mockReset().mockResolvedValue([{ count: 3 }]);
+  declared.$queryRaw.mockReset().mockResolvedValue([{ users: 3, tracks: 250 }]);
   infoSpy.mockClear();
   errorSpy.mockClear();
   delete process.env.RETENTION_DRY_RUN;
@@ -212,7 +209,6 @@ describe('RETENTION_DRY_RUN', () => {
       '[INFO] [retention] library-cache-states would remove 2',
       '[INFO] [retention] disconnected-users would remove 12',
       '[INFO] [retention] inactive-users would remove 12',
-      '[INFO] [retention] operation-logs would remove 40',
       '[INFO] [retention] growth-actions would remove 7',
       '[INFO] [retention] feedback would remove 1',
       '[INFO] [retention] beta-signup-emails would remove 5',
@@ -240,7 +236,6 @@ describe('RETENTION_DRY_RUN', () => {
     expect(results).toMatchObject({
       'library-cache-pages': 3,
       'disconnected-users': 12,
-      'operation-logs': 40,
       'catalog-gone-metadata': 9,
     });
   });
@@ -256,7 +251,7 @@ describe('RETENTION_DRY_RUN', () => {
   test('the tracks total is computed but neither it nor its cursor is stored', async () => {
     process.env.RETENTION_DRY_RUN = 'true';
     declared.$queryRaw.mockImplementation(async (sql) => (
-      /SUM\("trackCount"\)/.test(sql.strings.join('')) ? [{ tracks: 250n }] : [{ count: 3 }]));
+      /SUM\("trackCount"\)/.test(sql.strings.join('')) ? [{ tracks: 250n }] : [{ users: 3 }]));
 
     const results = await runRetentionOnce(NOW);
 
@@ -267,11 +262,11 @@ describe('RETENTION_DRY_RUN', () => {
 
   test('a failing count is isolated like any other step, and still writes nothing', async () => {
     process.env.RETENTION_DRY_RUN = 'true';
-    at('operationLog.count').mockRejectedValue(new Error('boom'));
+    at('growthAction.count').mockRejectedValue(new Error('boom'));
 
     const results = await runRetentionOnce(NOW);
 
-    expect(results['operation-logs']).toBeNull();
+    expect(results['growth-actions']).toBeNull();
     // The steps after it still ran.
     expect(results['catalog-gone-metadata']).toBe(9);
     expect(writes).toEqual([]);
@@ -280,6 +275,9 @@ describe('RETENTION_DRY_RUN', () => {
   test('without the flag the sweep writes normally — the guard is the flag, not the refactor', async () => {
     await runRetentionOnce(NOW);
     expect(MUTATING.filter((path) => at(path).mock.calls.length === 0)).toEqual([]);
+    // Operation logs are never aged out (2026-11-11); they only go with their
+    // user. Any write to them from the sweep itself would be a regression.
+    expect(writes.filter((w) => w.startsWith('operationLog.'))).toEqual([]);
     expect(logLines()).not.toEqual(expect.arrayContaining([
       expect.stringContaining('DRY RUN'),
     ]));

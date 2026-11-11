@@ -48,7 +48,7 @@ jest.unstable_mockModule('../server/lib/prisma.js', () => ({ default: prismaMock
 
 const {
   runRetentionOnce, startRetentionScheduler, resolveIntervalMs,
-  LIFETIME_METRIC_KEY, TRACKS_METRIC_KEY, TRACKS_CURSOR_KEY,
+  USERS_METRIC_KEY, USERS_CURSOR_KEY, TRACKS_METRIC_KEY, TRACKS_CURSOR_KEY,
 } = await import('../server/lib/retention.js');
 
 const infoSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
@@ -66,8 +66,8 @@ beforeEach(() => {
   }
   infoSpy.mockClear();
   errorSpy.mockClear();
-  // COUNT(DISTINCT "userId") comes back as a one-row result set.
-  queryRaw.mockResolvedValue([{ count: 3 }]);
+  // Both lifetime counters come back as a one-row result set.
+  queryRaw.mockResolvedValue([{ users: 3, tracks: 250 }]);
   userCount.mockResolvedValue(1);
   metricFindUnique.mockResolvedValue(null);
   metricUpsert.mockResolvedValue({});
@@ -160,30 +160,27 @@ describe('cutoff dates', () => {
     }
   });
 
-  test('operation logs, growth actions and feedback use their own windows', async () => {
+  // Cole's decision, 2026-11-11: logs stay while the account does. They leave
+  // with their user (the sweeps above and the delete route cascade into them).
+  test('operation logs are never deleted by age, whatever the old env var says', async () => {
+    process.env.OPLOG_RETENTION_DAYS = '30';
+    try {
+      await runRetentionOnce(NOW);
+      expect(operationLogDeleteMany).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.OPLOG_RETENTION_DAYS;
+    }
+  });
+
+  test('growth actions and feedback use their own windows', async () => {
     await runRetentionOnce(NOW);
 
-    expect(operationLogDeleteMany).toHaveBeenCalledWith({
-      where: { createdAt: { lt: daysBefore(365) } },
-    });
     expect(growthActionDeleteMany).toHaveBeenCalledWith({
       where: { createdAt: { lt: daysBefore(365) } },
     });
     expect(feedbackDeleteMany).toHaveBeenCalledWith({
       where: { createdAt: { lt: daysBefore(730) } },
     });
-  });
-
-  test('OPLOG_RETENTION_DAYS overrides the log window', async () => {
-    process.env.OPLOG_RETENTION_DAYS = '30';
-    try {
-      await runRetentionOnce(NOW);
-      expect(operationLogDeleteMany).toHaveBeenCalledWith({
-        where: { createdAt: { lt: daysBefore(30) } },
-      });
-    } finally {
-      delete process.env.OPLOG_RETENTION_DAYS;
-    }
   });
 });
 
@@ -211,54 +208,64 @@ describe('unconditional steps', () => {
   });
 });
 
-describe('lifetime distinct-user snapshot', () => {
-  test('creates the metric from the live count when it does not exist', async () => {
-    metricFindUnique.mockResolvedValue(null);
+describe('lifetime registered-users total', () => {
+  const SETTLE_MS = 5 * 60 * 1000;
+  const sqlText = (call) => {
+    const sql = call[0];
+    return Array.isArray(sql?.strings) ? sql.strings.join('?') : String(sql);
+  };
+  const usersQuery = () => queryRaw.mock.calls.find((c) => /FROM users/.test(sqlText(c)));
+  const stored = (values) => metricFindUnique.mockImplementation(async ({ where }) =>
+    (where.key in values ? { key: where.key, value: values[where.key] } : null));
+  const upsertFor = (key) => metricUpsert.mock.calls.map((c) => c[0]).find((a) => a.where.key === key);
 
-    await runRetentionOnce(NOW);
+  test('the first run counts every account and starts the cursor just behind now', async () => {
+    const results = await runRetentionOnce(NOW);
 
-    // Aggregated in Postgres, not by dragging one row per user into Node.
-    // The first raw query is this one; the second is the tracks total.
-    const sql = queryRaw.mock.calls[0][0];
-    const text = Array.isArray(sql?.strings) ? sql.strings.join('') : String(sql);
-    expect(text).toMatch(/COUNT\(DISTINCT "userId"\)/);
-    expect(text).toMatch(/FROM operation_logs/);
+    // Counted in Postgres, not by dragging one row per user into Node.
+    expect(usersQuery()[0].values).toEqual([new Date(0), new Date(NOW - SETTLE_MS)]);
+    expect(sqlText(usersQuery())).toMatch(/COUNT\(\*\)/);
 
-    expect(metricUpsert).toHaveBeenCalledWith({
-      where: { key: LIFETIME_METRIC_KEY },
-      create: { key: LIFETIME_METRIC_KEY, value: 3n },
+    expect(upsertFor(USERS_METRIC_KEY)).toEqual({
+      where: { key: USERS_METRIC_KEY },
+      create: { key: USERS_METRIC_KEY, value: 3n },
       update: { value: 3n },
     });
+    expect(upsertFor(USERS_CURSOR_KEY).update).toEqual({ value: BigInt(NOW - SETTLE_MS) });
+    expect(results['lifetime-users-metric']).toBe(3);
   });
 
-  test('keeps the stored maximum when the live count has shrunk after a purge', async () => {
-    // The whole point: yesterday's purge removed rows, so today's live count
-    // is lower. The all-time figure must not follow it down.
-    metricFindUnique.mockResolvedValue({ key: LIFETIME_METRIC_KEY, value: 900n });
+  test('a later run ADDS the accounts registered since the cursor — deleted accounts stay counted', async () => {
+    // The users table is smaller than 4,736 by now (accounts have been
+    // deleted); the all-time total must still grow by exactly the new rows.
+    const cursor = NOW - DAY_MS;
+    stored({ [USERS_METRIC_KEY]: 4736n, [USERS_CURSOR_KEY]: BigInt(cursor) });
 
     await runRetentionOnce(NOW);
 
-    expect(metricUpsert.mock.calls[0][0].update).toEqual({ value: 900n });
+    expect(usersQuery()[0].values).toEqual([new Date(cursor), new Date(NOW - SETTLE_MS)]);
+    expect(upsertFor(USERS_METRIC_KEY).update).toEqual({ value: 4739n });
   });
 
-  test('raises the metric when the live count has grown', async () => {
-    metricFindUnique.mockResolvedValue({ key: LIFETIME_METRIC_KEY, value: 1n });
+  test('a cursor already at or past now writes nothing, so no window is counted twice', async () => {
+    stored({ [USERS_METRIC_KEY]: 4736n, [USERS_CURSOR_KEY]: BigInt(NOW) });
 
+    const results = await runRetentionOnce(NOW);
+
+    expect(usersQuery()).toBeUndefined();
+    expect(upsertFor(USERS_METRIC_KEY)).toBeUndefined();
+    expect(results['lifetime-users-metric']).toBe(4736);
+  });
+
+  test('the total and its cursor are written in one transaction', async () => {
     await runRetentionOnce(NOW);
 
-    expect(metricUpsert.mock.calls[0][0].update).toEqual({ value: 3n });
+    // One for users, one for tracks.
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(transaction.mock.calls[0][0]).toHaveLength(2);
   });
 
-  test('the snapshot is taken BEFORE the logs it is computed from are purged', async () => {
-    await runRetentionOnce(NOW);
-
-    expect(metricUpsert.mock.invocationCallOrder[0])
-      .toBeLessThan(operationLogDeleteMany.mock.invocationCallOrder[0]);
-  });
-
-  test('the snapshot runs before ANY user delete, not just before the log purge', async () => {
-    // The user sweeps cascade into operation_logs. Counting after them would
-    // drop exactly the departing users the all-time figure exists to keep.
+  test('the count runs before ANY user delete — the sweeps remove the accounts it is counting', async () => {
     await runRetentionOnce(NOW);
 
     expect(queryRaw.mock.invocationCallOrder[0])
@@ -271,7 +278,7 @@ describe('lifetime distinct-user snapshot', () => {
     await runRetentionOnce(NOW);
 
     const everythingElse = allMocks()
-      .filter((fn) => fn !== queryRaw && fn !== metricFindUnique && fn !== metricUpsert)
+      .filter((fn) => fn !== queryRaw && fn !== metricFindUnique && fn !== metricUpsert && fn !== transaction)
       .flatMap((fn) => fn.mock.invocationCallOrder);
 
     expect(Math.min(...everythingElse))
@@ -295,7 +302,7 @@ describe('lifetime tracks-processed total', () => {
     queryRaw.mockImplementation(async (sql) => (
       /SUM\("trackCount"\)/.test(Array.isArray(sql?.strings) ? sql.strings.join('') : String(sql))
         ? [{ tracks: 250n }]
-        : [{ count: 3 }]));
+        : [{ users: 3 }]));
   });
 
   test('the first run sums every row and starts the cursor just behind now', async () => {
@@ -332,12 +339,18 @@ describe('lifetime tracks-processed total', () => {
   test('the total and the cursor are written in one transaction', async () => {
     await runRetentionOnce(NOW);
 
-    expect(transaction).toHaveBeenCalledTimes(1);
-    expect(transaction.mock.calls[0][0]).toHaveLength(2);
+    const tracksTransaction = transaction.mock.calls
+      .map((c) => c[0])
+      .find((ops) => ops.length === 2 && metricUpsert.mock.calls.some((m) => m[0].where.key === TRACKS_METRIC_KEY));
+    expect(tracksTransaction).toBeDefined();
+    expect(transaction).toHaveBeenCalledTimes(2); // users + tracks, one each
   });
 
   test('a cursor already at or past now writes nothing, so no window is counted twice', async () => {
-    stored({ [TRACKS_METRIC_KEY]: 10000n, [TRACKS_CURSOR_KEY]: BigInt(NOW) });
+    stored({
+      [TRACKS_METRIC_KEY]: 10000n, [TRACKS_CURSOR_KEY]: BigInt(NOW),
+      [USERS_METRIC_KEY]: 4736n, [USERS_CURSOR_KEY]: BigInt(NOW),
+    });
 
     const results = await runRetentionOnce(NOW);
 
@@ -351,20 +364,20 @@ describe('lifetime tracks-processed total', () => {
 
     const firstDelete = Math.min(
       ...userDeleteMany.mock.invocationCallOrder,
-      ...operationLogDeleteMany.mock.invocationCallOrder,
       ...libraryCachePageDeleteMany.mock.invocationCallOrder,
     );
-    expect(transaction.mock.invocationCallOrder[0]).toBeLessThan(firstDelete);
+    expect(Math.max(...transaction.mock.invocationCallOrder)).toBeLessThan(firstDelete);
   });
 
   test('a failing transaction is isolated like any other step', async () => {
+    // The users transaction is the first; the tracks one still runs after it.
     transaction.mockRejectedValueOnce(new Error('serialization failure'));
 
     const results = await runRetentionOnce(NOW);
 
-    expect(results['lifetime-tracks-metric']).toBeNull();
-    expect(results['lifetime-users-metric']).toBe(3);
-    expect(operationLogDeleteMany).toHaveBeenCalled();
+    expect(results['lifetime-users-metric']).toBeNull();
+    expect(results['lifetime-tracks-metric']).toBe(250);
+    expect(growthActionDeleteMany).toHaveBeenCalled();
   });
 });
 
@@ -378,19 +391,19 @@ describe('step isolation', () => {
     // Everything downstream still ran.
     expect(userDeleteMany).toHaveBeenCalledTimes(2); // the inactive sweep too
     expect(metricUpsert).toHaveBeenCalled();
-    expect(operationLogDeleteMany).toHaveBeenCalled();
+    expect(growthActionDeleteMany).toHaveBeenCalled();
     expect(betaSignupUpdateMany).toHaveBeenCalled();
     expect(trackUpdateMany).toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalled();
   });
 
-  test('a failing metric snapshot still lets the log purge run', async () => {
+  test('a failing metric step still lets the purges run', async () => {
     metricFindUnique.mockRejectedValueOnce(new Error('no metrics table'));
 
     const results = await runRetentionOnce(NOW);
 
     expect(results['lifetime-users-metric']).toBeNull();
-    expect(operationLogDeleteMany).toHaveBeenCalled();
+    expect(growthActionDeleteMany).toHaveBeenCalled();
   });
 
   test('runRetentionOnce never rejects, even if every step throws', async () => {
@@ -420,7 +433,6 @@ describe('logging', () => {
       '[INFO] [retention] library-cache-states removed 2',
       '[INFO] [retention] disconnected-users removed 1',
       '[INFO] [retention] inactive-users removed 1',
-      '[INFO] [retention] operation-logs removed 40',
       '[INFO] [retention] growth-actions removed 7',
       '[INFO] [retention] feedback removed 1',
       '[INFO] [retention] beta-signup-emails removed 5',

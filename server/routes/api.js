@@ -1745,8 +1745,9 @@ router.post('/downloads/gate-results', authenticateUser, requireCanDownload, val
  * left an OperationLog row (`proxy-download` for one click, `download-links`
  * for a queue batch) with the track ids in `metadata.trackIds`, and only
  * successful ones count (download-links logs only the tracks that got a
- * link). So the history inherits OperationLog's retention — 12 months — and
- * its place in export and deletion; nothing new is stored.
+ * link). So the history lasts as long as the account's OperationLog does (rows
+ * are not aged out; they go with the account) and shares its place in export
+ * and deletion; nothing new is stored.
  *
  * Admin only, by decision (2026-10-07): it keeps the feature to the people
  * who use the queue. What it records is "a download was started", not "the
@@ -1775,7 +1776,8 @@ router.get('/downloads/history', authenticateUser, adminAuth, async (req, res) =
         lastAt: new Date(r.last_at).toISOString(),
         times: Number(r.times),
       })),
-      retentionDays: 365,
+      // No age limit: operation logs are kept while the account exists.
+      retentionDays: null,
     });
   } catch (error) {
     logger.error('Download history error:', safeError(error));

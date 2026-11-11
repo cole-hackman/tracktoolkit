@@ -39,7 +39,7 @@ async function open(page: Page, { admin = true } = {}) {
       contentType: "application/json",
       body: JSON.stringify({
         tracks: [{ trackId: 2, firstAt: `${THIS_YEAR}-10-03T09:00:00.000Z`, lastAt: `${THIS_YEAR}-10-03T09:00:00.000Z`, times: 1 }],
-        retentionDays: 365,
+        retentionDays: null,
       }),
     });
   });

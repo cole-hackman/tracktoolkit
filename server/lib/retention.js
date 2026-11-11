@@ -13,14 +13,17 @@
  *   - The user deletes rely on the same onDelete: Cascade that the account
  *     deletion route relies on (tests/account-deletion-cascade.test.js), so
  *     removing a user row removes its tokens, logs, votes and cache pages.
- *   - Step 0 snapshots the lifetime distinct-user count before ANY delete in
- *     the run. Not just before the operation-log purge: the user sweeps
- *     cascade into operation_logs too, so counting after them would drop the
- *     departing users from the all-time figure that exists to remember them.
- *   - Right after it, step 0 adds the tracks processed since the previous
- *     run to a running total (accumulateTracksProcessed). Those two metrics
- *     are what GET /api/stats/public serves, so the public figures move once
- *     a day, when this job runs.
+ *   - Step 0 adds the users registered and the tracks processed since the
+ *     previous run to two running totals (accumulateSince), before ANY delete
+ *     in the run: the user sweeps cascade into operation_logs and remove the
+ *     users themselves, so counting after them would drop the departing
+ *     accounts from the all-time figures that exist to remember them. Those
+ *     two metrics are what GET /api/stats/public AND the admin console's
+ *     all-time tiles serve, so the two cannot disagree, and the figures move
+ *     once a day, when this job runs.
+ *   - Operation logs are NOT purged by age. They go when their user does
+ *     (account deletion, the disconnect sweep, the dormancy sweep), through
+ *     the same cascade as every other per-user table.
  *   - Every user delete logs its size before it runs. That is useful *during*
  *     a run, but it is not a preview: the line lands microseconds before the
  *     delete it describes, in the same pass. Reviewing before anything is
@@ -46,7 +49,7 @@
  *   library cache   CACHE_TTL_DAYS         7 days
  *   disconnected    (constant)             6 days
  *   inactive        INACTIVE_MONTHS        24 months
- *   operation logs  OPLOG_RETENTION_DAYS   365 days
+ *   operation logs  (none by age)          with the account
  *   growth actions  (constant)             365 days
  *   feedback        (constant)             730 days
  */
@@ -84,19 +87,23 @@ const DISCONNECTED_GRACE_DAYS = 6;
 const GROWTH_RETENTION_DAYS = 365;
 const FEEDBACK_RETENTION_DAYS = 730;
 
-/** The counter that has to outlive the operation logs it is derived from. */
-export const LIFETIME_METRIC_KEY = 'lifetime_distinct_users';
-
-/** Running total of tracks processed, and the createdAt it has counted up to.
- *  Two keys because the total is an accumulation, not a high-water mark — see
- *  accumulateTracksProcessed. */
+/** Running totals that have to outlive the rows they are derived from, each
+ *  with the createdAt it has counted up to. Two keys apiece because a total is
+ *  an accumulation, not a high-water mark — see accumulateSince.
+ *
+ *  USERS is every account ever registered, which is what "users" means on the
+ *  README badge and in the admin console. It is not the number of people who
+ *  ran an operation: that is a different (smaller) figure, and publishing one
+ *  while the dashboard showed the other is how the two came to disagree. */
+export const USERS_METRIC_KEY = 'lifetime_registered_users';
+export const USERS_CURSOR_KEY = 'lifetime_registered_users_through';
 export const TRACKS_METRIC_KEY = 'lifetime_tracks_processed';
 export const TRACKS_CURSOR_KEY = 'lifetime_tracks_processed_through';
 
-/** How far behind `now` the tracks cursor stops. A log row's createdAt is
- *  stamped before its insert commits, and the app and database clocks are not
- *  the same clock; a row landing behind the cursor would never be counted. */
-const TRACKS_SETTLE_MS = 5 * 60 * 1000;
+/** How far behind `now` a cursor stops. A row's createdAt is stamped before
+ *  its insert commits, and the app and database clocks are not the same
+ *  clock; a row landing behind the cursor would never be counted. */
+const SETTLE_MS = 5 * 60 * 1000;
 
 /** Ten minutes: long enough for a cold Neon compute and the first wave of
  *  requests to settle before a job that issues large deletes. */
@@ -186,115 +193,102 @@ async function purgeStep(name, { count, mutate }, results, dryRun) {
 }
 
 /**
- * Snapshot the lifetime distinct-user count.
+ * Add what has appeared since the last run to a lifetime total.
  *
- * Runs as the FIRST step of every sweep — before the disconnected and dormant
- * user deletes, not merely before the operation-log purge. Those deletes
- * cascade to `operation_logs`, so counting after them would lose every user
- * the same run is about to remove: precisely the people the all-time figure
- * exists to remember.
+ * NOT a high-water mark. A live count or sum over a table that loses rows
+ * (account deletion cascades into operation_logs and removes the users
+ * themselves) falls when they go, and `max(stored, live)` would then freeze at
+ * the day the first row left. Instead each run measures only the rows created
+ * since the cursor — rows no earlier run has seen — adds them to the stored
+ * total, and moves the cursor. Every row is counted once, on the first run
+ * after it is written, which is days before any sweep can reach it (the
+ * earliest is the 6-day disconnect sweep). The one thing this misses is a row
+ * whose user deletes their account before the next run.
  *
- * The metric is monotonic: a run raises it to the current distinct count and
- * never lowers it, so the number survives every later purge.
+ * The first run has no cursor and measures the whole table, which is the
+ * all-time figure for as long as nothing has been deleted from it.
  *
- * Raw SQL, matching the aggregates in routes/admin.js: `COUNT(DISTINCT ...)`
- * is one row out of Postgres, where `findMany({ distinct })` would drag back
- * one row per user to be counted in Node. `::int` because an uncast COUNT
- * arrives as BigInt.
- */
-async function snapshotLifetimeUsers(dryRun = false) {
-  const rows = await prisma.$queryRaw(Prisma.sql`
-    SELECT COUNT(DISTINCT "userId")::int AS count
-    FROM operation_logs
-  `);
-  const current = Number(rows?.[0]?.count ?? 0);
-
-  const stored = await prisma.metric.findUnique({ where: { key: LIFETIME_METRIC_KEY } });
-  const previous = stored ? Number(stored.value) : 0;
-  const next = Math.max(previous, current);
-
-  // The upsert is a write, so a dry run skips it and reports the value it
-  // would have stored. Harmless to have written, but "changes nothing" has to
-  // mean nothing, or the flag is a judgement call instead of a guarantee.
-  if (dryRun) return next;
-
-  await prisma.metric.upsert({
-    where: { key: LIFETIME_METRIC_KEY },
-    create: { key: LIFETIME_METRIC_KEY, value: BigInt(current) },
-    update: { value: BigInt(next) },
-  });
-
-  return next;
-}
-
-/**
- * Add the tracks processed since the last run to the lifetime total.
- *
- * NOT a high-water mark like snapshotLifetimeUsers. SUM("trackCount") over
- * operation_logs is a sum over whatever the 365-day purge has left, so once
- * that purge starts deleting, the live sum falls and then only climbs back as
- * fast as old rows leave. `max(stored, live)` would freeze at the day the
- * purge began. Instead each run sums only the rows created since the cursor —
- * rows no earlier run has seen — adds them to the stored total, and moves the
- * cursor. Every row is counted once, on the first run after it is written,
- * which is days before any purge can reach it (the earliest is the 6-day
- * disconnect sweep). The one row this misses is an operation whose user
- * deletes their account before the next run.
- *
- * The first run has no cursor and sums the whole table, which is the all-time
- * figure for as long as nothing has aged out of it.
- *
- * Runs before any delete in the sweep, for the same reason as the user
- * snapshot: the user sweeps cascade into operation_logs.
- *
- * `view:*` and `read:*` rows are excluded to match tracksProcessed in
- * routes/admin.js — page opens and latency probes are not operations.
+ * Runs before any delete in the sweep: the user sweeps remove users and
+ * cascade into operation_logs.
  *
  * The total and the cursor are written in one transaction. Writing one without
  * the other would either count the same window twice or skip it.
+ *
+ * @param {number} now  epoch millis
+ * @param {boolean} dryRun
+ * @param {{ totalKey: string, cursorKey: string,
+ *           measure: (since: Date, through: Date) => Promise<unknown> }} counter
+ *   `measure` returns how many to add for rows with since < createdAt <= through
  */
-async function accumulateTracksProcessed(now, dryRun = false) {
+async function accumulateSince(now, dryRun, { totalKey, cursorKey, measure }) {
   const [storedTotal, storedCursor] = await Promise.all([
-    prisma.metric.findUnique({ where: { key: TRACKS_METRIC_KEY } }),
-    prisma.metric.findUnique({ where: { key: TRACKS_CURSOR_KEY } }),
+    prisma.metric.findUnique({ where: { key: totalKey } }),
+    prisma.metric.findUnique({ where: { key: cursorKey } }),
   ]);
   const previous = storedTotal ? BigInt(storedTotal.value) : 0n;
   const since = new Date(storedCursor ? Number(storedCursor.value) : 0);
-  const through = new Date(now - TRACKS_SETTLE_MS);
+  const through = new Date(now - SETTLE_MS);
 
   // A cursor at or past `through` (an earlier `now`, or a clock that moved
   // backwards) has nothing new to count. Writing here would move the cursor
   // back and count that window a second time.
   if (through <= since) return Number(previous);
 
-  const rows = await prisma.$queryRaw(Prisma.sql`
-    SELECT COALESCE(SUM("trackCount"), 0)::bigint AS tracks
-    FROM operation_logs
-    WHERE "createdAt" > ${since}
-      AND "createdAt" <= ${through}
-      AND action NOT LIKE 'view:%'
-      AND action NOT LIKE 'read:%'
-  `);
-  const next = previous + BigInt(rows?.[0]?.tracks ?? 0);
+  const next = previous + BigInt((await measure(since, through)) ?? 0);
 
   if (dryRun) return Number(next);
 
   const cursorValue = BigInt(through.getTime());
   await prisma.$transaction([
     prisma.metric.upsert({
-      where: { key: TRACKS_METRIC_KEY },
-      create: { key: TRACKS_METRIC_KEY, value: next },
+      where: { key: totalKey },
+      create: { key: totalKey, value: next },
       update: { value: next },
     }),
     prisma.metric.upsert({
-      where: { key: TRACKS_CURSOR_KEY },
-      create: { key: TRACKS_CURSOR_KEY, value: cursorValue },
+      where: { key: cursorKey },
+      create: { key: cursorKey, value: cursorValue },
       update: { value: cursorValue },
     }),
   ]);
 
   return Number(next);
 }
+
+/** Accounts registered since the last run. Raw SQL, like the admin
+ *  aggregates: one row out of Postgres rather than a row per user. */
+const accumulateRegisteredUsers = (now, dryRun) => accumulateSince(now, dryRun, {
+  totalKey: USERS_METRIC_KEY,
+  cursorKey: USERS_CURSOR_KEY,
+  measure: async (since, through) => {
+    const rows = await prisma.$queryRaw(Prisma.sql`
+      SELECT COUNT(*)::bigint AS users
+      FROM users
+      WHERE "createdAt" > ${since}
+        AND "createdAt" <= ${through}
+    `);
+    return rows?.[0]?.users;
+  },
+});
+
+/** Tracks processed since the last run. `view:*` and `read:*` rows are
+ *  excluded to match tracksProcessed in routes/admin.js — page opens and
+ *  latency probes are not operations. */
+const accumulateTracksProcessed = (now, dryRun) => accumulateSince(now, dryRun, {
+  totalKey: TRACKS_METRIC_KEY,
+  cursorKey: TRACKS_CURSOR_KEY,
+  measure: async (since, through) => {
+    const rows = await prisma.$queryRaw(Prisma.sql`
+      SELECT COALESCE(SUM("trackCount"), 0)::bigint AS tracks
+      FROM operation_logs
+      WHERE "createdAt" > ${since}
+        AND "createdAt" <= ${through}
+        AND action NOT LIKE 'view:%'
+        AND action NOT LIKE 'read:%'
+    `);
+    return rows?.[0]?.tracks;
+  },
+});
 
 /**
  * Delete users matching `where`, announcing the size of the sweep first.
@@ -343,12 +337,13 @@ export async function runRetentionOnce(now = Date.now(), { dryRun = isRetentionD
     logger.info('[retention] DRY RUN (RETENTION_DRY_RUN=true) — counting only, nothing is written');
   }
 
-  // 0. Lifetime snapshot, FIRST — before the user deletes below, which cascade
-  //    to operation_logs and would otherwise erase the very users this figure
-  //    exists to remember.
-  await runStep('lifetime-users-metric', () => snapshotLifetimeUsers(dryRun), results, 'snapshot');
-  //    The tracks total, for the same reason. It also feeds the public stats
-  //    endpoint, which is why that endpoint changes once a day.
+  // 0. Lifetime totals, FIRST — before the user deletes below, which remove
+  //    accounts and cascade to operation_logs, and would otherwise erase the
+  //    very rows these figures exist to remember.
+  await runStep('lifetime-users-metric', () => accumulateRegisteredUsers(now, dryRun), results, 'snapshot');
+  //    The tracks total, for the same reason. Both feed the public stats
+  //    endpoint and the admin console's all-time tiles, which is why those
+  //    change once a day.
   await runStep('lifetime-tracks-metric', () => accumulateTracksProcessed(now, dryRun), results, 'snapshot');
 
   // 1. Library cache tier. Pages are immutable once written, so they age by
@@ -385,14 +380,9 @@ export async function runRetentionOnce(now = Date.now(), { dryRun = isRetentionD
     ],
   }, results, dryRun);
 
-  // 4. Aged operation logs. The snapshot that protects the all-time figure
-  //    already ran as step 0.
-  const oplogCutoff = daysAgo(now, numFromEnv('OPLOG_RETENTION_DAYS', 365));
-  const oplogWhere = { createdAt: { lt: oplogCutoff } };
-  await purgeStep('operation-logs', {
-    count: () => prisma.operationLog.count({ where: oplogWhere }),
-    mutate: () => prisma.operationLog.deleteMany({ where: oplogWhere }),
-  }, results, dryRun);
+  // 4. (Operation logs are not aged out — Cole's decision, 2026-11-11. They
+  //    leave with their user, through the cascades at steps 2 and 3 and the
+  //    account-deletion route.)
 
   // 5. Growth history.
   const growthWhere = { createdAt: { lt: daysAgo(now, GROWTH_RETENTION_DAYS) } };
