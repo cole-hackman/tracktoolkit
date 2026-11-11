@@ -58,7 +58,7 @@ describe('GET /api/downloads/history', () => {
         { trackId: 100, firstAt: '2026-10-01T10:00:00.000Z', lastAt: '2026-10-03T09:00:00.000Z', times: 2 },
         { trackId: 200, firstAt: '2026-10-02T12:00:00.000Z', lastAt: '2026-10-02T12:00:00.000Z', times: 1 },
       ],
-      retentionDays: 365,
+      retentionDays: null,
     });
 
     // The query is scoped to the caller and to successful download actions.

@@ -4,7 +4,7 @@ import type { DownloadHistoryEntry } from "@/lib/queries";
  * "Already downloaded" as the pages use it: track id → when it was last
  * downloaded through Track Toolkit. Read from /api/downloads/history, which
  * records that a download was *started* (a link was handed to the browser),
- * not that the file is still on disk — and only for 12 months.
+ * not that the file is still on disk — and only while the account exists.
  */
 export function downloadedMap(entries: DownloadHistoryEntry[] | undefined): Map<number, string> {
   return new Map((entries ?? []).map((e) => [e.trackId, e.lastAt]));

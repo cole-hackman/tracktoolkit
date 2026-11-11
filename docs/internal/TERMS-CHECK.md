@@ -177,6 +177,13 @@ On minimisation, the retention job now bounds three stores that previously had
 no expiry at all: operation logs (`OPLOG_RETENTION_DAYS`, 365), library cache
 (`CACHE_TTL_DAYS`, 7) and dormant accounts (`INACTIVE_MONTHS`, 24).
 
+> **Superseded 2026-11-11 (Cole):** the 365-day operation-log purge is gone.
+> Logs now live as long as the account (deleted with it on account deletion,
+> the 6-day disconnect sweep and the 24-month dormancy sweep), so the
+> "no longer than is reasonably necessary" ceiling for that store is now the
+> account's own lifetime. The deletion-on-revocation and 7-day limits below
+> are unaffected: they act on the account, and the logs cascade with it.
+
 **To verify:** whether the retrieved fragment is complete, and whether "no
 longer than is reasonably necessary" is elsewhere given a specific ceiling for
 any of these stores.
@@ -309,8 +316,8 @@ not to a duration.
 - The **catalog** (`tracks` / `playlists`) persistently stores track metadata
   across sessions and across users. It is untouched by this branch. **The
   backfill remains unrun and its flag default-off.**
-- Operation-log metadata retains touched-ID arrays; retention step 4 bounds it
-  at `OPLOG_RETENTION_DAYS` (365), which is again a duration, not a session.
+- Operation-log metadata retains touched-ID arrays. It was bounded at 365 days
+  (a duration, not a session); since 2026-11-11 it is kept with the account.
 
 **To verify:** whether "User Content" as defined in the terms covers stored
 *metadata* (title, artist, genre, duration, permalink) or only the audio

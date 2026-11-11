@@ -23,12 +23,13 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 /**
  * What the retention job in `server/lib/retention.js` actually enforces —
  * `CACHE_TTL_DAYS` (7), `DISCONNECTED_GRACE_DAYS` (6), `INACTIVE_MONTHS` (24),
- * `OPLOG_RETENTION_DAYS` (365), `GROWTH_RETENTION_DAYS` (365) and
- * `FEEDBACK_RETENTION_DAYS` (730). If those change, this table is wrong.
+ * `GROWTH_RETENTION_DAYS` (365) and `FEEDBACK_RETENTION_DAYS` (730). Operation
+ * logs have no age limit: they go with the account. If those change, this
+ * table is wrong.
  */
 const RETENTION: { what: string; keptFor: string }[] = [
   { what: "Account & tokens", keptFor: "While you stay connected" },
-  { what: "Operation history", keptFor: "12 months" },
+  { what: "Operation history", keptFor: "While your account exists" },
   { what: "Library cache", keptFor: "7 days" },
   { what: "Growth history", keptFor: "12 months" },
   { what: "Feedback", keptFor: "24 months" },
