@@ -104,6 +104,29 @@ Previously (still true): Droploud and Cobrand gates are merged and live
   reloads itself when its files change (seen working).
 
 ## Next
+### 2026-11-11 (README vs admin numbers, branch `fix/stats-single-source`)
+0. **Not merged, not live.** The README badges said 3,425 users and 3,139,340
+   tracks while the admin console said 4,736 and 3,133,985. Users: the badge
+   counted people who had run an operation, the dashboard counted accounts.
+   Tracks: the badge was a running total, the dashboard a live sum, which loses
+   the operations of deleted accounts (the 5,355 gap is probably that; the
+   deleted rows are gone, so it cannot be confirmed). Now both read the same
+   two `metrics` rows, and "users" means every account ever registered.
+1. **After merging**, the new `lifetime_registered_users` row does not exist
+   until the retention job's first run, 10 minutes after the deploy's boot.
+   Until then the users badge reads "n/a" (and shields may cache that up to
+   30 minutes) and the admin Users tile shows the live count. The first run
+   counts the `users` table as it is, so accounts deleted earlier are not in
+   it. Check `/api/stats/public` shows `lifetimeUsers` near 4,736 and that the
+   admin Overview agrees at period "All time".
+2. The old `lifetime_distinct_users` row stays in `metrics`, unread. Delete it
+   when convenient.
+3. **Operation logs are no longer purged at 365 days** (Cole's decision,
+   2026-11-11; see Decisions). The privacy page and account page now say "while
+   your account exists", and the policy has a dated Changes entry. Deployed
+   with this branch: nothing already deleted comes back. The landing page still
+   says "3,500+ SoundCloud users", which is under the new 4,736 and still true.
+
 ### 2026-11-10 (one resolver, PR #113)
 Link Resolver and Batch Link Resolver are one page, `/link-resolver`
 (candidate 1 in `TOOL-CONSOLIDATION.md`; the run that confirmed it is in
@@ -319,13 +342,10 @@ resolver. Admin labels for `batch-resolver` stay, for old rows.
    reviewing #66.
 
 ### This session (2026-10-07)
-0. **README badges follow-ups (Cole):** the users badge says 3,119 (people
-   who have run an operation), but the landing page says "3,500+ SoundCloud
-   users" (registered). That breaks the "never round up past the
-   measurement" decision, so the landing copy needs a decision. Separately,
-   `lifetime_distinct_users` is a high-water mark and will stop rising from
-   about 2027-03-19, when the 365-day oplog purge starts. It needs a
-   cursor-style fix like the tracks total, plus a "seen before" check.
+0. ~~README badges follow-ups~~ Resolved 2026-11-11 (branch
+   `fix/stats-single-source`): the users badge now counts registered accounts,
+   matching the landing page's "registered" wording, and there is no 365-day
+   purge to freeze a high-water mark.
 1. **On Cole's own account only:** open a playlist that has a blocked track
    in the health check. The Blocked row should show; remove it, and SoundCloud
    should lose exactly that track. This is the first live confirmation of the
@@ -576,11 +596,14 @@ resolver. Admin labels for `batch-resolver` stay, for old rows.
 - **The light-mode gradient stops are darkened** (`#e04000`/`#f04a00`/
   `#ff5500`) so the headline clears 3:1 on the cream background as large text.
   The earlier stops did not. Do not lighten them again.
-- **`OperationLog` is kept 12 months, with a lifetime snapshot underneath it.**
-  The row-level detail ages out; `Metric.lifetime_distinct_users` is
-  snapshotted as the first step of every retention run — before any delete in
-  that run — so the all-time user figure is never silently rewritten downward
-  by its own purge.
+- **`OperationLog` is kept while the account exists** (Cole, 2026-11-11),
+  superseding "kept 12 months". The 365-day purge (`OPLOG_RETENTION_DAYS`) is
+  removed; rows go with their user through the account-deletion, 6-day
+  disconnect and 24-month dormancy cascades. The all-time figures are running
+  totals (`lifetime_registered_users`, `lifetime_tracks_processed`) extended
+  at the start of every retention run, before any delete, and the README
+  badges and the admin all-time tiles read those same rows. Revisit the
+  privacy wording if a time limit comes back.
 - **Inactive accounts are deleted after 24 months** of no login
   (`INACTIVE_MONTHS`, calendar months in UTC).
 - **The music catalog is kept and disclosed.** `Track` and `Playlist` rows

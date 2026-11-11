@@ -153,7 +153,7 @@ The schema (`prisma/schema.prisma`) has **18 models**, not two:
 | `chat_conversations` / `chat_messages` | AI library chat (owned by `feature/ai-library-chat`; declared here so `prisma db push` does not drop them) |
 | `indexed_likes` / `indexed_playlist_tracks` / `library_snapshots` | Library indexing for that same feature — same db-push caveat |
 | `LibraryCachePage` / `LibraryCacheState` | Persistent tier of the library cache — one row per 200-item page plus a sync-state row. **Not** the same thing as `library_snapshots` above |
-| `Metric` | Counters that must outlive the rows they were computed from. `lifetime_distinct_users` (a high-water mark) plus `lifetime_tracks_processed` and its cursor `lifetime_tracks_processed_through` (a running total), all written at the start of every retention run — before any delete in that run. Deliberately **not** per-user, so it is absent from the deletion cascade by design |
+| `Metric` | Counters that must outlive the rows they were computed from. `lifetime_registered_users` and `lifetime_tracks_processed`, each a running total with its own cursor (`…_through`, the createdAt counted up to), all written at the start of every retention run — before any delete in that run. Deliberately **not** per-user, so it is absent from the deletion cascade by design. `lifetime_distinct_users` is the retired predecessor (people who ran an operation); nothing reads it |
 
 `User.lastLoginAt` (stamped by the OAuth callback on every login; null on rows
 predating the column, which fall back to `updatedAt`) drives the dormant-account
@@ -174,18 +174,28 @@ does not make obvious.
 ### Public stats (`routes/stats.js`)
 
 `GET /api/stats/public` is unauthenticated and serves the README badges
-(shields.io dynamic-JSON badges): `lifetimeUsers`, `tracksProcessed`,
+(shields.io dynamic-JSON badges): `lifetimeUsers` (every account ever
+registered), `tracksProcessed`,
 `updatedAt` and a `formatted` copy of both with thousands separators. It only
 reads the `metrics` table — two primary-key rows, `Cache-Control: public,
 max-age=3600` — so the figures move once a day, when the retention job writes
 them. A counter not written yet is `null`, never 0. Anything added to this
 response is published, so keep it to all-time aggregates.
 
-The tracks total is **not** a high-water mark like the user count. Summing
-`trackCount` over what the 365-day purge leaves would fall, and `max()` would
-freeze it on the day the purge began, so each run adds only the rows created
-since `lifetime_tracks_processed_through` (stopping 5 minutes behind now) and
-writes total and cursor in one transaction.
+**The admin console's all-time tiles read these same two rows**
+(`/api/admin/stats`: `totalUsers` always, `tracksProcessed` when
+`period=all`), so the README and the dashboard cannot disagree.
+`tests/routes/admin-stats-lifetime.test.js` pins that. Before the retention
+job's first run they fall back to the live count and sum. A bounded period
+still sums live rows. The README once showed 3,425 users against the
+dashboard's 4,736 because the badge counted people who had run an operation
+and the dashboard counted accounts; do not reintroduce a second definition.
+
+Both totals are running sums, not high-water marks: a live count or sum falls
+when accounts are deleted (their `operation_logs` cascade with them) and
+`max()` would freeze on the day the first one went. Each run adds only the rows
+created since the metric's cursor (stopping 5 minutes behind now) and writes
+total and cursor in one transaction (`accumulateSince` in `lib/retention.js`).
 
 ### Auth
 
@@ -241,7 +251,7 @@ decision) answers "have I already downloaded this?" **without a table of its
 own**: it unnests `metadata.trackIds` from the caller's successful
 `proxy-download` / `download-links` OperationLog rows. Two consequences: it
 records that a download was *started*, not that the file is on disk, and it
-lasts as long as OperationLog (365 days).
+lasts as long as the account's OperationLog rows, which are not aged out.
 
 **Chrome's "download multiple files" prompt** holds every automatic download
 after a page's first one until the user clicks Allow in the tab — a prompt the
@@ -605,11 +615,11 @@ REPL.
 
 | # | Step | Window |
 |---|------|--------|
-| 0 | Lifetime-user snapshot → `Metric.lifetime_distinct_users`, then the tracks total → `Metric.lifetime_tracks_processed` | every run, **first** |
+| 0 | Registered users → `Metric.lifetime_registered_users`, then tracks processed → `Metric.lifetime_tracks_processed` (both add what is new since their cursor) | every run, **first** |
 | 1 | `LibraryCachePage` (by `createdAt`) + `LibraryCacheState` (by `updatedAt`) | `CACHE_TTL_DAYS` (7) |
 | 2 | Users still stamped `disconnectedAt` | 6 days (constant, see below) |
 | 3 | Dormant users (`lastLoginAt`, or `updatedAt` when null) | `INACTIVE_MONTHS` (24) |
-| 4 | `OperationLog` purge | `OPLOG_RETENTION_DAYS` (365) |
+| 4 | *(none)* `OperationLog` is not aged out; rows go with their user (Cole, 2026-11-11, replacing the 365-day purge) | with the account |
 | 5 | `GrowthAction` | 365 days |
 | 6 | `Feedback` (guarded on `prisma.feedback`) | 730 days |
 | 7 | `BetaSignup.email` → null | every run |
@@ -617,13 +627,13 @@ REPL.
 
 Three things that look arbitrary but are not:
 
-- **Step 0 runs first, before any delete in the run — not merely before the
-  log purge.** The user sweeps at steps 2 and 3 cascade into `operation_logs`
-  too, so snapshotting after them would drop exactly the departing users the
-  all-time figure exists to remember. It is `SELECT COUNT(DISTINCT "userId")`
-  via `$queryRaw` (one row out of Postgres, matching the admin aggregates),
-  monotonic — a run only ever raises it — and admin `/stats` surfaces it as
-  `lifetimeUsers` (null before the first run).
+- **Step 0 runs first, before any delete in the run.** The user sweeps at
+  steps 2 and 3 delete the accounts and cascade into `operation_logs`, so
+  counting after them would drop exactly the departing users and their tracks
+  from the all-time figures that exist to remember them. Each is a raw-SQL
+  count or sum over rows newer than its cursor, added to the stored total;
+  admin `/stats` surfaces them as `lifetimeUsers` (null before the first run)
+  and, for `period=all`, as `tracksProcessed`.
   Every user delete also logs `[retention] <step> will remove N users` before
   it runs. That is useful while a sweep is happening, but it is **not a
   preview** — the line lands microseconds before the delete it describes, in

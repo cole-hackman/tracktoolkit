@@ -7,6 +7,12 @@
  * often a badge service polls it, and the figures change once a day, which is
  * what the README says.
  *
+ * `lifetimeUsers` is every account ever registered (not just the people who
+ * ran an operation), and `tracksProcessed` every track across every operation,
+ * including those of accounts since deleted. The admin console's all-time
+ * tiles read the same two rows (routes/admin.js `/stats`), so the README and
+ * the dashboard show one number, not two definitions of "users".
+ *
  * Aggregates only. No per-user value, no per-action breakdown, nothing that
  * narrows below "everyone, all time" — anything added here is published.
  *
@@ -17,7 +23,7 @@ import express from 'express';
 import prisma from '../lib/prisma.js';
 import logger from '../lib/logger.js';
 import { safeError } from '../lib/safe-error.js';
-import { LIFETIME_METRIC_KEY, TRACKS_METRIC_KEY } from '../lib/retention.js';
+import { USERS_METRIC_KEY, TRACKS_METRIC_KEY } from '../lib/retention.js';
 
 const router = express.Router();
 
@@ -34,12 +40,12 @@ const format = (value) => (value === null ? 'n/a' : grouped.format(value));
 router.get('/public', async (req, res) => {
   try {
     const rows = await prisma.metric.findMany({
-      where: { key: { in: [LIFETIME_METRIC_KEY, TRACKS_METRIC_KEY] } },
+      where: { key: { in: [USERS_METRIC_KEY, TRACKS_METRIC_KEY] } },
     });
     const byKey = new Map(rows.map((row) => [row.key, row]));
     const read = (key) => (byKey.has(key) ? Number(byKey.get(key).value) : null);
 
-    const lifetimeUsers = read(LIFETIME_METRIC_KEY);
+    const lifetimeUsers = read(USERS_METRIC_KEY);
     const tracksProcessed = read(TRACKS_METRIC_KEY);
     const stamps = rows.map((row) => row.updatedAt).filter(Boolean);
     const updatedAt = stamps.length

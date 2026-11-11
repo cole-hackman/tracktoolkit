@@ -12,7 +12,7 @@ import {
   validateAdminReResolve,
 } from '../middleware/validation.js';
 import { getAnalyticsWriteHealth, logOperation } from '../lib/analytics.js';
-import { LIFETIME_METRIC_KEY } from '../lib/retention.js';
+import { USERS_METRIC_KEY, TRACKS_METRIC_KEY } from '../lib/retention.js';
 import { heavyOperationRateLimiter } from '../middleware/rateLimiter.js';
 import { enrichTrackIds } from '../lib/enrichment.js';
 
@@ -227,13 +227,19 @@ router.get('/stats', authenticateUser, adminAuth, async (req, res) => {
       ],
     };
 
-    // All-time distinct users, snapshotted by the retention job before it
-    // purges operation logs — so the headline figure does not shrink when rows
-    // age out of the 12-month window. Null until the job has run once, and
-    // soft-failing: a missing metrics table must not 500 the whole dashboard.
-    const lifetimeMetricQuery = prisma.metric
-      ? prisma.metric.findUnique({ where: { key: LIFETIME_METRIC_KEY } }).catch(() => null)
-      : Promise.resolve(null);
+    // The all-time figures, read from the SAME `metrics` rows the README
+    // badges serve (routes/stats.js), so the dashboard and the README cannot
+    // disagree. They are running totals the retention job extends once a day
+    // before it deletes anything, so they include accounts, and their
+    // operations, that have since been deleted — which a live count or sum
+    // over `users` / `operation_logs` cannot. Empty until the job has run
+    // once, and soft-failing: a missing metrics table must not 500 the whole
+    // dashboard.
+    const lifetimeMetricsQuery = prisma.metric
+      ? prisma.metric
+        .findMany({ where: { key: { in: [USERS_METRIC_KEY, TRACKS_METRIC_KEY] } } })
+        .catch(() => [])
+      : Promise.resolve([]);
 
     const [
       totalUsers,
@@ -248,7 +254,7 @@ router.get('/stats', authenticateUser, adminAuth, async (req, res) => {
       topErrors,
       avgLatencyRows,
       perActionLatencyRows,
-      lifetimeMetric,
+      lifetimeMetrics,
     ] = await Promise.all([
       prisma.user.count(),
       prisma.user.count({ where: { createdAt: { gte: cutoff } } }),
@@ -331,11 +337,21 @@ router.get('/stats', authenticateUser, adminAuth, async (req, res) => {
         ORDER BY p95 DESC
         LIMIT 25
       `,
-      lifetimeMetricQuery,
+      lifetimeMetricsQuery,
     ]);
 
+    const lifetime = new Map((lifetimeMetrics || []).map((row) => [row.key, Number(row.value)]));
+    const lifetimeUsers = lifetime.get(USERS_METRIC_KEY) ?? null;
+    const lifetimeTracks = lifetime.get(TRACKS_METRIC_KEY) ?? null;
+
     const operationsCount = agg._count.id ?? 0;
-    const tracksProcessed = agg._sum.trackCount ?? 0;
+    // Over a bounded period the live sum is the answer. Over "all" it would
+    // miss the operations of every deleted account, so it reads the running
+    // total the README shows; the live sum is only the fallback before the
+    // retention job's first run.
+    const tracksProcessed = period === 'all' && lifetimeTracks !== null
+      ? lifetimeTracks
+      : (agg._sum.trackCount ?? 0);
     const avgTracksPerOp = agg._avg.trackCount ? Math.round(agg._avg.trackCount) : 0;
     const avgDurationMs = agg._avg.durationMs ? Math.round(agg._avg.durationMs) : 0;
     const p95DurationMs = Number(avgLatencyRows?.[0]?.p95 ?? 0);
@@ -400,10 +416,11 @@ router.get('/stats', authenticateUser, adminAuth, async (req, res) => {
     const partialRate = Math.round(((statusMap['partial'] ?? 0) / total) * 100);
 
     res.json({
-      totalUsers,
-      // Null before the retention job's first run; a number afterwards, and
-      // never lower than totalUsers' historical peak.
-      lifetimeUsers: lifetimeMetric ? Number(lifetimeMetric.value) : null,
+      // Every account ever registered — the figure the README badge shows. The
+      // live row count only stands in until the retention job has run once.
+      totalUsers: lifetimeUsers ?? totalUsers,
+      // Null before the retention job's first run.
+      lifetimeUsers,
       newUsers,
       tracksProcessed,
       operationsCount,
