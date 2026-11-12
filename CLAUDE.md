@@ -6,6 +6,16 @@ Track Toolkit (formerly SoundCloud Toolkit — SoundCloud's API Terms of Use for
 
 ---
 
+## Ship policy (default from the 2026-11-10 audit; Cole to edit)
+
+- May do without asking: commit and push to a feature branch, open a PR, and merge your own PR once the Verify check is green and the review is clean, then verify. Merging deploys (see CI/CD), so do the review before the merge, not after.
+- Always stops for Cole, merge included: SQL or `docs/sql/` files, any App Service setting or Bicep file, retention code (`server/lib/retention.js`), sign-in and token code (`routes/auth.js`, `middleware/auth.js`, `lib/soundcloud-client.js` refresh path), and anything touching secrets. Existing stricter rules stay: SQL and settings happen before the merge, and nobody edits the main checkout (use `.worktrees/<branch>`).
+- "Verified" means the live site, not a green run: wait for the Deploy run to succeed, then `curl -s https://tracktoolkit.com/health` must show `commit` equal to the merge commit on `main`, and the changed page or route must load on https://tracktoolkit.com. Write flows need Cole's account; say plainly which ones were not run live.
+- A docs-only merge skips the deploy, so `/health` will not move; verified there means the merge commit is on `origin/main`.
+- State file: `docs/internal/STATE.md` (60 lines or fewer, rewritten by `/handoff`); decisions older than the current work are in `docs/decisions.md`, history in `docs/log/`.
+
+---
+
 ## Tech Stack — what the manifests don't say
 
 The three `package.json` files (root, `server/`, `frontend-UI/`) are the
