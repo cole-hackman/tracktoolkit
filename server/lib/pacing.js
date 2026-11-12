@@ -65,3 +65,8 @@ export async function mapWithConcurrency(items, limit, fn) {
  * undocumented, and the previous unbounded fan-out demonstrably drew 429s.
  */
 export const SC_READ_CONCURRENCY = 5;
+
+// THROWAWAY: deliberate undefined identifier (inside an uncalled function, so only lint can see it)
+export function throwawayProof() {
+  return SC_WRITE_PACING_MS_TYPO * 2;
+}
