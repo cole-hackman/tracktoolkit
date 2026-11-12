@@ -26,6 +26,7 @@ import { RETIRED_PATH_ALIASES } from './lib/retired-paths.js';
 import logger from './lib/logger.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { createScMetrics } from './lib/token-context.js';
+import { createHealthHandler } from './lib/build-info.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -159,9 +160,9 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/feedback', feedbackRoutes);
 
 // Health check with rate limiting
-app.get('/health', healthCheckRateLimiter, (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
+// `commit` is the deployed git SHA (see lib/build-info.js); the deploy
+// workflow's smoke step fails when it differs from the commit it shipped.
+app.get('/health', healthCheckRateLimiter, createHealthHandler());
 
 // Serve Next.js static export in production
 if (existsSync(FRONTEND_BUILD_PATH)) {

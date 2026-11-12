@@ -75,3 +75,6 @@ __pycache__/
 # Working notes from other sessions belong in ~/Developer/tracktoolkit-notes, never in the repo
 /reports/
 /research_notes/
+
+# Written by the deploy workflow at build time (the deployed commit)
+server/build-info.json
