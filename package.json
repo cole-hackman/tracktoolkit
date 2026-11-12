@@ -14,7 +14,12 @@
     "start": "node server/index.js",
     "test": "NODE_OPTIONS=--experimental-vm-modules jest",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev --name init --skip-seed"
+    "prisma:migrate": "prisma migrate dev --name init --skip-seed",
+    "lint:server": "node frontend-UI/node_modules/eslint/bin/eslint.js --no-config-lookup --config eslint.server.config.mjs server",
+    "lint:frontend": "npm --prefix frontend-UI run lint",
+    "contrast": "npm --prefix frontend-UI run contrast",
+    "verify": "npm test && npm run lint:server && npm run lint:frontend && npm run contrast",
+    "verify:full": "npm run verify && npm --prefix frontend-UI run build && npm --prefix frontend-UI run test:e2e"
   },
   "dependencies": {
     "@prisma/client": "^5.7.1",
