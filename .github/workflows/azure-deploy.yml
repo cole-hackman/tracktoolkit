@@ -72,6 +72,16 @@ jobs:
       - name: Prune dev dependencies
         run: npm prune --omit=dev
 
+      # What the running app reports from /health. HEAD, not github.sha: a
+      # manual dispatch with a `ref` input builds that ref, and the smoke test
+      # below must compare against what was actually built.
+      - name: Record deployed commit
+        run: |
+          sha=$(git rev-parse HEAD)
+          printf '{"commit":"%s"}\n' "$sha" > server/build-info.json
+          echo "DEPLOY_SHA=$sha" >> "$GITHUB_ENV"
+          cat server/build-info.json
+
       - name: Package
         run: |
           zip -qr deploy.zip \
@@ -93,12 +103,20 @@ jobs:
           package: deploy.zip
           type: zip
 
-      - name: Smoke test /health
+      # Passes only when the live app answers 200 AND reports the commit this
+      # run built. A 200 alone is not enough: the previous version keeps
+      # answering while the new one restarts, and a failed or stuck deploy
+      # leaves the old commit serving. 40 tries x 10 s covers the restart.
+      - name: Smoke test /health reports the deployed commit
         run: |
-          for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "https://${AZURE_WEBAPP_NAME}.azurewebsites.net/health" || true)
-            echo "attempt $i: $code"
-            [ "$code" = "200" ] && exit 0
+          url="https://${AZURE_WEBAPP_NAME}.azurewebsites.net/health"
+          live=""
+          for i in $(seq 1 40); do
+            body=$(curl -s --max-time 10 "$url" || true)
+            live=$(printf '%s' "$body" | jq -r '.commit // "none"' 2>/dev/null || echo "unreadable")
+            echo "attempt $i: live=$live expected=$DEPLOY_SHA"
+            [ "$live" = "$DEPLOY_SHA" ] && exit 0
             sleep 10
           done
+          echo "::error::Live /health reports '$live', expected '$DEPLOY_SHA'. The deploy did not take effect."
           exit 1
