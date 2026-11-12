@@ -1,0 +1,45 @@
+name: Verify
+
+# Runs on every pull request, before the merge that deploys. One command,
+# `npm run verify`: server tests, the runtime-error lint for server/
+# (no-undef and friends), tsc + next lint for the frontend, and the colour
+# contrast gate. The build and the Playwright suite are not here; they stay in
+# `npm run verify:full` and the deploy workflow's build.
+#
+# Nothing makes this check required: branch protection is Cole's call. Until it
+# is on, a red run here is a warning the merger has to read.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend-UI/package-lock.json
+
+      - name: Install server dependencies
+        run: npm ci
+
+      - name: Install frontend dependencies
+        working-directory: frontend-UI
+        run: npm ci
+
+      - name: Verify
+        run: npm run verify
