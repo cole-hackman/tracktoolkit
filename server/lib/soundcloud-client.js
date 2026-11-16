@@ -5,7 +5,7 @@ import logger from './logger.js';
 import prisma from './prisma.js';
 import { getTokenContext, countScCall } from './token-context.js';
 import { invalidateCachedAuth } from './auth-cache.js';
-import { isAllowedDownloadUrl } from './download-utils.js';
+import { isAllowedDownloadUrl, isAllowedDownloadRedirectTarget, isAllowedStreamUrl } from './download-utils.js';
 import { cursorEndpoint } from './sc-cursor.js';
 import { extractSecretToken, redactSecretToken } from './secret-link.js';
 
@@ -1293,6 +1293,88 @@ class SoundCloudClient {
     err.status = res.status;
     throw err;
   }
+
+  /**
+   * A playable link for one track, for the Sort Likes preview player.
+   *
+   * Reads `/tracks/{id}/streams` through scRequest (401 refresh, 429 backoff),
+   * picks the best format the browser can play — progressive mp3, then HLS
+   * mp3, then HLS aac, then the 30-second preview — and, when SoundCloud hands
+   * back an api.soundcloud.com link rather than a CDN one, follows that one
+   * authenticated redirect to the CDN. The token is only ever sent to
+   * api.soundcloud.com (isAllowedStreamUrl), and only a CDN host on the
+   * download redirect allowlist is returned. The response shape is from
+   * SoundCloud's spec and has not been seen live yet, so every step fails
+   * closed with a `code` the route maps.
+   *
+   * @returns {Promise<{ url: string, format: 'mp3'|'hls', preview: boolean }>}
+   */
+  async getStreamLink(accessToken, refreshToken, trackId) {
+    const streams = await this.scRequest(`/tracks/${trackId}/streams`, accessToken, refreshToken);
+    const pick = pickStream(streams);
+    if (!pick) {
+      const err = new Error('No playable stream for this track');
+      err.code = 'NO_STREAM';
+      throw err;
+    }
+    if (isAllowedDownloadRedirectTarget(pick.url)) return pick;
+    if (!isAllowedStreamUrl(pick.url)) {
+      const err = new Error('Unexpected stream host');
+      err.code = 'STREAM_HOST';
+      throw err;
+    }
+    const location = await this._resolveStreamRedirect(accessToken, refreshToken, pick.url);
+    if (!isAllowedDownloadRedirectTarget(location)) {
+      const err = new Error('Unexpected stream redirect');
+      err.code = 'STREAM_HOST';
+      throw err;
+    }
+    return { ...pick, url: location };
+  }
+
+  async _resolveStreamRedirect(accessToken, refreshToken, streamUrl, triedRefresh = false) {
+    const fetchUrl = streamUrl.trim().replace('https://api.soundcloud.com', this.baseUrl);
+    const res = await fetchWithTimeout(fetchUrl, {
+      method: 'GET',
+      headers: { Authorization: `OAuth ${accessToken}`, Accept: 'application/json, */*' },
+      redirect: 'manual',
+    });
+    if (res.status === 301 || res.status === 302 || res.status === 303 || res.status === 307) {
+      return res.headers.get('location');
+    }
+    if (res.status === 200 && (res.headers.get('content-type') || '').includes('application/json')) {
+      const json = (await parseScJson(res, { context: 'stream' })) || {};
+      return json.url || json.location || json.redirectUri || null;
+    }
+    if (res.status === 401 && !triedRefresh) {
+      const refreshed = await this.refreshTokensAndPersist(refreshToken);
+      return this._resolveStreamRedirect(refreshed.access_token, refreshed.refresh_token || refreshToken, streamUrl, true);
+    }
+    const err = new Error(`Stream request failed: ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+}
+
+/**
+ * The format order for the preview player. Progressive mp3 plays in every
+ * browser's <audio>; HLS needs Safari or hls.js. The preview link is last
+ * because it is 30 seconds — used only when it is all SoundCloud offers.
+ */
+const STREAM_PREFERENCE = [
+  ['http_mp3_128_url', 'mp3', false],
+  ['hls_mp3_128_url', 'hls', false],
+  ['hls_aac_160_url', 'hls', false],
+  ['preview_mp3_128_url', 'mp3', true],
+];
+
+export function pickStream(streams) {
+  if (!streams || typeof streams !== 'object') return null;
+  for (const [key, format, preview] of STREAM_PREFERENCE) {
+    const url = streams[key];
+    if (typeof url === 'string' && url.startsWith('https://')) return { url, format, preview };
+  }
+  return null;
 }
 
 export const soundcloudClient = new SoundCloudClient();

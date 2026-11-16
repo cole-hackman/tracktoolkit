@@ -55,6 +55,7 @@ const PAGES: PageCase[] = [
   { path: "/rekordbox-gaps/", needsMock: true },
   { path: "/playlist-keyword-search/", needsMock: true },
   { path: "/set-to-playlist/", needsMock: true },
+  { path: "/sort-likes/", needsMock: true },
   { path: "/playlist-health-check/", needsMock: true },
   // No `ready` in the shared map: /export/ is a static hub of links.
   { path: "/export/", needsMock: true },

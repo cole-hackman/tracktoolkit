@@ -1286,3 +1286,72 @@ export const validateSetlistPlaylist = [
     .withMessage('Each track label must be 1-300 characters'),
   handleValidationErrors
 ];
+
+/**
+ * POST /api/sort/apply — one Sort Likes destination: an existing playlist
+ * (`playlistId`) or a new one (`title`, optional `description` from the
+ * destination's note). Exactly one of the two. `.isString()` leads every text
+ * field so an array cannot satisfy the length check element-wise; text is
+ * plain (stripControlChars), never `.escape()`d.
+ */
+export const SORT_APPLY_MAX_TRACKS = 2000;
+
+export const validateSortApply = [
+  body('playlistId')
+    .optional({ nullable: true })
+    .isInt({ min: 1 })
+    .withMessage('playlistId must be a positive integer')
+    .toInt(),
+  body('title')
+    .optional({ nullable: true })
+    .isString()
+    .withMessage('title must be a string')
+    .customSanitizer((value) => stripControlChars(value))
+    .trim()
+    .isLength({ min: 1, max: 100 })
+    .withMessage('title must be 1-100 characters'),
+  body('description')
+    .optional({ nullable: true, checkFalsy: true })
+    .isString()
+    .withMessage('description must be a string')
+    .customSanitizer((value) => stripControlChars(value))
+    .trim()
+    .isLength({ max: 1000 })
+    .withMessage('description must be at most 1000 characters'),
+  body()
+    .custom((value) => {
+      const hasId = value?.playlistId != null;
+      const hasTitle = value?.title != null;
+      if (hasId === hasTitle) throw new Error('Send either playlistId or title, not both');
+      return true;
+    }),
+  body('trackIds')
+    .isArray({ min: 1, max: SORT_APPLY_MAX_TRACKS })
+    .withMessage(`trackIds must be an array with 1-${SORT_APPLY_MAX_TRACKS} items`),
+  body('trackIds.*')
+    .isInt({ min: 1 })
+    .withMessage('Each trackId must be a positive integer')
+    .toInt(),
+  handleValidationErrors
+];
+
+/** POST /api/sort/unlike — at most 100 per call, like bulk-unlike. */
+export const validateSortUnlike = [
+  body('trackIds')
+    .isArray({ min: 1, max: 100 })
+    .withMessage('trackIds must be an array with 1-100 items'),
+  body('trackIds.*')
+    .isInt({ min: 1 })
+    .withMessage('Each trackId must be a positive integer')
+    .toInt(),
+  handleValidationErrors
+];
+
+/** GET /api/tracks/:id/stream */
+export const validateTrackStream = [
+  param('id')
+    .isInt({ min: 1 })
+    .withMessage('Track id must be a positive integer')
+    .toInt(),
+  handleValidationErrors
+];

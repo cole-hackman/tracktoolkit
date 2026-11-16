@@ -1,7 +1,7 @@
 import express from 'express';
 import { soundcloudClient, fetchWithTimeout } from '../lib/soundcloud-client.js';
 import prisma from '../lib/prisma.js';
-import { createUserLimiter, heavyOperationRateLimiter, libraryReadRateLimiter } from '../middleware/rateLimiter.js';
+import { createUserLimiter, heavyOperationRateLimiter, libraryReadRateLimiter, sortCommitLimiter, trackStreamLimiter } from '../middleware/rateLimiter.js';
 import { requireCanDownload } from '../middleware/download-access.js';
 import { adminAuth } from '../middleware/adminAuth.js';
 import { authenticateUser } from '../middleware/auth.js';
@@ -91,8 +91,12 @@ import {
   validateBulkAddPlaylistTracks,
   validateSetlistMatch,
   validateSetlistPlaylist,
+  validateSortApply,
+  validateSortUnlike,
+  validateTrackStream,
 } from '../middleware/validation.js';
 import { buildSetlistDescription, dedupeTracks } from '../lib/setlist.js';
+import { planSortApply, sortOverflowTitle, SORT_DEFAULT_DESCRIPTION } from '../lib/sort-likes.js';
 import { canonicalSoundCloudUrl, extractSecretToken, stripSecretToken } from '../lib/secret-link.js';
 const router = express.Router();
 
@@ -3128,6 +3132,254 @@ router.post('/playlists/from-likes', authenticateUser, heavyOperationRateLimiter
     });
     if (mapped) return res.status(mapped.status).json(mapped.body);
     res.status(500).json({ error: 'Failed to create playlist from likes' });
+  }
+});
+
+/**
+ * POST /api/sort/apply — Sort Likes: file marked tracks into ONE destination.
+ *
+ * Body: `{ playlistId }` for an existing playlist or `{ title, description? }`
+ * for a new one, plus `trackIds`. The client calls this once per destination,
+ * in turn, and records each success in its saved session, so a commit that is
+ * interrupted resumes without writing a destination twice.
+ *
+ * Existing targets go through the same guards as every append writer:
+ * readPlaylistForRewrite (all-access read, short read refused),
+ * assertAppendable (over 500 refused before any write) and writeGrowingPrefix
+ * with the existing length as floor. Tracks already present are not written
+ * and count as filed. What does not fit under 500 goes into new playlists
+ * "<title> (2)", "(3)", … (planSortApply).
+ *
+ * `filedTrackIds` is the set the client may unlike: every id now in the
+ * target or an overflow. On a failure after some writes, the 502 carries the
+ * playlists finished so far and the ids they hold, so nothing written is
+ * forgotten and nothing unwritten is unliked.
+ *
+ * Middleware order: validator before limiter, so a cross-site form post (an
+ * empty body under express.json()) dies at the validator and cannot spend a
+ * real user's budget. sortCommitLimiter is per user and must follow
+ * authenticateUser.
+ */
+router.post('/sort/apply', authenticateUser, validateSortApply, sortCommitLimiter, async (req, res) => {
+  const elapsed = startOperationTimer();
+  let writeAttempted = false;
+  const playlists = [];
+  const filed = [];
+  try {
+    const { playlistId, title, description } = req.body;
+    let existingIds = [];
+    let target = null;
+    if (playlistId) {
+      ({ playlist: target, ids: existingIds } = await readPlaylistForRewrite(
+        soundcloudClient, req.accessToken, req.refreshToken, playlistId,
+      ).catch(tagPlaylistReadFailure(playlistId)));
+      assertAppendable(existingIds);
+    }
+
+    const plan = planSortApply({ existingIds, trackIds: req.body.trackIds });
+    const baseTitle = target ? (target.title || 'Playlist') : title;
+    const newDescription = description || SORT_DEFAULT_DESCRIPTION;
+
+    if (target) {
+      if (plan.intoTarget.length > 0) {
+        await writeGrowingPrefix({
+          ids: [...existingIds, ...plan.intoTarget],
+          floor: existingIds.length,
+          batchSize: 100,
+          write: (prefix) => {
+            writeAttempted = true;
+            return soundcloudClient.addTracksToPlaylist(req.accessToken, req.refreshToken, playlistId, prefix);
+          },
+        });
+      }
+      filed.push(...plan.alreadyPresent, ...plan.intoTarget);
+      playlists.push({
+        id: playlistId,
+        title: baseTitle,
+        permalink_url: target.permalink_url ?? null,
+        trackCount: plan.intoTarget.length,
+        created: false,
+      });
+    } else {
+      writeAttempted = true;
+      const created = await createPlaylistFromTrackIds(
+        req.accessToken, req.refreshToken, plan.intoTarget, baseTitle, newDescription,
+      );
+      filed.push(...plan.intoTarget);
+      playlists.push({
+        id: created.id,
+        title: baseTitle,
+        permalink_url: created.permalink_url ?? null,
+        trackCount: plan.intoTarget.length,
+        created: true,
+      });
+    }
+
+    for (let i = 0; i < plan.overflowChunks.length; i++) {
+      await sleep(SC_PLAYLIST_PACING_MS);
+      const chunk = plan.overflowChunks[i];
+      const overflowTitle = sortOverflowTitle(baseTitle, i);
+      writeAttempted = true;
+      const created = await createPlaylistFromTrackIds(
+        req.accessToken, req.refreshToken, chunk, overflowTitle,
+        description || `Overflow from "${baseTitle}" (500-track limit)`,
+      );
+      filed.push(...chunk);
+      playlists.push({ id: created.id, title: overflowTitle, permalink_url: created.permalink_url ?? null, trackCount: chunk.length, created: true });
+    }
+
+    const added = playlists.reduce((sum, p) => sum + p.trackCount, 0);
+    invalidatePlaylistState(req.user.id);
+    logOperation({
+      req,
+      action: 'sort-likes-apply',
+      itemCount: playlists.length,
+      trackCount: added,
+      status: 'success',
+      durationMs: elapsed(),
+      playlistIds: playlists.map((p) => p.id),
+      trackIds: filed,
+      metadata: { newPlaylist: !target, alreadyPresent: plan.alreadyPresent.length, overflow: plan.overflowChunks.length },
+    });
+    res.json({ playlists, added, alreadyPresent: plan.alreadyPresent.length, filedTrackIds: filed });
+  } catch (error) {
+    if (writeAttempted) invalidatePlaylistState(req.user.id);
+    logger.error('Sort apply error:', safeError(error));
+    logOperation({
+      req,
+      action: 'sort-likes-apply',
+      status: 'error',
+      durationMs: elapsed(),
+      playlistIds: playlists.map((p) => p.id),
+      trackIds: filed.length ? filed : undefined,
+      errorCode: error?.code || error?.name || 'SORT_APPLY_FAILED',
+      errorMessage: safeError(error).message,
+    });
+    if (error instanceof PlaylistReadIncompleteError) {
+      return res.status(409).json({ code: 'PLAYLIST_READ_INCOMPLETE', error: error.message });
+    }
+    if (error instanceof PlaylistTooLargeError) {
+      return res.status(409).json({ code: 'PLAYLIST_TOO_LARGE', error: error.message });
+    }
+    const partial = error?.partialPlaylist;
+    if (playlists.length > 0 || partial) {
+      return res.status(502).json({
+        code: 'PARTIAL_APPLY',
+        error: partial
+          ? `SoundCloud stopped partway through. "${partial.title}" was created with the first ${partial.tracksWritten} tracks — check it before trying again.`
+          : 'SoundCloud stopped partway through. The playlists listed were finished; the rest were not.',
+        playlists,
+        partialPlaylist: partial ?? null,
+        filedTrackIds: filed,
+      });
+    }
+    const mapped = scErrorResponse(error, {
+      writeAttempted,
+      notFound: error?.scPlaylistId != null && !writeAttempted
+        ? {
+          status: 409,
+          playlistId: error.scPlaylistId,
+          error: 'That playlist no longer exists on SoundCloud. Nothing was changed.',
+        }
+        : null,
+    });
+    if (mapped) return res.status(mapped.status).json(mapped.body);
+    res.status(500).json({ error: 'Failed to add the tracks' });
+  }
+});
+
+/**
+ * POST /api/sort/unlike — Sort Likes: unlike tracks that were filed.
+ *
+ * ≤100 per call, sequential, paced with SC_BULK_PACING_MS like bulk-unlike.
+ * Unlike bulk-unlike it stops at the first 429 that survives scRequest's own
+ * retries and returns the untried tracks as `skipped` with `rateLimited`, so
+ * the client stops too instead of spending ~4.6 s per doomed call. It also
+ * stops when the client disconnects. The client only ever sends ids the
+ * server reported as filed (`filedTrackIds` from /sort/apply).
+ */
+router.post('/sort/unlike', authenticateUser, validateSortUnlike, sortCommitLimiter, async (req, res) => {
+  const userId = req.user.id;
+  const elapsed = startOperationTimer();
+  let clientDisconnected = false;
+  res.on('close', () => {
+    if (!res.writableEnded) clientDisconnected = true;
+  });
+  try {
+    const trackIds = [...new Set(req.body.trackIds)];
+    const results = [];
+    let rateLimited = false;
+    for (let i = 0; i < trackIds.length; i++) {
+      const trackId = trackIds[i];
+      if (rateLimited || clientDisconnected) {
+        results.push({ trackId, status: 'skipped' });
+        continue;
+      }
+      try {
+        await soundcloudClient.unlikeTrack(req.accessToken, req.refreshToken, trackId);
+        results.push({ trackId, status: 'ok' });
+      } catch (err) {
+        results.push({ trackId, status: 'error', error: err.message || 'Unlike failed' });
+        if (err.status === 429) {
+          rateLimited = true;
+          continue;
+        }
+      }
+      if (i < trackIds.length - 1) await sleep(SC_BULK_PACING_MS);
+    }
+
+    const removed = results.filter((r) => r.status === 'ok').map((r) => r.trackId);
+    if (!clientDisconnected) res.json({ results, rateLimited });
+    const failed = results.filter((r) => r.status === 'error').length;
+    logOperation({
+      userId,
+      action: 'sort-likes-unlike',
+      trackCount: removed.length,
+      itemCount: results.length,
+      status: failed > 0 && removed.length === 0 ? 'error' : 'success',
+      durationMs: elapsed(),
+      clientInfo: extractClientInfo(req),
+      trackIds: removed,
+      errorCode: failed > 0 && removed.length === 0 ? (rateLimited ? 'RATE_LIMITED' : 'ALL_ITEMS_FAILED') : undefined,
+      metadata: { total: results.length, removed: removed.length, failed, ...(rateLimited && { rateLimited: true }) },
+    });
+    const cachedLikes = requestCache.get('likes', userId, 'default');
+    if (Array.isArray(cachedLikes?.collection)) {
+      const processed = new Set(removed);
+      harvestTracks(cachedLikes.collection.filter((t) => t && processed.has(t.id)));
+    }
+    invalidateUserCollections(userId, ['likes']);
+  } catch (error) {
+    logger.error('Sort unlike error:', safeError(error));
+    invalidateUserCollections(userId, ['likes']);
+    if (!res.headersSent) res.status(500).json({ error: 'Unlike failed' });
+  }
+});
+
+/**
+ * GET /api/tracks/:id/stream — a playable CDN link for the Sort Likes
+ * preview player (option B). See soundcloudClient.getStreamLink for the
+ * format order and the host checks. The link is signed and short-lived, so
+ * the client asks for it just before playing, never ahead of time.
+ * Per-user trackStreamLimiter (600/hour): sorting is listening.
+ */
+router.get('/tracks/:id/stream', authenticateUser, validateTrackStream, trackStreamLimiter, instrumentRead('track-stream'), async (req, res) => {
+  try {
+    const link = await soundcloudClient.getStreamLink(req.accessToken, req.refreshToken, req.params.id);
+    res.set('Cache-Control', 'no-store');
+    res.json(link);
+  } catch (error) {
+    if (error?.code === 'NO_STREAM') {
+      return res.status(404).json({ code: 'NO_STREAM', error: 'SoundCloud has no playable stream for this track.' });
+    }
+    if (error?.code === 'STREAM_HOST') {
+      logger.warn('Track stream refused: unexpected host');
+      return res.status(502).json({ code: 'STREAM_HOST', error: 'SoundCloud answered with a stream we do not play. Try the embed player.' });
+    }
+    logger.error('Track stream error:', safeError(error));
+    const mapped = scErrorResponse(error, { writeAttempted: false });
+    if (mapped) return res.status(mapped.status).json(mapped.body);
+    res.status(500).json({ error: 'Failed to get a stream for this track' });
   }
 });
 

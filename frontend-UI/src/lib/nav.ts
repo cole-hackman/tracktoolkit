@@ -33,6 +33,7 @@ import {
   ListMusic,
   ListOrdered,
   ListPlus,
+  ListFilter,
   MessageSquare,
   Music,
   Repeat,
@@ -84,6 +85,7 @@ export const NAV: NavEntry[] = [
   {
     label: "Social & Activity",
     items: [
+      { href: "/sort-likes", label: "Sort Likes", icon: ListFilter },
       { href: "/likes-to-playlist", label: "Likes → Playlist", icon: Heart },
       { href: "/playlist-to-likes", label: "Playlist → Likes", icon: ListPlus },
       { href: "/like-manager", label: "Like Manager", icon: ThumbsUp },

@@ -10,8 +10,9 @@ import { safeError } from '../lib/safe-error.js';
  * fonts or widgets, so the only script and style sources are our own origin
  * plus `'unsafe-inline'`.
  *
- * `frameSrc` is `'none'` here and stays that way on every user-facing page.
- * The admin console is the single exception — see `securityHeaders` below.
+ * `frameSrc` is `'none'` here and stays that way on every user-facing page
+ * except two documents: the admin console and Sort Likes — see
+ * `securityHeaders` below.
  */
 export const cspDirectives = {
   defaultSrc: ["'self'"],
@@ -51,6 +52,31 @@ function buildHelmet(directives) {
 const defaultHeaders = buildHelmet(cspDirectives);
 const adminHeaders = buildHelmet({ ...cspDirectives, frameSrc: [ADMIN_FRAME_SRC] });
 
+/**
+ * Sort Likes previews a track two ways, so its document needs two
+ * allowances no other user page has:
+ *  - A, the embed player: `frame-src https://w.soundcloud.com` (the same
+ *    single origin the admin console frames);
+ *  - B, our own <audio> player: `media-src` for SoundCloud's two stream CDNs
+ *    (the download redirect allowlist), plus `blob:` because HLS through
+ *    Media Source Extensions plays from a blob URL. The HLS manifest and
+ *    segments are fetched under `connect-src`, which already lists both CDNs.
+ * The waveform is SoundCloud's JSON from wave.sndcdn.com (CORS `*`), also
+ * under the existing `connect-src`. Scripts are untouched: no third-party
+ * script is loaded, the widget is driven by postMessage.
+ */
+export const SORT_LIKES_MEDIA_SRC = ["'self'", 'https://*.sndcdn.com', 'https://*.cloudfront.net', 'blob:'];
+const sortLikesHeaders = buildHelmet({
+  ...cspDirectives,
+  frameSrc: [ADMIN_FRAME_SRC],
+  mediaSrc: SORT_LIKES_MEDIA_SRC,
+});
+
+/** True for the Sort Likes document (`/sort-likes`, `/sort-likes/`, …). */
+export function isSortLikesPagePath(path) {
+  return path === '/sort-likes' || path.startsWith('/sort-likes/');
+}
+
 /** True for the admin console document and its sub-paths, never for /api. */
 export function isAdminPagePath(path) {
   return path === '/admin' || path.startsWith('/admin/');
@@ -64,6 +90,7 @@ export function isAdminPagePath(path) {
  */
 export const securityHeaders = (req, res, next) => {
   if (isAdminPagePath(req.path)) return adminHeaders(req, res, next);
+  if (isSortLikesPagePath(req.path)) return sortLikesHeaders(req, res, next);
   return defaultHeaders(req, res, next);
 };
 
