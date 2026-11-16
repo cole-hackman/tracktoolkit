@@ -344,6 +344,13 @@ nothing. Because `trackIds` is set, the catalog's touch counts and the
 
 ### Sort Likes (`/sort-likes`)
 
+**Admin-only for now (Cole, 2026-11-16).** Reachable by URL only: it is not
+in `NAV`, the dashboard's `FEATURES`, `TOOL_RANKING` or the recent-tools
+slugs. All three routes run `authenticateUser, adminAuth` first, and the page
+mounts the tool (and every request it makes) only when `/api/auth/me` says
+`isAdmin`; anyone else gets "Not available". To open it to everyone, add it
+back to those four lists and drop `adminAuth` from the routes.
+
 Listen through your likes, mark each track for one or more destination
 playlists (existing, or new by name with an optional note that becomes its
 description), then commit once. **The session is localStorage only**
@@ -353,7 +360,7 @@ half-finished session is there on return. Pure logic (reducer, undo, filters,
 label suggestions, commit planning) is in `lib/sort-session.ts` and pinned by
 `e2e/sort-session.unit.spec.ts`.
 
-- `POST /api/sort/apply` — `authenticateUser, validateSortApply,
+- `POST /api/sort/apply` — `authenticateUser, adminAuth, validateSortApply,
   sortCommitLimiter`: one destination per call, `{ playlistId }` or
   `{ title, description? }`, plus ≤2000 `trackIds`. Existing targets go
   through `readPlaylistForRewrite`, `assertAppendable` and
@@ -363,7 +370,7 @@ label suggestions, commit planning) is in `lib/sort-session.ts` and pinned by
   writes is 502 `PARTIAL_APPLY` carrying what was finished.
 - `POST /api/sort/unlike` — same middleware shape, ≤100, paced at
   `SC_BULK_PACING_MS`, stops at the first 429 (rest `skipped`).
-- `GET /api/tracks/:id/stream` — `trackStreamLimiter` (600/h per user):
+- `GET /api/tracks/:id/stream` — `adminAuth`, then `trackStreamLimiter` (600/h per user):
   `getStreamLink` reads `/tracks/{id}/streams`, prefers progressive mp3, then
   HLS, then the 30 s preview, and follows an api.soundcloud.com link's
   redirect to a CDN host (token only ever sent to `isAllowedStreamUrl`

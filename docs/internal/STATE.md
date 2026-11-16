@@ -18,6 +18,12 @@ Previously (still true): Droploud and Cobrand gates are merged and live
 `fix/extension-domain` (`6b917ca`) in the private repo.
 
 ## Just done
+- **Sort Likes is admin-only (Cole, 2026-11-16, same branch):** URL only
+  (`/sort-likes/`), not in the sidebar, tab bar, dashboard or recent tools;
+  `adminAuth` on all three routes; non-admins see "Not available" and fetch
+  nothing. Full e2e: 1124 passed, 1 failed — `gate-usage-report.spec.ts:57`
+  posts the same gate result twice about 1 run in 10, reproduced on
+  `origin/main` (1/10) without this branch, so it is not this change.
 - **Sort Likes, 2026-11-16 (branch `claude/pensive-goodall-w9uxkt`, not
   merged, not live).** New tool `/sort-likes`: browse likes with waveform and
   preview, destinations (existing or new + note), hotkeys 1–9/J/K/S/Z/Space/

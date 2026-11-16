@@ -33,7 +33,6 @@ const TOOL_SLUGS: Record<string, string> = {
   "/playlist-compare": "playlist-compare",
   "/genre-search": "genre-search",
   "/set-to-playlist": "set-to-playlist",
-  "/sort-likes": "sort-likes",
   "/repost-manager": "repost-manager",
   "/growth": "growth",
   "/recently-played": "recently-played",

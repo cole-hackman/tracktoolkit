@@ -51,7 +51,6 @@ export const TOOL_RANKING: readonly ToolRank[] = [
   { id: "playlist-keyword-search", users: null },
   { id: "set-to-playlist", users: null },
   { id: "activity-to-playlist", users: null },
-  { id: "sort-likes", users: null, action: "sort-likes-apply" },
 ];
 
 const POSITION = new Map(TOOL_RANKING.map((rank, index) => [rank.id, index]));

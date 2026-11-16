@@ -105,7 +105,6 @@ const FEATURE_NAMES = {
   growth: 'Grow Your Network',
   'genre-search': 'Genre Search',
   'set-to-playlist': 'Set → Playlist',
-  'sort-likes': 'Sort Likes',
   resolver: 'Link Resolver',
   'batch-resolver': 'Batch Link Resolver',
   'recently-played': 'Recently Played',

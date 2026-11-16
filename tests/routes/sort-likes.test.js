@@ -12,7 +12,11 @@ import request from 'supertest';
 //  - validators run before the limiters (CSRF fail-closed, budget not spent).
 
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
+const ORIGINAL_ADMIN_IDS = process.env.ADMIN_IDS;
 process.env.NODE_ENV = 'development'; // pass-through limiters
+// Sort Likes is admin-only; the mocked user (soundcloudId 111) is an admin
+// unless a test says otherwise.
+process.env.ADMIN_IDS = '111';
 
 const getPlaylistWithTracks = jest.fn();
 const createPlaylist = jest.fn();
@@ -60,7 +64,11 @@ app.use(express.json()); // prod's only body parser
 app.use(express.urlencoded({ extended: false })); // NOT in prod — here only to prove a form post still fails
 app.use('/api', apiRoutes);
 
-afterAll(() => { process.env.NODE_ENV = ORIGINAL_NODE_ENV; });
+afterAll(() => {
+  process.env.NODE_ENV = ORIGINAL_NODE_ENV;
+  if (ORIGINAL_ADMIN_IDS === undefined) delete process.env.ADMIN_IDS;
+  else process.env.ADMIN_IDS = ORIGINAL_ADMIN_IDS;
+});
 
 let nextPlaylistId = 900;
 beforeEach(() => {
@@ -84,15 +92,46 @@ describe('middleware order', () => {
     ['/sort/apply', 'post', () => sortCommitLimiter],
     ['/sort/unlike', 'post', () => sortCommitLimiter],
     ['/tracks/:id/stream', 'get', () => trackStreamLimiter],
-  ])('%s: authenticateUser first, validator before the per-user limiter', (path, method, limiter) => {
+  ])('%s: authenticateUser, then adminAuth, then validator before the per-user limiter', (path, method, limiter) => {
     const layer = apiRoutes.stack.find((l) => l.route && l.route.path === path && l.route.methods[method]);
     expect(layer).toBeDefined();
     const handles = layer.route.stack.map((s) => s.handle);
     expect(handles[0].name).toBe('authenticateUser');
+    expect(handles[1].name).toBe('adminAuth');
     const validatorEnd = handles.findIndex((h) => h.name === 'handleValidationErrors');
     const limiterAt = handles.indexOf(limiter());
     expect(validatorEnd).toBeGreaterThan(-1);
     expect(limiterAt).toBeGreaterThan(validatorEnd);
+  });
+});
+
+describe('admin only', () => {
+  const withAdmins = async (ids, fn) => {
+    const saved = process.env.ADMIN_IDS;
+    process.env.ADMIN_IDS = ids;
+    try { await fn(); } finally { process.env.ADMIN_IDS = saved; }
+  };
+
+  test.each([
+    ['post', '/api/sort/apply', { title: 'x', trackIds: [1] }],
+    ['post', '/api/sort/unlike', { trackIds: [1] }],
+    ['get', '/api/tracks/1/stream', undefined],
+  ])('%s %s answers 403 to a signed-in non-admin and touches nothing', async (method, path, body) => {
+    await withAdmins('999', async () => {
+      const req = request(app)[method](path);
+      const res = body ? await req.send(body) : await req;
+      expect(res.status).toBe(403);
+    });
+    for (const fn of [getPlaylistWithTracks, createPlaylist, addTracksToPlaylist, unlikeTrack, getStreamLink]) {
+      expect(fn).not.toHaveBeenCalled();
+    }
+  });
+
+  test('an empty ADMIN_IDS refuses everyone', async () => {
+    await withAdmins('', async () => {
+      const res = await request(app).post('/api/sort/apply').send({ title: 'x', trackIds: [1] });
+      expect(res.status).toBe(403);
+    });
   });
 });
 

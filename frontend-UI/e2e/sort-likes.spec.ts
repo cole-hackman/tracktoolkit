@@ -12,7 +12,9 @@ import { mockApi } from "./fixtures/api";
  *    liked and marked;
  *  - both preview players mount (own: asks the server for a stream link;
  *    embed: the SoundCloud iframe, stubbed by mockApi);
- *  - no serious axe violations once marked, no horizontal overflow.
+ *  - no serious axe violations once marked, no horizontal overflow;
+ *  - it is admin-only: a non-admin sees "Not available" and no likes are read,
+ *    and the tool is in neither the navigation nor the dashboard.
  */
 
 const LIKES = [
@@ -36,8 +38,14 @@ interface Captured {
   stream: number[];
 }
 
+const ADMIN_USER = { userId: "u1", soundcloudId: 1000001, username: "testuser", displayName: "Test User", avatarUrl: null, isAdmin: true };
+
 async function open(page: Page, { failPop = false } = {}): Promise<Captured> {
   await mockApi(page);
+  // Sort Likes is admin-only; registered after mockApi, so this answer wins.
+  await page.route((url) => url.pathname === "/api/auth/me", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(ADMIN_USER) }),
+  );
   const captured: Captured = { apply: [], unlike: [], stream: [] };
   await page.route((url) => url.pathname === "/api/likes", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ collection: LIKES, total_results: LIKES.length }) }),
@@ -196,4 +204,24 @@ test("no serious axe violations with destinations and marks; no horizontal overf
   expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
+});
+
+test("admin only: a non-admin gets 'Not available', and nothing is fetched", async ({ page }) => {
+  await mockApi(page); // FAKE_USER is not an admin
+  const sortCalls: string[] = [];
+  page.on("request", (req) => {
+    const path = new URL(req.url()).pathname;
+    if (path === "/api/likes" || path.startsWith("/api/sort/") || /^\/api\/tracks\/\d+\/stream$/.test(path)) sortCalls.push(path);
+  });
+  await page.goto("/sort-likes/");
+  await expect(page.getByRole("heading", { level: 1, name: "Not available" })).toBeVisible();
+  await expect(page.getByTestId("now-sorting")).toHaveCount(0);
+  expect(sortCalls).toEqual([]);
+});
+
+test("not linked from the navigation or the dashboard, even for an admin", async ({ page }) => {
+  await open(page);
+  await page.goto("/dashboard/");
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await expect(page.locator('a[href^="/sort-likes"]')).toHaveCount(0);
 });

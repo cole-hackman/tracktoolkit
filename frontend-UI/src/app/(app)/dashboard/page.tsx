@@ -27,7 +27,6 @@ import {
   ArrowRightLeft,
   FileUp,
   History,
-  ListFilter,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import {
@@ -106,14 +105,6 @@ const FEATURES: FeatureCard[] = [
     icon: ClipboardCheck,
     path: "/library-audit",
     category: "Library & Export",
-  },
-  {
-    id: "sort-likes",
-    title: "Sort Likes",
-    description: "Listen through your likes and file each track into the right playlists",
-    icon: ListFilter,
-    path: "/sort-likes",
-    category: "Likes & Social",
   },
   {
     id: "likes",

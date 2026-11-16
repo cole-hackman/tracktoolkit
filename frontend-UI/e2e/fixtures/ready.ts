@@ -65,7 +65,6 @@ export const READY: Record<string, ReadyLocator> = {
   // the match rows and their badges only exist after a search, so run one.
   // A paste form; nothing is fetched until the user asks.
   "/set-to-playlist/": (page) => page.getByRole("textbox", { name: "Tracklist", exact: true }),
-  "/sort-likes/": (page) => page.getByTestId("now-sorting"),
   "/playlist-keyword-search/": async (page) => {
     await page.getByLabel("Keywords").fill("sample");
     await page.getByRole("button", { name: "Search", exact: true }).click();

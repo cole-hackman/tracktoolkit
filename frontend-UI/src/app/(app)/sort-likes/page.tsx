@@ -17,6 +17,8 @@ import {
   Trash2,
   Undo2,
 } from "lucide-react";
+import Link from "next/link";
+import { useAuth } from "@/contexts/AuthContext";
 import { apiFetch, errorMessageFromBody } from "@/lib/api";
 import { asArray } from "@/lib/api-shape";
 import {
@@ -176,7 +178,7 @@ function buildOutcome(session: SortSession, stoppedEarly: string | null): Outcom
   };
 }
 
-export default function SortLikesPage() {
+function SortLikesTool() {
   const queryClient = useQueryClient();
   const announce = useAnnounce();
 
@@ -1161,4 +1163,36 @@ export default function SortLikesPage() {
       </Dialog>
     </PageContainer>
   );
+}
+
+/**
+ * Sort Likes is admin-only for now (Cole, 2026-11-16): it is reachable by URL
+ * only — no sidebar, tab bar, dashboard or recent-tools entry — and renders
+ * for accounts on ADMIN_IDS. The tool itself, and every request it makes,
+ * mounts only after `/api/auth/me` says `isAdmin`. The server's `adminAuth`
+ * on /api/sort/* and /api/tracks/:id/stream is the real boundary.
+ */
+export default function SortLikesPage() {
+  const { user, loading } = useAuth();
+  if (loading || !user) {
+    return (
+      <PageContainer kind="workbench">
+        <Skeleton className="h-64 rounded-xl" />
+      </PageContainer>
+    );
+  }
+  if (!user.isAdmin) {
+    return (
+      <PageContainer kind="form">
+        <PageHeader title="Not available" description="This tool isn't available on your account." />
+        <Link
+          href="/dashboard"
+          className="inline-flex min-h-11 items-center rounded-lg bg-primary/10 px-4 font-semibold text-primary-text transition hover:bg-primary/15"
+        >
+          Go to the dashboard
+        </Link>
+      </PageContainer>
+    );
+  }
+  return <SortLikesTool />;
 }

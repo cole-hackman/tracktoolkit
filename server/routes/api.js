@@ -3138,6 +3138,10 @@ router.post('/playlists/from-likes', authenticateUser, heavyOperationRateLimiter
 /**
  * POST /api/sort/apply — Sort Likes: file marked tracks into ONE destination.
  *
+ * Sort Likes is admin-only for now (Cole, 2026-11-16): all three of its
+ * routes run adminAuth right after authenticateUser, and the page renders
+ * nothing for other accounts.
+ *
  * Body: `{ playlistId }` for an existing playlist or `{ title, description? }`
  * for a new one, plus `trackIds`. The client calls this once per destination,
  * in turn, and records each success in its saved session, so a commit that is
@@ -3160,7 +3164,7 @@ router.post('/playlists/from-likes', authenticateUser, heavyOperationRateLimiter
  * real user's budget. sortCommitLimiter is per user and must follow
  * authenticateUser.
  */
-router.post('/sort/apply', authenticateUser, validateSortApply, sortCommitLimiter, async (req, res) => {
+router.post('/sort/apply', authenticateUser, adminAuth, validateSortApply, sortCommitLimiter, async (req, res) => {
   const elapsed = startOperationTimer();
   let writeAttempted = false;
   const playlists = [];
@@ -3298,7 +3302,7 @@ router.post('/sort/apply', authenticateUser, validateSortApply, sortCommitLimite
  * stops when the client disconnects. The client only ever sends ids the
  * server reported as filed (`filedTrackIds` from /sort/apply).
  */
-router.post('/sort/unlike', authenticateUser, validateSortUnlike, sortCommitLimiter, async (req, res) => {
+router.post('/sort/unlike', authenticateUser, adminAuth, validateSortUnlike, sortCommitLimiter, async (req, res) => {
   const userId = req.user.id;
   const elapsed = startOperationTimer();
   let clientDisconnected = false;
@@ -3363,7 +3367,7 @@ router.post('/sort/unlike', authenticateUser, validateSortUnlike, sortCommitLimi
  * the client asks for it just before playing, never ahead of time.
  * Per-user trackStreamLimiter (600/hour): sorting is listening.
  */
-router.get('/tracks/:id/stream', authenticateUser, validateTrackStream, trackStreamLimiter, instrumentRead('track-stream'), async (req, res) => {
+router.get('/tracks/:id/stream', authenticateUser, adminAuth, validateTrackStream, trackStreamLimiter, instrumentRead('track-stream'), async (req, res) => {
   try {
     const link = await soundcloudClient.getStreamLink(req.accessToken, req.refreshToken, req.params.id);
     res.set('Cache-Control', 'no-store');
