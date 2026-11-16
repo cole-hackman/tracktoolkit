@@ -18,6 +18,27 @@ Previously (still true): Droploud and Cobrand gates are merged and live
 `fix/extension-domain` (`6b917ca`) in the private repo.
 
 ## Just done
+- **Sort Likes is admin-only (Cole, 2026-11-16, same branch):** URL only
+  (`/sort-likes/`), not in the sidebar, tab bar, dashboard or recent tools;
+  `adminAuth` on all three routes; non-admins see "Not available" and fetch
+  nothing. Full e2e: 1124 passed, 1 failed — `gate-usage-report.spec.ts:57`
+  posts the same gate result twice about 1 run in 10, reproduced on
+  `origin/main` (1/10) without this branch, so it is not this change.
+- **Sort Likes, 2026-11-16 (branch `claude/pensive-goodall-w9uxkt`, not
+  merged, not live).** New tool `/sort-likes`: browse likes with waveform and
+  preview, destinations (existing or new + note), hotkeys 1–9/J/K/S/Z/Space/
+  arrows/Q-W-E, decide-later pile, undo, view/genre/order filters, hide
+  tracks already in a destination, label suggestions from genre/tags/title,
+  one commit that adds and optionally unlikes. Session in localStorage only
+  (Cole: no cross-device). Over 500 overflows into "<title> (2)". Both
+  preview players built for Cole to compare (see CLAUDE.md, Sort Likes).
+  Checks: `npm test` 1203 passed / 6 skipped, server + frontend lint clean,
+  build ok, contrast 115 pass, e2e 1123 passed, 1 failed:
+  `mobile-nav.spec.ts:95` at m390 missed the Dashboard/Downloads tab hrefs
+  once (15/15 on rerun; unrelated to the Social sheet the new tool is in).
+  **Not verified live:** `/tracks/{id}/streams` shape and redirect, the
+  embed postMessage protocol, hls.js on a real HLS-only track. Verify both
+  players on tracktoolkit.com before deciding which stays.
 - **Design system, 2026-11-05 (PR #110, merged `8054e50`).** Rules, audit and sources:
   `docs/internal/DESIGN-SYSTEM.md`. Shared pieces: `PageContainer kind`
   (form 896 / list 1024 / workbench 1152 / hub), `Panel`, `ToolLayout`,

@@ -54,3 +54,25 @@ export function isAllowedDownloadRedirectTarget(input) {
     return false;
   }
 }
+
+// A track's stream links (`GET /tracks/{id}/streams`) are either already a
+// CDN URL or an api.soundcloud.com URL that answers an authenticated GET with
+// a redirect to one. Only the second kind is ever requested with the user's
+// token, and only on this exact host and path family — the same posture as
+// isAllowedDownloadUrl. The shape is from SoundCloud's spec, not yet seen
+// live, so it accepts both `/stream` and `/streams/<kind>`.
+const STREAM_PATH_RE = /^\/tracks\/(?:soundcloud(?::|%3A)tracks(?::|%3A))?\d+\/streams?(?:\/[A-Za-z0-9_-]+)?$/i;
+
+export function isAllowedStreamUrl(input) {
+  if (!input || typeof input !== 'string') return false;
+  try {
+    const url = new URL(input.trim());
+    return (
+      url.protocol === 'https:' &&
+      url.hostname.toLowerCase() === 'api.soundcloud.com' &&
+      STREAM_PATH_RE.test(url.pathname)
+    );
+  } catch {
+    return false;
+  }
+}

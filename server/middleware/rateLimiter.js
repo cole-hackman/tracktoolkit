@@ -160,3 +160,28 @@ export const feedbackDailyLimiter = createUserLimiter({
   message: 'Too much feedback sent today, please try again tomorrow.',
 });
 
+
+/**
+ * Sort Likes commit budget — per user. One commit is one call per destination
+ * plus one per 100 unlikes, so a big session is a dozen or more calls; on the
+ * shared 20/hour heavyOperationRateLimiter (per IP, shared with merge, clone
+ * and every bulk write) one session could spend the hour. Every call is still
+ * paced against SoundCloud inside the route. Mount after authenticateUser,
+ * or it silently keys on the IP (see createUserLimiter).
+ */
+export const sortCommitLimiter = createUserLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 60,
+  message: 'Too many sort commits in the last hour, please try again later.',
+});
+
+/**
+ * Sort Likes preview links — per user. Sorting is listening: hundreds of
+ * tracks in a sitting, one `/tracks/{id}/streams` read each. The 60/hour
+ * libraryReadRateLimiter would stop a session within the hour.
+ */
+export const trackStreamLimiter = createUserLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 600,
+  message: 'Too many previews in the last hour, please try again later.',
+});

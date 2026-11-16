@@ -342,6 +342,59 @@ stored results**; an older extension that sends no per-track items reports
 nothing. Because `trackIds` is set, the catalog's touch counts and the
 `action=gate-download` filter pick these rows up with no extra work.
 
+### Sort Likes (`/sort-likes`)
+
+**Admin-only for now (Cole, 2026-11-16).** Reachable by URL only: it is not
+in `NAV`, the dashboard's `FEATURES`, `TOOL_RANKING` or the recent-tools
+slugs. All three routes run `authenticateUser, adminAuth` first, and the page
+mounts the tool (and every request it makes) only when `/api/auth/me` says
+`isAdmin`; anyone else gets "Not available". To open it to everyone, add it
+back to those four lists and drop `adminAuth` from the routes.
+
+Listen through your likes, mark each track for one or more destination
+playlists (existing, or new by name with an optional note that becomes its
+description), then commit once. **The session is localStorage only**
+(`track-toolkit-sort-session-v1`, `lib/sort-session.ts`, decision
+2026-11-16): one browser, nothing written to SoundCloud before the commit, a
+half-finished session is there on return. Pure logic (reducer, undo, filters,
+label suggestions, commit planning) is in `lib/sort-session.ts` and pinned by
+`e2e/sort-session.unit.spec.ts`.
+
+- `POST /api/sort/apply` — `authenticateUser, adminAuth, validateSortApply,
+  sortCommitLimiter`: one destination per call, `{ playlistId }` or
+  `{ title, description? }`, plus ≤2000 `trackIds`. Existing targets go
+  through `readPlaylistForRewrite`, `assertAppendable` and
+  `writeGrowingPrefix`; what does not fit under 500 goes into new playlists
+  "<title> (2)", "(3)" (`planSortApply` in `lib/sort-likes.js`). Answers
+  `filedTrackIds` — the only ids the client may unlike. A failure after some
+  writes is 502 `PARTIAL_APPLY` carrying what was finished.
+- `POST /api/sort/unlike` — same middleware shape, ≤100, paced at
+  `SC_BULK_PACING_MS`, stops at the first 429 (rest `skipped`).
+- `GET /api/tracks/:id/stream` — `adminAuth`, then `trackStreamLimiter` (600/h per user):
+  `getStreamLink` reads `/tracks/{id}/streams`, prefers progressive mp3, then
+  HLS, then the 30 s preview, and follows an api.soundcloud.com link's
+  redirect to a CDN host (token only ever sent to `isAllowedStreamUrl`
+  paths). **The `/streams` response shape is from SoundCloud's spec, not yet
+  seen live.**
+- **A track is unliked only if every destination it was marked for filed
+  it.** The client freezes marks while a commit runs, records each
+  destination's result in the session (a created playlist becomes an
+  existing destination, so a retry appends instead of creating a second),
+  and an interrupted commit offers Resume.
+- Both limiters are per user (`createUserLimiter`) because one session is a
+  dozen-plus calls; on the shared 20/h `heavyOperationRateLimiter` it would
+  spend everyone's hour.
+- **Two preview players, on purpose, until Cole picks one:** "own" (`<audio>`
+  on the stream link; hls.js lazy-loaded for HLS outside Safari, worker off)
+  and "embed" (the `w.soundcloud.com` iframe driven by postMessage, no
+  api.js). The `/sort-likes` document alone gets `frame-src
+  https://w.soundcloud.com` and `media-src 'self' https://*.sndcdn.com
+  https://*.cloudfront.net blob:` (`isSortLikesPagePath` in
+  `server/middleware/security.js`, pinned by
+  `tests/routes/csp-sort-likes.test.js`). The waveform is SoundCloud's JSON
+  (`waveform_url` with `.json`), CORS `*` from `wave.sndcdn.com`, under the
+  existing `connect-src`.
+
 ### Growth & Discovery (`routes/growth.js`)
 
 All `/growth/*` routes are `authenticateUser`; the write-heavy ones also carry
