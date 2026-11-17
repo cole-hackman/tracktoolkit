@@ -183,6 +183,10 @@ export default function LikeManagerPage() {
         } else if (response.status === 409) {
           stopped = "busy";
           break;
+        } else if (response.status === 429) {
+          // Our own per-hour limit on bulk writes: every later batch is refused too.
+          stopped = "rate-limited";
+          break;
         } else {
           console.error(`Batch ${i + 1} failed`);
         }

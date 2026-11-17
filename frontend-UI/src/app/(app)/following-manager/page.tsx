@@ -182,6 +182,9 @@ export default function FollowingManagerPage() {
             if (data.rateLimited === true) stopped = "rate-limited";
           } else if (response.status === 409) {
             stopped = "busy";
+          } else if (response.status === 429) {
+            // Our own per-hour limit on bulk writes: every later chunk is refused too.
+            stopped = "rate-limited";
           }
         } catch (err) {
           console.error(`Failed to unfollow chunk ${i}-${i + CHUNK_SIZE}`, err);
