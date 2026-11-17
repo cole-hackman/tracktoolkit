@@ -2,7 +2,7 @@
 
 import { useState, useMemo } from "react";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { X, Combine, Trash2, AlertTriangle } from "lucide-react";
+import { X, Combine, Trash2, AlertTriangle, ExternalLink } from "lucide-react";
 import { apiFetch, errorMessageFromBody } from "@/lib/api";
 import {
   ActionBar,
@@ -38,10 +38,15 @@ interface Playlist {
 
 type MergeMode = "new" | "existing";
 
+interface MergedPlaylistRef {
+  title: string;
+  permalink_url?: string;
+}
+
 interface MergeResponse {
-  playlists?: { title: string }[];
-  playlist?: { title: string };
-  overflowPlaylists?: { title: string }[];
+  playlists?: MergedPlaylistRef[];
+  playlist?: MergedPlaylistRef;
+  overflowPlaylists?: MergedPlaylistRef[];
   deletedPlaylistIds?: number[];
   deleteErrors?: { id: number; error: string }[];
   stats?: {
@@ -64,6 +69,18 @@ interface MergeOutcome {
   announcement: string;
   deletedCount: number;
   deleteErrors: { id: number; error: string }[];
+  /** Where the result lives. Two people reported "it doesn't merge" a
+   *  minute after a merge that had succeeded (2026-10-12, 2026-11-13), and
+   *  one ran the same merge twice: the page said "created" but gave no way
+   *  to find it. */
+  links: { title: string; url: string }[];
+}
+
+/** Only SoundCloud's own pages are linked from a result. */
+function soundCloudLink(ref: MergedPlaylistRef | undefined, fallbackTitle: string) {
+  const url = ref?.permalink_url;
+  if (typeof url !== "string" || !/^https:\/\/soundcloud\.com\//.test(url)) return null;
+  return { title: ref?.title || fallbackTitle, url };
 }
 
 const MERGE_MODES = [
@@ -121,6 +138,9 @@ function buildOutcome(
     announcement,
     deletedCount: deletedIds.length,
     deleteErrors,
+    links: [...playlists, ...overflowPlaylists]
+      .map((ref) => soundCloudLink(ref, mergeMode === "existing" ? targetTitle || "playlist" : newPlaylistTitle))
+      .filter((link): link is { title: string; url: string } => link !== null),
   };
 }
 
@@ -276,27 +296,48 @@ export default function CombinePlaylistsPage() {
             announcement={outcome.announcement}
             onDismiss={() => setOutcome(null)}
           >
-            {outcome.deletedCount > 0 || outcome.deleteErrors.length > 0 ? (
+            {outcome.links.length > 0 || outcome.deletedCount > 0 || outcome.deleteErrors.length > 0 ? (
               <>
-                {outcome.deletedCount > 0 && (
-                  <p className="font-medium text-success-text">
-                    <Trash2 aria-hidden="true" className="mr-1 inline h-4 w-4" />
-                    {outcome.deletedCount} source playlist{outcome.deletedCount > 1 ? "s" : ""} deleted
-                  </p>
-                )}
-                {outcome.deleteErrors.length > 0 && (
-                  <div>
-                    <p className="mb-1 font-medium text-destructive-text">
-                      <AlertTriangle aria-hidden="true" className="mr-1 inline h-4 w-4" />
-                      {outcome.deleteErrors.length} playlist{outcome.deleteErrors.length > 1 ? "s" : ""} could not be deleted
-                    </p>
-                    <ul className="space-y-0.5 text-xs text-destructive-text">
-                      {outcome.deleteErrors.map((e) => (
-                        <li key={e.id}>ID {e.id}: {e.error}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
+                {outcome.links.length > 0 ? (
+                  <ul className="space-y-1">
+                    {outcome.links.map((link) => (
+                      <li key={link.url}>
+                        <a
+                          href={link.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex min-h-6 items-center gap-1 font-medium text-primary-text underline underline-offset-2"
+                        >
+                          <ExternalLink aria-hidden="true" className="h-4 w-4 shrink-0" />
+                          Open “{link.title}” on SoundCloud
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {outcome.deletedCount > 0 || outcome.deleteErrors.length > 0 ? (
+                  <>
+                    {outcome.deletedCount > 0 && (
+                      <p className="font-medium text-success-text">
+                        <Trash2 aria-hidden="true" className="mr-1 inline h-4 w-4" />
+                        {outcome.deletedCount} source playlist{outcome.deletedCount > 1 ? "s" : ""} deleted
+                      </p>
+                    )}
+                    {outcome.deleteErrors.length > 0 && (
+                      <div>
+                        <p className="mb-1 font-medium text-destructive-text">
+                          <AlertTriangle aria-hidden="true" className="mr-1 inline h-4 w-4" />
+                          {outcome.deleteErrors.length} playlist{outcome.deleteErrors.length > 1 ? "s" : ""} could not be deleted
+                        </p>
+                        <ul className="space-y-0.5 text-xs text-destructive-text">
+                          {outcome.deleteErrors.map((e) => (
+                            <li key={e.id}>ID {e.id}: {e.error}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </>
+                ) : null}
               </>
             ) : null}
           </ResultPanel>

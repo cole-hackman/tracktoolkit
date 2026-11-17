@@ -268,6 +268,31 @@ test("has no serious/critical violations: /playlist-modifier/ editor rows", asyn
   await expectNoBlockingViolations(page);
 });
 
+test("/playlist-modifier/ moves ticked tracks together and audits clean with a selection", async ({ page }) => {
+  await openPlaylistModifierEditor(page);
+  const main = page.getByRole("main");
+  const boxes = main.getByRole("checkbox", { name: /^Select / });
+  const count = await boxes.count();
+  expect(count).toBeGreaterThan(2);
+
+  const names = async () =>
+    main.getByRole("checkbox", { name: /^Select / }).evaluateAll((els) =>
+      els.map((el) => el.getAttribute("aria-label")),
+    );
+  const before = await names();
+  // Tick the last two rendered rows: the "just added at the bottom" case.
+  await boxes.nth(count - 1).check();
+  await boxes.nth(count - 2).check();
+  await expect(main.getByText("2 selected")).toBeVisible();
+
+  await expectNoBlockingViolations(page);
+
+  await main.getByRole("button", { name: "To top" }).click();
+  const after = await names();
+  expect(after.slice(0, 2)).toEqual([before[count - 2], before[count - 1]]);
+  expect(after.slice(2)).toEqual(before.slice(0, count - 2));
+});
+
 /**
  * This test was `fixme`'d when it was written, because it found a real defect
  * in a file its task did not own: the three dialogs this page opens —
