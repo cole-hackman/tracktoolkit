@@ -1917,6 +1917,7 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
         overflowPlaylists.push({
           id: newPl.id,
           title: partTitle,
+          permalink_url: newPl.permalink_url,
           trackCount: chunk.length,
           partNumber,
         });
@@ -1972,7 +1973,7 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
       invalidatePlaylistState(req.user.id);
 
       return res.json({
-        playlist: { id: targetPlaylistId, title: targetPlaylist.title },
+        playlist: { id: targetPlaylistId, title: targetPlaylist.title, permalink_url: targetPlaylist.permalink_url },
         overflowPlaylists: overflowPlaylists.length > 0 ? overflowPlaylists : undefined,
         deletedPlaylistIds: deletedPlaylistIds.length > 0 ? deletedPlaylistIds : undefined,
         deleteErrors: deleteErrors.length > 0 ? deleteErrors : undefined,

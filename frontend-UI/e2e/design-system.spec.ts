@@ -90,7 +90,7 @@ test("combine: a successful merge shows the result above the tool, focused and a
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          playlist: { title: "Merged mix" },
+          playlist: { title: "Merged mix", permalink_url: "https://soundcloud.com/someone/sets/merged-mix" },
           stats: { totalTracks: 52 },
         }),
       }),
@@ -109,6 +109,12 @@ test("combine: a successful merge shows the result above the tool, focused and a
   await expect(result).toHaveAttribute("data-result-status", "success");
   await expect(result).toContainText('"Merged mix" has been created with 52 tracks (duplicates removed).');
   await expect(page.locator("#app-live-region")).toHaveText("Merged: 1 playlist created with 52 tracks.");
+  // Where the new playlist is: people who could not find it reported the
+  // merge as broken (feedback 2026-10-12, 2026-11-13).
+  await expect(result.getByRole("link", { name: "Open “Merged mix” on SoundCloud" })).toHaveAttribute(
+    "href",
+    "https://soundcloud.com/someone/sets/merged-mix",
+  );
 
   // The result sits above the tool, and the tool is still there, reset for
   // the next merge.
@@ -279,4 +285,29 @@ test("single-choice picker: arrow keys do not choose, Enter does, and the picker
   await expect(second).toBeFocused();
   await expect(page.getByRole("list", { name: "Playlists" })).toBeVisible();
   await expectNoBlockingViolations(page);
+});
+
+test("combine: a result links only to soundcloud.com", async ({ page }) => {
+  await mockApi(page);
+  await page.route(
+    (url) => url.pathname === "/api/playlists/merge",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          playlist: { title: "Merged mix", permalink_url: "https://evil.example/sets/merged-mix" },
+          stats: { totalTracks: 3 },
+        }),
+      }),
+  );
+  await page.goto("/combine/");
+  await page.getByRole("checkbox", { name: "Sample Playlist 1" }).check();
+  await page.getByRole("checkbox", { name: "Sample Playlist 2" }).check();
+  await page.getByLabel("New Playlist Name").fill("Merged mix");
+  await page.getByRole("button", { name: "Merge Playlists" }).click();
+
+  const result = page.getByRole("region", { name: "Playlist Created!" });
+  await expect(result).toBeVisible();
+  await expect(result.getByRole("link")).toHaveCount(0);
 });
