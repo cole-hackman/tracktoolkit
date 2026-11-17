@@ -225,3 +225,59 @@ test("not linked from the navigation or the dashboard, even for an admin", async
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   await expect(page.locator('a[href^="/sort-likes"]')).toHaveCount(0);
 });
+
+test("select mode: tick a range, mark them all with a button or a hotkey, undo the batch", async ({ page }) => {
+  await open(page);
+  await addDestinations(page);
+  const list = page.getByTestId("sort-list");
+  // Off by default: rows are plain buttons, no checkboxes.
+  await expect(list.getByRole("checkbox")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Select tracks" }).click();
+  await expect(page.getByRole("button", { name: "Done selecting" })).toHaveAttribute("aria-pressed", "true");
+  const boxes = list.getByRole("checkbox");
+  await expect(boxes).toHaveCount(4);
+
+  // Click the first, shift-click the third: a range of three.
+  await list.getByText("Groove Machine").click();
+  await list.getByText("Low End Theory").click({ modifiers: ["Shift"] });
+  await expect(page.getByTestId("selected-count")).toHaveText("3 selected");
+
+  const bar = page.getByTestId("bulk-bar");
+  await bar.getByRole("button", { name: /Tech House/ }).click();
+  await expect(page.getByTestId("marked-total")).toHaveText("3");
+  // Marked tracks leave Unsorted, but stay selected and are counted.
+  await expect(page.getByTestId("selected-count")).toContainText("3 not in this view");
+  await expect(bar.getByRole("button", { name: /Tech House/ })).toHaveAttribute("aria-pressed", "true");
+
+  // The hotkey acts on the selection too: 3 = Pop Remix.
+  await page.locator("h1").click();
+  await page.keyboard.press("3");
+  await expect(bar.getByRole("button", { name: /Pop Remix/ })).toHaveAttribute("aria-pressed", "true");
+
+  // One undo reverts the whole Pop Remix batch, the next the Tech House one.
+  await page.keyboard.press("z");
+  await expect(bar.getByRole("button", { name: /Pop Remix/ })).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByTestId("marked-total")).toHaveText("3");
+  await page.keyboard.press("z");
+  await expect(page.getByTestId("marked-total")).toHaveText("0");
+
+  // Escape clears the selection; leaving the mode removes the checkboxes.
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("selected-count")).toHaveText("0 selected");
+  await page.getByRole("button", { name: "Done selecting" }).click();
+  await expect(list.getByRole("checkbox")).toHaveCount(0);
+});
+
+test("select mode: no serious axe violations, no horizontal overflow", async ({ page }) => {
+  await open(page);
+  await addDestinations(page);
+  await page.getByRole("button", { name: "Select tracks" }).click();
+  await page.getByTestId("sort-list").getByText("Groove Machine").click();
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag22aa"]).analyze();
+  const blocking = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
+  expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});

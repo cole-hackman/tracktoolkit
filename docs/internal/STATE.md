@@ -18,6 +18,12 @@ Previously (still true): Droploud and Cobrand gates are merged and live
 `fix/extension-domain` (`6b917ca`) in the private repo.
 
 ## Just done
+- **Sort Likes multi-select, 2026-11-17 (Cole asked; merged on request).**
+  "Select tracks" mode on the likes list: checkboxes, shift-click ranges,
+  select all shown; bulk mark per destination, decide later, clear marks;
+  1–9 / S / Esc on the selection; one undo per batch. Checks: `npm run
+  verify` 1219 passed / 6 skipped, build ok, e2e 1135 passed, 0 failed.
+  Still not verified live: either preview player on a real track.
 - **Sort Likes is admin-only (Cole, 2026-11-16, same branch):** URL only
   (`/sort-likes/`), not in the sidebar, tab bar, dashboard or recent tools;
   `adminAuth` on all three routes; non-admins see "Not available" and fetch

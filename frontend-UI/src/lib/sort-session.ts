@@ -41,6 +41,8 @@ export interface SortHistoryEntry {
   marks: string[];
   /** Whether it was in "decide later" before the change. */
   skipped: boolean;
+  /** Set on every entry of one bulk action, so one undo reverts the batch. */
+  group?: number;
 }
 
 export interface CommitDestinationResult {
@@ -151,7 +153,9 @@ export function parseSession(raw: string | null): SortSession {
     marks,
     skipped: Array.isArray(d.skipped) ? d.skipped.filter(isInt) : [],
     history: Array.isArray(d.history)
-      ? d.history.filter((h) => !!h && isInt(h.trackId) && isStringArray(h.marks) && typeof h.skipped === "boolean")
+      ? d.history
+          .filter((h) => !!h && isInt(h.trackId) && isStringArray(h.marks) && typeof h.skipped === "boolean")
+          .map((h) => (h.group === undefined || isInt(h.group) ? h : { trackId: h.trackId, marks: h.marks, skipped: h.skipped }))
       : [],
     filed: Array.isArray(d.filed) ? d.filed.filter(isInt) : [],
     currentTrackId: isInt(d.currentTrackId) ? d.currentTrackId : null,
@@ -191,6 +195,12 @@ export type SortAction =
   | { type: "setNote"; key: string; note: string }
   | { type: "toggleMark"; trackId: number; key: string }
   | { type: "toggleSkip"; trackId: number }
+  /** Multi-select: mark every listed track for `key`, or unmark them all when every one already has it. */
+  | { type: "bulkMark"; trackIds: number[]; key: string }
+  /** Multi-select: put every listed track in decide later, or take them all out when every one is there. */
+  | { type: "bulkSkip"; trackIds: number[] }
+  /** Multi-select: remove every mark from the listed tracks. */
+  | { type: "bulkClearMarks"; trackIds: number[] }
   | { type: "undo" }
   | { type: "setCurrent"; trackId: number | null }
   | { type: "setUnlikeAfterCommit"; value: boolean }
@@ -211,6 +221,21 @@ function withHistory(session: SortSession, trackId: number): SortHistoryEntry[] 
   };
   return [...session.history, entry].slice(-SORT_HISTORY_LIMIT);
 }
+
+/** History entries for a bulk change: one per track, sharing a new group id. */
+function withBulkHistory(session: SortSession, trackIds: number[]): SortHistoryEntry[] {
+  const group = session.history.reduce((max, h) => Math.max(max, h.group ?? 0), 0) + 1;
+  const skipped = new Set(session.skipped);
+  const entries = trackIds.map((trackId) => ({
+    trackId,
+    marks: session.marks[String(trackId)] ?? [],
+    skipped: skipped.has(trackId),
+    group,
+  }));
+  return [...session.history, ...entries].slice(-SORT_HISTORY_LIMIT);
+}
+
+const uniqueIds = (ids: number[]) => [...new Set(ids.filter((id) => Number.isSafeInteger(id) && id > 0))];
 
 function setMarks(marks: Record<string, string[]>, trackId: number, list: string[]) {
   const next = { ...marks };
@@ -303,17 +328,68 @@ export function sortReducer(session: SortSession, action: SortAction): SortSessi
       };
     }
 
-    case "undo": {
-      if (locked || session.history.length === 0) return session;
-      const last = session.history[session.history.length - 1];
-      const keys = new Set(session.destinations.map((d) => d.key));
-      const others = session.skipped.filter((id) => id !== last.trackId);
+    case "bulkMark": {
+      const ids = uniqueIds(action.trackIds);
+      if (locked || ids.length === 0 || !session.destinations.some((d) => d.key === action.key)) return session;
+      const everyHas = ids.every((id) => (session.marks[String(id)] ?? []).includes(action.key));
+      let marks = session.marks;
+      for (const id of ids) {
+        const current = marks[String(id)] ?? [];
+        const next = everyHas ? current.filter((k) => k !== action.key) : current.includes(action.key) ? current : [...current, action.key];
+        marks = setMarks(marks, id, next);
+      }
+      const marked = new Set(ids.filter((id) => (marks[String(id)] ?? []).length > 0));
       return {
         ...session,
-        history: session.history.slice(0, -1),
-        marks: setMarks(session.marks, last.trackId, last.marks.filter((k) => keys.has(k))),
-        skipped: last.skipped ? [...others, last.trackId] : others,
-        currentTrackId: last.trackId,
+        history: withBulkHistory(session, ids),
+        marks,
+        skipped: session.skipped.filter((id) => !marked.has(id)),
+      };
+    }
+
+    case "bulkSkip": {
+      const ids = uniqueIds(action.trackIds);
+      if (locked || ids.length === 0) return session;
+      const skipped = new Set(session.skipped);
+      const everySkipped = ids.every((id) => skipped.has(id));
+      for (const id of ids) {
+        if (everySkipped) skipped.delete(id);
+        else skipped.add(id);
+      }
+      return { ...session, history: withBulkHistory(session, ids), skipped: [...skipped] };
+    }
+
+    case "bulkClearMarks": {
+      const ids = uniqueIds(action.trackIds).filter((id) => (session.marks[String(id)] ?? []).length > 0);
+      if (locked || ids.length === 0) return session;
+      let marks = session.marks;
+      for (const id of ids) marks = setMarks(marks, id, []);
+      return { ...session, history: withBulkHistory(session, ids), marks };
+    }
+
+    case "undo": {
+      if (locked || session.history.length === 0) return session;
+      // A bulk action undoes as one step: every trailing entry of its group.
+      const last = session.history[session.history.length - 1];
+      let from = session.history.length - 1;
+      if (last.group !== undefined) {
+        while (from > 0 && session.history[from - 1].group === last.group) from -= 1;
+      }
+      const undone = session.history.slice(from);
+      const keys = new Set(session.destinations.map((d) => d.key));
+      let marks = session.marks;
+      const skipped = new Set(session.skipped);
+      for (const entry of [...undone].reverse()) {
+        marks = setMarks(marks, entry.trackId, entry.marks.filter((k) => keys.has(k)));
+        if (entry.skipped) skipped.add(entry.trackId);
+        else skipped.delete(entry.trackId);
+      }
+      return {
+        ...session,
+        history: session.history.slice(0, from),
+        marks,
+        skipped: [...skipped],
+        currentTrackId: undone.length === 1 ? last.trackId : session.currentTrackId,
       };
     }
 

@@ -4,8 +4,10 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
+  CheckSquare,
   Clock,
   ExternalLink,
+  Headphones,
   Keyboard,
   Music,
   Pause,
@@ -40,6 +42,7 @@ import {
   ResultPanel,
   SegmentedControl,
   Select,
+  SelectableRow,
   Skeleton,
   ToolLayout,
   useAnnounce,
@@ -57,6 +60,7 @@ import {
   type PlaylistSummary,
 } from "@/lib/queries";
 import { filterBySearch } from "@/lib/list-search";
+import { useListSelection } from "@/lib/useListSelection";
 import { cn } from "@/lib/utils";
 import {
   DEFAULT_SORT_FILTER,
@@ -83,7 +87,7 @@ import {
   type SortView,
 } from "@/lib/sort-session";
 
-const ROW_HEIGHT = 64;
+const ROW_HEIGHT = 68;
 const MAX_PLAYLIST_TRACKS = 500;
 
 const PLAYER_MODES = [
@@ -106,6 +110,9 @@ const SHORTCUTS: Array<[string, string]> = [
   ["← / →", "Back / forward 10 seconds (Shift: 30)"],
   ["Q / W / E", "Jump to 25% / 50% / 75% of the track"],
   ["?", "Show these shortcuts"],
+  ["Select mode: 1 – 9", "Mark / unmark every selected track for that destination"],
+  ["Select mode: S", "Put every selected track in decide later (or take them out)"],
+  ["Select mode: Esc", "Clear the selection"],
 ];
 
 const trackText = (t: SortTrack) => `${t.title ?? ""} ${t.user?.username ?? ""} ${t.genre ?? ""} ${t.tag_list ?? ""}`;
@@ -244,7 +251,17 @@ function SortLikesTool() {
   );
 
   const filtered = useMemo(() => filterTracks(likes, session, filter, inDestination), [likes, session, filter, inDestination]);
-  const shown = useMemo(() => filterBySearch(filtered, query, trackText), [filtered, query]);
+  const shownFresh = useMemo(() => filterBySearch(filtered, query, trackText), [filtered, query]);
+  // Same tracks in the same order → the same array. Every session change
+  // (a mark, the current track) re-runs the filters, and a new array would
+  // reset useListSelection's shift-click anchor between two clicks.
+  const shownRef = useRef<SortTrack[]>(shownFresh);
+  const shown = useMemo(() => {
+    const prev = shownRef.current;
+    const same = prev.length === shownFresh.length && prev.every((t, i) => t === shownFresh[i]);
+    if (!same) shownRef.current = shownFresh;
+    return shownRef.current;
+  }, [shownFresh]);
 
   // Position in the whole likes list (in the chosen order), so "next" still
   // works after the current track leaves the view (marking it in Unsorted).
@@ -373,6 +390,61 @@ function SortLikesTool() {
     announce("Undone");
   }, [committing, announce]);
 
+  // ── Multi-select ───────────────────────────────────────────────────────────
+  // A mode, off by default: with it on, list rows are checkboxes (click,
+  // shift-click for a range, "Select all shown") and marks, decide later and
+  // clear act on every selected track at once. Each bulk action is one undo
+  // step. The selection survives a search or a view change, like every other
+  // selectable list in the app; ids no longer in the likes are ignored.
+  const [selectMode, setSelectMode] = useState(false);
+  const trackIdOf = useCallback((t: SortTrack) => t.id, []);
+  const selection = useListSelection(shown, trackIdOf, { isQueryActive: query.trim().length > 0 });
+  const selectedIds = useMemo(() => [...selection.selected].filter((id) => trackById.has(id)), [selection.selected, trackById]);
+  const shownIdSet = useMemo(() => new Set(shown.map((t) => t.id)), [shown]);
+  const hiddenSelected = selectedIds.filter((id) => !shownIdSet.has(id)).length;
+  const selectedRef = useRef(selectedIds);
+  selectedRef.current = selectedIds;
+  const selectModeRef = useRef(selectMode);
+  selectModeRef.current = selectMode;
+  const plural = (n: number) => `${n} track${n === 1 ? "" : "s"}`;
+
+  const toggleSelectMode = () => {
+    if (selectMode) selection.clear();
+    setSelectMode(!selectMode);
+    announce(selectMode ? "Select mode off" : "Select mode on. Tick tracks, then mark them all at once.");
+  };
+
+  const bulkMark = useCallback(
+    (key: string) => {
+      const ids = selectedRef.current;
+      const dest = sessionRef.current.destinations.find((d) => d.key === key);
+      if (committing || !dest) return;
+      if (ids.length === 0) {
+        announce("Select some tracks first");
+        return;
+      }
+      const every = ids.every((id) => (sessionRef.current.marks[String(id)] ?? []).includes(key));
+      dispatch({ type: "bulkMark", trackIds: ids, key });
+      announce(`${every ? "Unmarked" : "Marked"} ${plural(ids.length)} for ${dest.title}`);
+    },
+    [committing, announce],
+  );
+
+  const bulkSkip = useCallback(() => {
+    const ids = selectedRef.current;
+    if (committing || ids.length === 0) return;
+    const every = ids.every((id) => sessionRef.current.skipped.includes(id));
+    dispatch({ type: "bulkSkip", trackIds: ids });
+    announce(`${every ? "Took" : "Moved"} ${plural(ids.length)} ${every ? "out of" : "to"} decide later`);
+  }, [committing, announce]);
+
+  const bulkClearMarks = () => {
+    const ids = selectedIds.filter((id) => (session.marks[String(id)] ?? []).length > 0);
+    if (committing || ids.length === 0) return;
+    dispatch({ type: "bulkClearMarks", trackIds: ids });
+    announce(`Cleared the marks on ${plural(ids.length)}`);
+  };
+
   // ── Hotkeys ────────────────────────────────────────────────────────────────
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const nowPanelRef = useRef<HTMLDivElement>(null);
@@ -382,12 +454,26 @@ function SortLikesTool() {
       if (isTypingTarget(event.target)) return;
       if (document.querySelector("[aria-modal='true']")) return;
       const key = event.key;
+      // In select mode with tracks ticked, 1–9 and S act on the selection.
+      const onSelection = selectModeRef.current && selectedRef.current.length > 0;
       if (/^[1-9]$/.test(key)) {
         const dest = sessionRef.current.destinations[Number(key) - 1];
         if (dest) {
           event.preventDefault();
-          mark(dest.key);
+          if (onSelection) bulkMark(dest.key);
+          else mark(dest.key);
         }
+        return;
+      }
+      if (onSelection && key.toLowerCase() === "s") {
+        event.preventDefault();
+        bulkSkip();
+        return;
+      }
+      if (key === "Escape" && selectModeRef.current && selectedRef.current.length > 0) {
+        event.preventDefault();
+        selection.clear();
+        announce("Selection cleared");
         return;
       }
       const duration = player.durationMs || current?.duration || 0;
@@ -433,7 +519,7 @@ function SortLikesTool() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [mark, skip, undo, step, player.durationMs, current?.duration]);
+  }, [mark, skip, undo, step, bulkMark, bulkSkip, selection, announce, player.durationMs, current?.duration]);
 
   // ── List ───────────────────────────────────────────────────────────────────
   const listRef = useRef<HTMLDivElement>(null);
@@ -748,7 +834,18 @@ function SortLikesTool() {
   );
 
   const listPanel = (
-    <Panel title="Your likes" description={likes.length ? `${likes.length.toLocaleString()} liked tracks` : undefined}>
+    <Panel
+      title="Your likes"
+      description={likes.length ? `${likes.length.toLocaleString()} liked tracks` : undefined}
+      actions={
+        likes.length > 0 ? (
+          <Button variant={selectMode ? "default" : "outline"} size="sm" onClick={toggleSelectMode} aria-pressed={selectMode} nowrap>
+            <CheckSquare className="h-4 w-4" aria-hidden="true" />
+            {selectMode ? "Done selecting" : "Select tracks"}
+          </Button>
+        ) : undefined
+      }
+    >
       {likesQuery.isError ? (
         <InlineAlert variant="error">Couldn’t load your liked tracks. Try refreshing the page.</InlineAlert>
       ) : loading ? (
@@ -813,6 +910,63 @@ function SortLikesTool() {
             noun={filtered.length === 1 ? "track" : "tracks"}
             placeholder="Search title, artist, genre or tag…"
           />
+          {selectMode ? (
+            <div className="space-y-3 rounded-lg border border-primary bg-primary/5 p-3" data-testid="bulk-bar">
+              <div className="flex flex-wrap items-center gap-3">
+                <p className="text-sm font-semibold text-foreground" data-testid="selected-count">
+                  {selectedIds.length} selected
+                  {hiddenSelected ? <span className="font-normal text-muted-foreground"> ({hiddenSelected} not in this view)</span> : null}
+                </p>
+                <Button variant="ghost" size="sm" onClick={selection.toggleAllShown} disabled={shown.length === 0} className="text-primary-text" nowrap>
+                  {selection.toggleAllLabel}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={selection.clear} disabled={selectedIds.length === 0} nowrap>
+                  Clear selection
+                </Button>
+              </div>
+              {session.destinations.length === 0 ? (
+                <p className="text-sm text-muted-foreground">Add a destination to mark the selected tracks.</p>
+              ) : (
+                <div>
+                  <p className="mb-2 text-sm text-foreground">Mark selected for</p>
+                  {/* eslint-disable-next-line jsx-a11y/no-redundant-roles -- Tailwind preflight strips list semantics in WebKit */}
+                  <ul role="list" className="flex flex-wrap gap-2">
+                    {session.destinations.map((d, i) => {
+                      const all = selectedIds.length > 0 && selectedIds.every((id) => (session.marks[String(id)] ?? []).includes(d.key));
+                      return (
+                        <li key={d.key} className="min-w-0 max-w-full">
+                          <button
+                            type="button"
+                            aria-pressed={all}
+                            disabled={committing || selectedIds.length === 0}
+                            onClick={() => bulkMark(d.key)}
+                            className={cn(
+                              "touch-44 inline-flex min-h-11 max-w-full items-center gap-2 rounded-lg border px-3 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60",
+                              all ? "border-primary bg-primary/15 text-foreground" : "border-border bg-card text-foreground hover:bg-surface-hover",
+                            )}
+                          >
+                            {i < SORT_HOTKEY_DESTINATIONS ? (
+                              <kbd className="rounded border border-border bg-muted px-1.5 font-mono text-xs text-muted-foreground">{i + 1}</kbd>
+                            ) : null}
+                            <span className="truncate">{d.title}</span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+              <div className="flex flex-wrap gap-3">
+                <Button variant="outline" size="sm" onClick={bulkSkip} disabled={committing || selectedIds.length === 0}>
+                  <Clock className="h-4 w-4" aria-hidden="true" />
+                  Decide later
+                </Button>
+                <Button variant="ghost" size="sm" onClick={bulkClearMarks} disabled={committing || selectedIds.every((id) => !(session.marks[String(id)] ?? []).length)}>
+                  Clear their marks
+                </Button>
+              </div>
+            </div>
+          ) : null}
           {shown.length === 0 ? (
             <EmptyState as="p" className="min-h-[160px] py-8" title="No tracks in this view" description="Try another view, genre or search." />
           ) : (
@@ -829,6 +983,30 @@ function SortLikesTool() {
                       className="absolute left-0 top-0 w-full"
                       style={{ height: ROW_HEIGHT, transform: `translateY(${row.start}px)` }}
                     >
+                      {selectMode ? (
+                        <SelectableRow
+                          as="div"
+                          id={t.id}
+                          selected={selection.selected.has(t.id)}
+                          onToggle={(e) => selection.toggle(t, row.index, e)}
+                          label={t.title ?? "Track"}
+                          className={isCurrent ? "ring-1 ring-primary" : undefined}
+                          rightSlot={
+                            <IconButton label={`Play ${t.title ?? "this track"} in the player`} variant="ghost" size="sm" onClick={() => chooseFromList(t.id)}>
+                              <Headphones className="h-4 w-4" aria-hidden="true" />
+                            </IconButton>
+                          }
+                        >
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium text-foreground">{t.title}</span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {t.user?.username}
+                              {marks.length ? ` · ${marks.map(destTitle).join(", ")}` : ""}
+                              {session.skipped.includes(t.id) ? " · Decide later" : ""}
+                            </span>
+                          </span>
+                        </SelectableRow>
+                      ) : (
                       <button
                         type="button"
                         onClick={() => chooseFromList(t.id)}
@@ -856,6 +1034,7 @@ function SortLikesTool() {
                         </span>
                         {t.duration ? <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{formatClock(t.duration)}</span> : null}
                       </button>
+                      )}
                     </li>
                   );
                 })}
@@ -868,7 +1047,7 @@ function SortLikesTool() {
   );
 
   const destinationsPanel = (
-    <Panel title="Destinations" description="Each one is a playlist. Number keys 1–9 mark the current track.">
+    <Panel title="Destinations" description="Each one is a playlist. Number keys 1–9 mark the current track, or every selected track in select mode.">
       <div className="space-y-4">
         <PlaylistChooser
           label="Add an existing playlist"
