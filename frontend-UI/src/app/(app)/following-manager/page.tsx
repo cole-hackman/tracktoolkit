@@ -64,6 +64,19 @@ function useGridColumnCount() {
   return isWide ? 2 : 1;
 }
 
+function stoppedMessage(stopped: "rate-limited" | "busy", done: number, total: number): [string, string] {
+  if (stopped === "rate-limited") {
+    return [
+      "Unfollows stopped early",
+      `SoundCloud is limiting unfollows on your account right now. Unfollowed ${done} of ${total} users before it stopped. The rest are still selected; try again later.`,
+    ];
+  }
+  return [
+    "Another unfollow is running",
+    `An unfollow is already running for your account, maybe in another tab. Unfollowed ${done} of ${total} users here. Wait for it to finish, then try the rest again.`,
+  ];
+}
+
 export default function FollowingManagerPage() {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -146,7 +159,10 @@ export default function FollowingManagerPage() {
     const CHUNK_SIZE = 50;
     const allUserIds = Array.from(selected);
     const successfullyRemoved = new Set<number>();
-    
+    // Set when the server stopped the run (SoundCloud's rate limit, or another
+    // unfollow already running for this account); later chunks would fail too.
+    let stopped: "rate-limited" | "busy" | null = null;
+
     try {
       for (let i = 0; i < allUserIds.length; i += CHUNK_SIZE) {
         const chunk = allUserIds.slice(i, i + CHUNK_SIZE);
@@ -163,10 +179,14 @@ export default function FollowingManagerPage() {
             data.results
               .filter((r: { status: string; userId: number }) => r.status === "ok")
               .forEach((r: { userId: number }) => successfullyRemoved.add(r.userId));
+            if (data.rateLimited === true) stopped = "rate-limited";
+          } else if (response.status === 409) {
+            stopped = "busy";
           }
         } catch (err) {
           console.error(`Failed to unfollow chunk ${i}-${i + CHUNK_SIZE}`, err);
         }
+        if (stopped) break;
 
         // Update progress
         setProgress({ 
@@ -187,7 +207,9 @@ export default function FollowingManagerPage() {
           return next;
         });
 
-        if (successfullyRemoved.size < allUserIds.length) {
+        if (stopped) {
+          showOutcome("partial", ...stoppedMessage(stopped, successfullyRemoved.size, allUserIds.length));
+        } else if (successfullyRemoved.size < allUserIds.length) {
           showOutcome(
             "partial",
             "Some users could not be unfollowed",
@@ -200,6 +222,8 @@ export default function FollowingManagerPage() {
             `Unfollowed ${successfullyRemoved.size} user${successfullyRemoved.size === 1 ? "" : "s"}.`,
           );
         }
+      } else if (stopped) {
+        showOutcome("error", ...stoppedMessage(stopped, 0, allUserIds.length));
       } else {
         showOutcome("error", "Unfollow failed", "Bulk unfollow failed. Please try again.");
       }
