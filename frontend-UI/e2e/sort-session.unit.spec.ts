@@ -204,3 +204,45 @@ test("waveform: JSON link from the PNG one, peaks scaled to 0–1", () => {
   expect(waveformJsonUrl(null)).toBeNull();
   expect(downsampleWaveform([0, 10, 20, 140], 140, 2)).toEqual([10 / 140, 1]);
 });
+
+test("bulk mark: marks all, or unmarks all when every one has it; one undo reverts the batch", () => {
+  let s = run([{ type: "toggleMark", trackId: 1, key: "pl:7" }, { type: "toggleSkip", trackId: 3 }], withTwo());
+  s = sortReducer(s, { type: "bulkMark", trackIds: [1, 2, 3, 2], key: "pl:7" });
+  expect(s.marks).toEqual({ "1": ["pl:7"], "2": ["pl:7"], "3": ["pl:7"] });
+  // Marking takes a track out of decide later, as a single mark does.
+  expect(s.skipped).toEqual([]);
+  const afterAdd = s;
+  s = sortReducer(s, { type: "bulkMark", trackIds: [1, 2, 3], key: "pl:7" });
+  expect(s.marks).toEqual({});
+  // Undo the unmark batch, then the mark batch, then the single skip/mark.
+  s = sortReducer(s, { type: "undo" });
+  expect(s.marks).toEqual(afterAdd.marks);
+  s = sortReducer(s, { type: "undo" });
+  expect(s.marks).toEqual({ "1": ["pl:7"] });
+  expect(s.skipped).toEqual([3]);
+  // A missing destination or an empty selection changes nothing.
+  expect(sortReducer(s, { type: "bulkMark", trackIds: [1], key: "pl:404" })).toBe(s);
+  expect(sortReducer(s, { type: "bulkMark", trackIds: [], key: "pl:7" })).toBe(s);
+});
+
+test("bulk skip toggles the whole selection; bulk clear removes every mark; both freeze during a commit", () => {
+  let s = run([{ type: "toggleSkip", trackId: 1 }], withTwo());
+  s = sortReducer(s, { type: "bulkSkip", trackIds: [1, 2] });
+  expect(s.skipped.sort()).toEqual([1, 2]);
+  s = sortReducer(s, { type: "bulkSkip", trackIds: [1, 2] });
+  expect(s.skipped).toEqual([]);
+  s = run(
+    [
+      { type: "bulkMark", trackIds: [4, 5], key: "pl:7" },
+      { type: "bulkMark", trackIds: [4], key: "new:1" },
+      { type: "bulkClearMarks", trackIds: [4, 5, 6] },
+    ],
+    s,
+  );
+  expect(s.marks).toEqual({});
+  s = sortReducer(s, { type: "undo" });
+  expect(s.marks).toEqual({ "4": ["pl:7", "new:1"], "5": ["pl:7"] });
+  const locked = sortReducer(s, { type: "commitStart" });
+  expect(sortReducer(locked, { type: "bulkMark", trackIds: [9], key: "pl:7" })).toBe(locked);
+  expect(sortReducer(locked, { type: "bulkSkip", trackIds: [9] })).toBe(locked);
+});

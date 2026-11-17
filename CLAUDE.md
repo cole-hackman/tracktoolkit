@@ -376,6 +376,15 @@ label suggestions, commit planning) is in `lib/sort-session.ts` and pinned by
   redirect to a CDN host (token only ever sent to `isAllowedStreamUrl`
   paths). **The `/streams` response shape is from SoundCloud's spec, not yet
   seen live.**
+- **Multi-select is a mode** ("Select tracks" on the likes panel, off by
+  default). Rows become `SelectableRow` checkboxes (`useListSelection`:
+  shift-click ranges, "Select all shown"); the bulk bar marks/unmarks every
+  selected track for a destination (all-or-nothing toggle), sends them to
+  decide later, or clears their marks. With tracks selected, 1–9 and S act
+  on the selection and Esc clears it. Each bulk action is **one undo step**
+  (`group` on the history entries). The page keeps the visible list array
+  stable while its tracks are unchanged, because a new array resets
+  `useListSelection`'s shift-click anchor.
 - **A track is unliked only if every destination it was marked for filed
   it.** The client freezes marks while a commit runs, records each
   destination's result in the session (a created playlist becomes an
