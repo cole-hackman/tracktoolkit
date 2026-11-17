@@ -151,6 +151,10 @@ export default function LikeManagerPage() {
       const totalBatches = Math.ceil(trackIds.length / BATCH_SIZE);
       const allResults: Array<{ trackId: number; status: string; error?: string }> = [];
       let completed = 0;
+      // Set when the server stopped the run: SoundCloud's rate limit, or
+      // another unlike already running for this account. Later batches would
+      // fail the same way, so stop sending them.
+      let stopped: "rate-limited" | "busy" | null = null;
 
       for (let i = 0; i < totalBatches; i++) {
         const batchIds = trackIds.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE);
@@ -172,6 +176,17 @@ export default function LikeManagerPage() {
           const data = await response.json();
           allResults.push(...data.results);
           completed += batchIds.length;
+          if (data.rateLimited === true) {
+            stopped = "rate-limited";
+            break;
+          }
+        } else if (response.status === 409) {
+          stopped = "busy";
+          break;
+        } else if (response.status === 429) {
+          // Our own per-hour limit on bulk writes: every later batch is refused too.
+          stopped = "rate-limited";
+          break;
         } else {
           console.error(`Batch ${i + 1} failed`);
         }
@@ -188,8 +203,25 @@ export default function LikeManagerPage() {
         await invalidateDashboardSummary(queryClient);
       }
       
-      setSelected(new Set());
-      if (removedIds.size === trackIds.length && trackIds.length > 0) {
+      // Keep what was not removed ticked, so "try again" is one click.
+      setSelected((prev) => {
+        const next = new Set(prev);
+        removedIds.forEach((id) => next.delete(id));
+        return next;
+      });
+      if (stopped === "rate-limited") {
+        showOutcome(
+          removedIds.size > 0 ? "partial" : "error",
+          "Unlikes stopped early",
+          `SoundCloud is limiting unlikes on your account right now. Unliked ${removedIds.size} of ${trackIds.length} tracks before it stopped. The rest are still selected; try again later.`,
+        );
+      } else if (stopped === "busy") {
+        showOutcome(
+          removedIds.size > 0 ? "partial" : "error",
+          "Another unlike is running",
+          `An unlike is already running for your account, maybe in another tab. Unliked ${removedIds.size} of ${trackIds.length} tracks here. Wait for it to finish, then try the rest again.`,
+        );
+      } else if (removedIds.size === trackIds.length && trackIds.length > 0) {
         showOutcome("success", "Tracks unliked", `Unliked ${removedIds.size} track${removedIds.size === 1 ? "" : "s"}.`);
       } else if (removedIds.size > 0) {
         showOutcome(

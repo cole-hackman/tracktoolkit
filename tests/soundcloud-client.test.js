@@ -503,3 +503,36 @@ describe('resolveAny on a short link to a secret playlist', () => {
     expect(resource.secretToken).toBeUndefined();
   });
 });
+
+describe('getActivities reads only what was asked for', () => {
+  // Production 2026-11: /me/activities never runs out of pages, and with no
+  // maxItems every load crawled 100-200 pages until the 120 s deadline.
+  const page = (items, next) => new Response(
+    JSON.stringify({ collection: items, next_href: next }),
+    { status: 200, headers: { 'content-type': 'application/json' } },
+  );
+
+  test('stops after the requested number of activities on an endless feed', async () => {
+    global.fetch = jest.fn(async () => page(
+      Array.from({ length: 200 }, (_, i) => ({ id: i })),
+      'https://api.soundcloud.com/me/activities?cursor=next',
+    ));
+
+    const items = await soundcloudClient.getActivities('at', 'rt', 200);
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(items).toHaveLength(200);
+  });
+
+  test('a short page is followed until the limit is reached', async () => {
+    global.fetch = jest.fn(async () => page(
+      Array.from({ length: 30 }, (_, i) => ({ id: i })),
+      'https://api.soundcloud.com/me/activities?cursor=next',
+    ));
+
+    const items = await soundcloudClient.getActivities('at', 'rt', 50);
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(items).toHaveLength(50);
+  });
+});

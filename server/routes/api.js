@@ -18,6 +18,7 @@ import {
   SC_READ_CONCURRENCY,
   mapWithConcurrency,
 } from '../lib/pacing.js';
+import { runBulkDelete, summarizeBulk, createUserRunLock } from '../lib/bulk-write.js';
 import { extractNumericId, normalizeResource, normalizeResourceV2, normalizeTrackForLibraryBrowser, normalizePlaylistForLibraryBrowser } from '../lib/normalize.js';
 import { getCachedResolve, setCachedResolve } from '../lib/resolve-cache.js';
 import {
@@ -3769,59 +3770,74 @@ router.get('/activities', authenticateUser, instrumentRead('activities'), valida
   }
 });
 
+/** One bulk unlike per user at a time (see server/lib/bulk-write.js). */
+const bulkUnlikeLock = createUserRunLock();
+
 /**
  * POST /api/likes/tracks/bulk-unlike
- * Unlike multiple tracks at once
+ * Unlike up to 100 tracks. Sequential and paced; stops at the first exhausted
+ * 429 and treats a 404 as already unliked (runBulkDelete in lib/bulk-write.js).
  */
 router.post('/likes/tracks/bulk-unlike', authenticateUser, heavyOperationRateLimiter, validateBulkUnlike, async (req, res) => {
+  const userId = req.user.id;
+  if (!bulkUnlikeLock.tryAcquire(userId)) {
+    return res.status(409).json({ error: 'An unlike is already running for your account. Wait for it to finish.' });
+  }
+  let clientDisconnected = false;
+  res.on('close', () => {
+    if (!res.writableEnded) clientDisconnected = true;
+  });
+
   const elapsed = startOperationTimer();
   try {
     const { trackIds } = req.body;
-    const results = [];
+    const { results, rateLimited, aborted } = await runBulkDelete({
+      ids: trackIds,
+      idKey: 'trackId',
+      write: (trackId) => soundcloudClient.unlikeTrack(req.accessToken, req.refreshToken, trackId),
+      failLabel: 'Unlike failed',
+      isAborted: () => clientDisconnected,
+    });
 
-    // Process sequentially to avoid SoundCloud rate limits
-    for (const trackId of trackIds) {
-      try {
-        await soundcloudClient.unlikeTrack(req.accessToken, req.refreshToken, trackId);
-        results.push({ trackId, status: 'ok' });
-      } catch (err) {
-        results.push({ trackId, status: 'error', error: err.message || 'Unlike failed' });
-      }
-      // Paced like the other bulk loops: an unpaced 100-item DELETE run was
-      // the most 429-prone path in the app.
-      await sleep(SC_BULK_PACING_MS);
-    }
-
-    res.json({ results });
-    const succeeded = results.filter(r => r.status === 'ok').length;
-    const failed = results.filter(r => r.status !== 'ok').length;
+    if (!clientDisconnected) res.json({ results, rateLimited });
+    const { succeeded, failed, skipped, alreadyGone } = summarizeBulk(results);
+    const allFailed = failed > 0 && succeeded === 0;
+    const unlikedIds = results.filter(r => r.status === 'ok' && !r.alreadyGone).map(r => r.trackId);
     logOperation({
-      userId: req.user.id,
+      userId,
       action: 'bulk-unlike',
-      trackCount: succeeded,
+      trackCount: unlikedIds.length,
       itemCount: results.length,
-      status: failed > 0 && succeeded === 0 ? 'error' : 'success',
+      status: allFailed ? 'error' : 'success',
       durationMs: elapsed(),
       clientInfo: extractClientInfo(req),
-      trackIds: results.filter(r => r.status === 'ok').map(r => r.trackId),
-      errorCode: failed > 0 && succeeded === 0 ? 'ALL_ITEMS_FAILED' : undefined,
-      errorMessage: failed > 0 && succeeded === 0 ? results.find(r => r.status === 'error')?.error : undefined,
-      metadata: { total: results.length, succeeded, failed },
+      trackIds: unlikedIds,
+      errorCode: allFailed ? (rateLimited ? 'RATE_LIMITED' : 'ALL_ITEMS_FAILED') : undefined,
+      errorMessage: allFailed ? results.find(r => r.status === 'error')?.error : undefined,
+      metadata: {
+        total: results.length,
+        succeeded,
+        failed,
+        ...(skipped > 0 && { skipped }),
+        ...(alreadyGone > 0 && { alreadyGone }),
+        ...(rateLimited && { rateLimited: true }),
+        ...(aborted && { clientDisconnected: true }),
+      },
     });
     // Invalidate AFTER identity is captured — the likes cache holds the full
     // track objects harvesting needs. Same tick as res.json, so no stale reads.
-    const cachedLikes = requestCache.get('likes', req.user.id, 'default');
+    const cachedLikes = requestCache.get('likes', userId, 'default');
     if (Array.isArray(cachedLikes?.collection)) {
       const processed = new Set(trackIds);
       harvestTracks(cachedLikes.collection.filter(t => t && processed.has(t.id)));
     }
-    invalidateUserCollections(req.user.id, ['likes']);
+    invalidateUserCollections(userId, ['likes']);
     // Cold-cache IDs still get names via enrichment (no-ops when already known)
     piggybackEnrichment(trackIds, req.accessToken, req.refreshToken);
   } catch (error) {
     logger.error('Bulk unlike error:', safeError(error));
     logOperation({
-      userId: req.user.id,
+      userId,
       action: 'bulk-unlike',
       status: 'error',
       durationMs: elapsed(),
@@ -3830,7 +3846,9 @@ router.post('/likes/tracks/bulk-unlike', authenticateUser, heavyOperationRateLim
       errorCode: error.name || 'BULK_UNLIKE_FAILED',
       errorMessage: safeError(error).message,
     });
-    res.status(500).json({ error: 'Bulk unlike failed' });
+    if (!res.headersSent) res.status(500).json({ error: 'Bulk unlike failed' });
+  } finally {
+    bulkUnlikeLock.release(userId);
   }
 });
 
@@ -3970,49 +3988,64 @@ router.get('/followings', authenticateUser, instrumentRead('followings'), async 
   }
 });
 
+/** One bulk unfollow per user at a time (see server/lib/bulk-write.js). */
+const bulkUnfollowLock = createUserRunLock();
+
 /**
  * POST /api/followings/bulk-unfollow
- * Unfollow multiple users at once
+ * Unfollow up to 100 users. Same loop as bulk unlike: stops at the first
+ * exhausted 429, and a 404 means the follow is already gone.
  */
 router.post('/followings/bulk-unfollow', authenticateUser, heavyOperationRateLimiter, validateBulkUnfollow, async (req, res) => {
+  const ownerId = req.user.id;
+  if (!bulkUnfollowLock.tryAcquire(ownerId)) {
+    return res.status(409).json({ error: 'An unfollow is already running for your account. Wait for it to finish.' });
+  }
+  let clientDisconnected = false;
+  res.on('close', () => {
+    if (!res.writableEnded) clientDisconnected = true;
+  });
+
   const elapsed = startOperationTimer();
   try {
     const { userIds } = req.body;
-    const results = [];
+    const { results, rateLimited, aborted } = await runBulkDelete({
+      ids: userIds,
+      idKey: 'userId',
+      write: (userId) => soundcloudClient.unfollowUser(req.accessToken, req.refreshToken, userId),
+      failLabel: 'Unfollow failed',
+      isAborted: () => clientDisconnected,
+    });
 
-    // Process sequentially to avoid SoundCloud rate limits
-    for (const userId of userIds) {
-      try {
-        await soundcloudClient.unfollowUser(req.accessToken, req.refreshToken, userId);
-        results.push({ userId, status: 'ok' });
-      } catch (err) {
-        results.push({ userId, status: 'error', error: err.message || 'Unfollow failed' });
-      }
-      // Paced like the other bulk loops: an unpaced 100-item DELETE run was
-      // the most 429-prone path in the app.
-      await sleep(SC_BULK_PACING_MS);
-    }
-
-    res.json({ results });
-    const succeeded = results.filter(r => r.status === 'ok').length;
-    const failed = results.filter(r => r.status !== 'ok').length;
+    if (!clientDisconnected) res.json({ results, rateLimited });
+    const { succeeded, failed, skipped, alreadyGone } = summarizeBulk(results);
+    const allFailed = failed > 0 && succeeded === 0;
+    const unfollowedIds = results.filter(r => r.status === 'ok' && !r.alreadyGone).map(r => r.userId);
     logOperation({
-      userId: req.user.id,
+      userId: ownerId,
       action: 'bulk-unfollow',
-      itemCount: succeeded,
-      status: failed > 0 && succeeded === 0 ? 'error' : 'success',
+      itemCount: unfollowedIds.length,
+      status: allFailed ? 'error' : 'success',
       durationMs: elapsed(),
       clientInfo: extractClientInfo(req),
-      targetUserIds: results.filter(r => r.status === 'ok').map(r => r.userId),
-      errorCode: failed > 0 && succeeded === 0 ? 'ALL_ITEMS_FAILED' : undefined,
-      errorMessage: failed > 0 && succeeded === 0 ? results.find(r => r.status === 'error')?.error : undefined,
-      metadata: { total: results.length, succeeded, failed },
+      targetUserIds: unfollowedIds,
+      errorCode: allFailed ? (rateLimited ? 'RATE_LIMITED' : 'ALL_ITEMS_FAILED') : undefined,
+      errorMessage: allFailed ? results.find(r => r.status === 'error')?.error : undefined,
+      metadata: {
+        total: results.length,
+        succeeded,
+        failed,
+        ...(skipped > 0 && { skipped }),
+        ...(alreadyGone > 0 && { alreadyGone }),
+        ...(rateLimited && { rateLimited: true }),
+        ...(aborted && { clientDisconnected: true }),
+      },
     });
-    invalidateUserCollections(req.user.id, ['followings']);
+    invalidateUserCollections(ownerId, ['followings']);
   } catch (error) {
     logger.error('Bulk unfollow error:', safeError(error));
     logOperation({
-      userId: req.user.id,
+      userId: ownerId,
       action: 'bulk-unfollow',
       status: 'error',
       durationMs: elapsed(),
@@ -4021,7 +4054,9 @@ router.post('/followings/bulk-unfollow', authenticateUser, heavyOperationRateLim
       errorCode: error.name || 'BULK_UNFOLLOW_FAILED',
       errorMessage: safeError(error).message,
     });
-    res.status(500).json({ error: 'Bulk unfollow failed' });
+    if (!res.headersSent) res.status(500).json({ error: 'Bulk unfollow failed' });
+  } finally {
+    bulkUnfollowLock.release(ownerId);
   }
 });
 

@@ -1034,7 +1034,10 @@ class SoundCloudClient {
    * Get the user's activity/stream feed
    */
   async getActivities(accessToken, refreshToken, limit = 50) {
-    return this.paginate('/me/activities', accessToken, refreshToken, limit);
+    // `limit` is how many activities the caller wants, not just the page
+    // size. The feed has no end, so without maxItems this crawled until the
+    // 200-page or 120 s ceiling: every load took ~2 minutes in production.
+    return this.paginate('/me/activities', accessToken, refreshToken, limit, { maxItems: limit });
   }
 
   /**
