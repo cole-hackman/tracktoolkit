@@ -8,6 +8,8 @@ import {
   Save,
   ArrowUp,
   ArrowDown,
+  ChevronsUp,
+  ChevronsDown,
   Trash2,
   Music,
   Download,
@@ -38,6 +40,8 @@ import {
 } from "@/components/ui";
 import { PlaylistChoiceRow, PlaylistPicker } from "@/components/playlists/PlaylistPicker";
 import { useListSearch } from "@/lib/list-search";
+import { useListSelection } from "@/lib/useListSelection";
+import { moveSelected, type MoveDirection } from "@/lib/move-selection";
 import { apiFetch, errorMessageFromBody } from "@/lib/api";
 import { startSoundCloudDownload } from "@/lib/download";
 import {
@@ -85,6 +89,7 @@ const makeOutcome = (status: ResultStatus, title: string, text: string): Outcome
 });
 
 const trackSearchText = (track: Track) => `${track.title ?? ""} ${track.user?.username ?? ""}`;
+const trackIdOf = (track: Track) => track.id;
 
 /**
  * Row actions are visible at every width, full stop.
@@ -198,6 +203,23 @@ export default function PlaylistModifierPage() {
     tracks.forEach((t, i) => map.set(t.id, i));
     return map;
   }, [tracks]);
+
+  // Ticked rows for "move selected" (user feedback 2026-11-03: added tracks
+  // land at the bottom, one-at-a-time arrows are slow). Shift-click selects
+  // a range of the rows shown, so the newly added block is two clicks.
+  const isTrackQueryActive = trackQuery.trim() !== "" || trackFilter !== "all";
+  const {
+    selected: pickedIds,
+    toggle: togglePicked,
+    toggleAllShown: toggleAllPicked,
+    toggleAllLabel: toggleAllPickedLabel,
+    clear: clearPicked,
+  } = useListSelection(filteredTracks, trackIdOf, { isQueryActive: isTrackQueryActive });
+  const pickedCount = useMemo(
+    () => tracks.reduce((n, t) => (pickedIds.has(t.id) ? n + 1 : n), 0),
+    [tracks, pickedIds],
+  );
+  const pickShiftRef = useRef(false);
 
   const downloadCount = useMemo(
     () => tracks.filter((t) => Boolean(t.downloadable) || t.downloadable === "true").length,
@@ -318,6 +340,7 @@ export default function PlaylistModifierPage() {
     // the new title while its tracks load.
     setTracks([]);
     setBaselineIds([]);
+    clearPicked();
     setSelectedPlaylist(playlist);
   };
 
@@ -325,6 +348,7 @@ export default function PlaylistModifierPage() {
     setOutcome(null);
     setSelectedPlaylist(null);
     setTracks([]);
+    clearPicked();
     setIsLikedTracksView(true);
     setLikedSearch("");
     setLikedGenreFilter("All");
@@ -339,6 +363,10 @@ export default function PlaylistModifierPage() {
     if (trackToRemove === null) return;
     setTracks((prev) => prev.filter((t) => t.id !== trackToRemove));
     setTrackToRemove(null);
+  };
+
+  const movePicked = (direction: MoveDirection) => {
+    setTracks((prev) => moveSelected(prev, pickedIds, trackIdOf, direction));
   };
 
   const moveTrack = (index: number, direction: "up" | "down") => {
@@ -697,6 +725,45 @@ export default function PlaylistModifierPage() {
                 </button>
               ))}
             </div>
+            <div
+              role="group"
+              aria-label="Move selected tracks"
+              className="flex flex-wrap items-center gap-2"
+            >
+              <Button variant="outline" size="sm" onClick={toggleAllPicked} disabled={filteredTracks.length === 0}>
+                {toggleAllPickedLabel}
+              </Button>
+              {pickedCount > 0 ? (
+                <>
+                  <span className="text-sm text-muted-foreground" aria-live="polite">
+                    {pickedCount} selected
+                  </span>
+                  <Button variant="outline" size="sm" onClick={() => movePicked("top")}>
+                    <ChevronsUp className="w-4 h-4" aria-hidden="true" />
+                    To top
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => movePicked("up")}>
+                    <ArrowUp className="w-4 h-4" aria-hidden="true" />
+                    Up
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => movePicked("down")}>
+                    <ArrowDown className="w-4 h-4" aria-hidden="true" />
+                    Down
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => movePicked("bottom")}>
+                    <ChevronsDown className="w-4 h-4" aria-hidden="true" />
+                    To bottom
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={clearPicked}>
+                    Clear
+                  </Button>
+                </>
+              ) : (
+                <span className="text-sm text-muted-foreground">
+                  Tick tracks (shift-click for a range) to move them together, then Save Changes.
+                </span>
+              )}
+            </div>
           </div>
         )}
         {loadingTracks ? (
@@ -751,7 +818,34 @@ export default function PlaylistModifierPage() {
                     }}
                     className="pb-2"
                   >
-                    <div className="flex items-center gap-3 sm:gap-4 p-3 rounded-xl bg-gray-50 dark:bg-secondary/20">
+                    <div className={`flex items-center gap-2 sm:gap-4 p-3 rounded-xl border ${
+                      pickedIds.has(track.id)
+                        ? "border-primary bg-primary/10"
+                        : "border-transparent bg-gray-50 dark:bg-secondary/20"
+                    }`}>
+                      <label className="-my-2 flex h-11 w-7 shrink-0 cursor-pointer select-none items-center justify-center sm:w-11">
+                        <input
+                          type="checkbox"
+                          checked={pickedIds.has(track.id)}
+                          aria-label={`Select ${track.title}`}
+                          onMouseDown={(e) => {
+                            pickShiftRef.current = e.shiftKey;
+                          }}
+                          onKeyDown={() => {
+                            pickShiftRef.current = false;
+                          }}
+                          onChange={() => {
+                            const shift = pickShiftRef.current;
+                            pickShiftRef.current = false;
+                            togglePicked(
+                              track,
+                              virtualRow.index,
+                              shift ? ({ shiftKey: true } as React.MouseEvent) : undefined,
+                            );
+                          }}
+                          className="h-5 w-5 cursor-pointer accent-primary"
+                        />
+                      </label>
                       <span className="hidden sm:block w-8 text-center text-sm text-muted-foreground-subtle">
                         {globalIndex + 1}
                       </span>
