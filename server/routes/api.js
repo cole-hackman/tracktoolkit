@@ -1379,6 +1379,19 @@ router.get('/reposts/paged', authenticateUser, instrumentRead('reposts-paged'), 
 });
 
 /**
+ * User-facing text for one failed source delete after a merge. Fixed phrases
+ * only: never `err.message`, which can carry upstream or database detail.
+ */
+function mergeDeleteErrorText(err) {
+  switch (classifyScError(err)) {
+    case 'not_found': return 'Playlist not found on SoundCloud';
+    case 'rate_limited': return 'SoundCloud rate limit reached — try again later';
+    case 'upstream_unavailable': return 'SoundCloud did not respond — try again later';
+    default: return 'Delete failed';
+  }
+}
+
+/**
  * POST /api/resolve
  * Resolve a SoundCloud URL
  */
@@ -1934,7 +1947,12 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
             await soundcloudClient.deletePlaylist(req.accessToken, req.refreshToken, id);
             deletedPlaylistIds.push(id);
           } catch (err) {
-            deleteErrors.push({ id, error: safeError(err).message || 'Delete failed' });
+            // The Combine page prints `error` verbatim, so it is a fixed phrase
+            // picked from the error class. The raw message stays in the log: a
+            // delete runs through scRequest, whose refresh path writes to the
+            // database, so it can be a Prisma message naming the DB host.
+            logger.warn('[merge] source delete failed', { playlistId: id, ...safeError(err) });
+            deleteErrors.push({ id, error: mergeDeleteErrorText(err) });
           }
         }
       }

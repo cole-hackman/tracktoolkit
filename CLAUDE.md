@@ -1076,6 +1076,16 @@ delay.
 
 `server/middleware/rateLimiter.js` and the global error handler both strip patterns like `token=`, `secret=`, `password=`, `encryption_key=` from error messages and JSON responses before they reach the client.
 
+`safeError()` (`server/lib/safe-error.js`) is **for logs only**. It keeps
+`err.message` verbatim, and a Prisma message names the database host and
+port, so its result never goes into a response: a 500 answers a fixed
+`{ error: '<what failed>' }`. It takes one argument; a second "fallback"
+string is silently ignored, which is how the feedback routes once sent
+`safeError(error, 'Failed to …')` straight to the client
+(`tests/routes/feedback.test.js` now pins the bodies). Per-item failure text
+that a page prints (the merge's `deleteErrors`) is a fixed phrase picked by
+`classifyScError`, for the same reason.
+
 ### Login Pre-warming
 
 Before the OAuth redirect, the frontend pings `/health` (with a 1.2s timeout) to
