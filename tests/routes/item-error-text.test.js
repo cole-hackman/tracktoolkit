@@ -4,16 +4,14 @@ import request from 'supertest';
 
 /**
  * Per-item errors in bulk responses used to be `err.message`: whatever the
- * thrown thing said went to the page. For the writes here that is normally a
- * status line, because scRequest replaces a failed token refresh with "Token
- * refresh failed". It is not a guarantee: `resolveAny` (behind
- * `/resolve/batch`) passes a refresh failure through as thrown, so a database
- * error on the token save arrives as Prisma text naming the host and port.
- * The errors below stand for any text a thrower might carry.
+ * thrown thing said went to the page. The errors below stand for any text a
+ * thrower might carry.
  *
- * The client gets a fixed phrase chosen from the error's status/code. The raw
- * text of the first failure goes to the server log, once per run, and to the
- * operation log's errorMessage only when every item failed (as before).
+ * The client gets a fixed phrase chosen from the error's status/code. The
+ * server log gets one line per run that had a failure, describing the first
+ * one by name, code, status and (for the client's own fixed messages only)
+ * message: see `safeErrorBrief`. The operation log's errorMessage keeps the
+ * first raw message when no item succeeded, as before.
  */
 
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
@@ -71,6 +69,7 @@ jest.unstable_mockModule('../../server/middleware/auth.js', () => ({
 }));
 
 const { default: apiRoutes } = await import('../../server/routes/api.js');
+const { invalidationMarkCount, __resetCacheCoordinationForTests } = await import('../../server/lib/social-cache.js');
 
 const app = express();
 app.use(express.json());
@@ -180,6 +179,24 @@ describe('POST /api/likes/tracks/bulk-like', () => {
 
     expect(logged('bulk-like').errorMessage).toBe('API request failed: 403');
   });
+
+  test('it records it when no item succeeded, which includes a run whose other items were skipped', async () => {
+    failInOrder(likeTrack, [() => scError(429)]);
+
+    const res = await request(app).post('/api/likes/tracks/bulk-like').send({ trackIds: [1, 2, 3] });
+
+    expect(res.body.results.map((r) => r.status)).toEqual(['error', 'skipped', 'skipped']);
+    expect(logged('bulk-like').errorCode).toBe('RATE_LIMITED');
+    expect(logged('bulk-like').errorMessage).toBe('API request failed: 429');
+  });
+
+  test('and the first failure\'s message, not a later one\'s', async () => {
+    failInOrder(likeTrack, [() => scError(403), () => scError(500)]);
+
+    await request(app).post('/api/likes/tracks/bulk-like').send({ trackIds: [1, 2] });
+
+    expect(logged('bulk-like').errorMessage).toBe('API request failed: 403');
+  });
 });
 
 describe('POST /api/reposts/bulk-remove', () => {
@@ -202,9 +219,9 @@ describe('POST /api/reposts/bulk-remove', () => {
   });
 
   test('the operation log still records the first raw message', async () => {
-    failInOrder(deleteRepost, [() => scError(403)]);
+    failInOrder(deleteRepost, [() => scError(403), () => scError(500)]);
 
-    await request(app).post('/api/reposts/bulk-remove').send({ items: items.slice(0, 1) });
+    await request(app).post('/api/reposts/bulk-remove').send({ items: items.slice(0, 2) });
 
     expect(logged('bulk-remove-reposts').errorMessage).toBe('API request failed: 403');
   });
@@ -295,6 +312,32 @@ describe('POST /api/playlists/transfer-track (move)', () => {
     expect(JSON.stringify(res.body)).not.toMatch(LEAK);
   });
 
+  test('a failed target write is logged with the playlist and the error\'s code, not its text', async () => {
+    addTracksToPlaylist.mockRejectedValueOnce(dbDown());
+
+    await move();
+
+    const lines = warned.filter((args) => args[0] === '[WARN] [playlist-transfer] target update failed');
+    expect(lines).toHaveLength(1);
+    expect(lines[0][1]).toEqual({ targetPlaylistId: '2', error: { name: 'Error', code: 'P1001' } });
+    expect(warnings().join(' ')).not.toMatch(/db\.internal|5432/);
+  });
+
+  test('a failed source write is logged with both playlists and the error\'s status', async () => {
+    addTracksToPlaylist.mockResolvedValueOnce({}).mockRejectedValueOnce(scError(500));
+
+    await move();
+
+    const lines = warned.filter((args) => args[0] === '[WARN] [playlist-transfer] source update failed after target update');
+    expect(lines).toHaveLength(1);
+    expect(lines[0][1]).toEqual({
+      sourcePlaylistId: '1',
+      targetPlaylistId: '2',
+      error: { name: 'Error', status: '500', message: 'API request failed: 500' },
+    });
+    expect(warned.filter((args) => args[0] === '[WARN] [playlist-transfer] target update failed')).toEqual([]);
+  });
+
   test('a rate-limited target write says so in fixed text', async () => {
     addTracksToPlaylist.mockRejectedValueOnce(scError(429));
 
@@ -323,8 +366,8 @@ describe('POST /api/playlists/transfer-track (move)', () => {
   });
 });
 
-describe('a partial failure leaves its first raw error in the server log', () => {
-  // The operation log records a message only when every item failed, and the
+describe('a run with a failed item leaves a description of the first one in the server log', () => {
+  // The operation log records a message only when no item succeeded, and the
   // response now carries fixed text, so without this line a run in which some
   // items failed would leave the reason nowhere.
   const RUNS = [
@@ -336,6 +379,7 @@ describe('a partial failure leaves its first raw error in the server log', () =>
       fn: deleteRepost,
       send: () => request(app).post('/api/reposts/bulk-remove').send({ items: [1, 2, 3].map((id) => ({ id, resourceType: 'track' })) }),
     },
+    { name: 'sort-likes-unlike', fn: unlikeTrack, send: () => request(app).post('/api/sort/unlike').send({ trackIds: [1, 2, 3] }) },
   ];
 
   test.each(RUNS)('$name: one line, with the first error and the count, and no token', async ({ name, fn, send }) => {
@@ -345,13 +389,43 @@ describe('a partial failure leaves its first raw error in the server log', () =>
 
     expect(res.status).toBe(200);
     expect(res.body.results.map((r) => r.status)).toEqual(['ok', 'error', 'error']);
-    // Not every item failed, so the operation log has no message.
+    // One item succeeded, so the operation log has no message.
     expect(logged(name).errorMessage).toBeUndefined();
-    const lines = warnings().filter((line) => line.includes('API request failed'));
+    const lines = warnings().filter((line) => /: items failed/.test(line));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('API request failed: 403');
+    expect(lines[0]).toContain('API request failed: 403');   // the first failure,
+    expect(lines[0]).not.toContain('500');                   // not the last
     expect(lines[0]).toMatch(/"failed":"?2"?[,}]/);   // the logger prints numbers as text
     expect(lines[0]).not.toMatch(/ACCESS-TOKEN|REFRESH-TOKEN/);
+    expect(warnings().filter((line) => line.includes('API request failed'))).toHaveLength(1);
+  });
+
+  test.each(RUNS)('$name: the line says which run it was', async ({ name, fn, send }) => {
+    failInOrder(fn, [() => scError(403)]);
+
+    await send();
+
+    const what = {
+      'bulk-unlike': 'Bulk unlike', 'bulk-unfollow': 'Bulk unfollow', 'bulk-like': 'Bulk like',
+      'bulk-remove-reposts': 'Repost removal', 'sort-likes-unlike': 'Sort unlike',
+    }[name];
+    expect(warned.filter((args) => args[0] === `[WARN] ${what}: items failed`)).toHaveLength(1);
+  });
+
+  test.each(RUNS)('$name: nothing the thrower wrote is in the line', async ({ fn, send }) => {
+    failInOrder(fn, [
+      () => new TypeError('Headers.append: "OAuth 2-AB\0CDTOKEN" is an invalid header value.'),
+      dbDown,
+      netDown,
+    ]);
+
+    const res = await send();
+
+    expect(res.status).toBe(200);
+    const lines = warnings().filter((line) => /: items failed/.test(line));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('TypeError');
+    for (const line of warnings()) expect(line).not.toMatch(/2-AB|CDTOKEN|OAuth|Headers\.append|db\.internal|soundcloud\.com|ENOTFOUND/);
   });
 
   test.each(RUNS)('$name: nothing is logged when every item succeeds', async ({ fn, send }) => {
@@ -369,5 +443,96 @@ describe('a partial failure leaves its first raw error in the server log', () =>
 
     expect(res.status).toBe(200);
     expect(res.body.results.map((r) => r.status)).toEqual(['error', 'ok', 'ok']);
+  });
+});
+
+describe('the summary line can neither fail the request nor skip what follows it', () => {
+  const explode = () => { throw new Error('GETTER-TEXT'); };
+  const HOSTILE = [
+    ['an object with no prototype', () => Object.create(null)],
+    ['throwing getters', () => Object.defineProperties({}, {
+      name: { get: explode }, message: { get: explode }, code: { get: explode },
+      status: { get: explode }, cause: { get: explode }, stack: { get: explode },
+    })],
+    ['a throwing toString', () => ({ toString: explode, valueOf: explode, [Symbol.toPrimitive]: explode })],
+    ['a proxy that throws on every read', () => new Proxy({}, { get: explode, has: explode })],
+  ];
+  const RUNS = [
+    { name: 'bulk-unlike', fn: unlikeTrack, mark: 'likes', send: () => request(app).post('/api/likes/tracks/bulk-unlike').send({ trackIds: [1, 2] }) },
+    { name: 'bulk-unfollow', fn: unfollowUser, mark: 'followings', send: () => request(app).post('/api/followings/bulk-unfollow').send({ userIds: [1, 2] }) },
+    { name: 'bulk-like', fn: likeTrack, mark: 'likes', send: () => request(app).post('/api/likes/tracks/bulk-like').send({ trackIds: [1, 2] }) },
+    {
+      name: 'bulk-remove-reposts',
+      fn: deleteRepost,
+      mark: 'reposts',
+      send: () => request(app).post('/api/reposts/bulk-remove').send({ items: [1, 2].map((id) => ({ id, resourceType: 'track' })) }),
+    },
+    { name: 'sort-likes-unlike', fn: unlikeTrack, mark: 'likes', send: () => request(app).post('/api/sort/unlike').send({ trackIds: [1, 2] }) },
+  ];
+  const CASES = RUNS.flatMap((run) => HOSTILE.map(([what, make]) => ({ ...run, what, make })));
+
+  let unhandled;
+  const onUnhandled = (reason) => { unhandled.push(reason); };
+  beforeEach(async () => {
+    unhandled = [];
+    process.on('unhandledRejection', onUnhandled);
+    await __resetCacheCoordinationForTests();
+  });
+  afterEach(() => process.off('unhandledRejection', onUnhandled));
+  const settle = async () => { for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r)); };
+
+  test.each(CASES)('$name, $what: 200, the operation logged, the cache invalidated', async ({ name, fn, make, send }) => {
+    failInOrder(fn, [make]);
+
+    const res = await send();
+    await settle();
+
+    expect(res.status).toBe(200);
+    expect(res.body.results.map((r) => r.status)).toEqual(['error', 'ok']);
+    expect(logged(name)).toBeDefined();
+    expect(logged(name).status).toBe('success');
+    expect(invalidationMarkCount()).toBeGreaterThan(0);
+    expect(warnings().filter((line) => /: items failed/.test(line))).toHaveLength(1);
+    expect(warnings().join(' ')).not.toContain('GETTER-TEXT');
+    expect(unhandled).toEqual([]);
+  });
+
+  test.each(CASES)('$name, $what, every item: the operation log gets the fallback text', async ({ name, fn, make, send }) => {
+    failInOrder(fn, [make, make]);
+
+    const res = await send();
+    await settle();
+
+    expect(res.status).toBe(200);
+    expect(logged(name).status).toBe('error');
+    if (name !== 'sort-likes-unlike') expect(logged(name).errorMessage).toMatch(/^(Unlike|Unfollow|Like|Remove) failed$/);
+    expect(unhandled).toEqual([]);
+  });
+
+  test('repost removal: bookkeeping that throws after the response is logged, and is not a second response', async () => {
+    failInOrder(deleteRepost, []);
+    logOperation.mockImplementationOnce(() => { throw new Error('analytics down'); });
+    const errors = [];
+    console.error.mockImplementation((...args) => { errors.push(args); });
+
+    const res = await request(app).post('/api/reposts/bulk-remove').send({ items: [{ id: 1, resourceType: 'track' }] });
+    await settle();
+
+    expect(res.status).toBe(200);
+    expect(errors.filter((args) => args[0] === '[ERROR] Bulk unrepost error:')).toHaveLength(1);
+    expect(unhandled).toEqual([]);
+  });
+
+  test.each(RUNS)('$name: a console that throws changes nothing', async ({ name, fn, send }) => {
+    failInOrder(fn, [() => scError(403)]);
+    console.warn.mockImplementation(() => { throw new Error('EPIPE'); });
+
+    const res = await send();
+    await settle();
+
+    expect(res.status).toBe(200);
+    expect(logged(name)).toBeDefined();
+    expect(invalidationMarkCount()).toBeGreaterThan(0);
+    expect(unhandled).toEqual([]);
   });
 });

@@ -1,3 +1,5 @@
+import logger from './logger.js';
+
 /**
  * Sanitize error objects before logging.
  * Strips potentially sensitive data (request bodies, tokens, full stack traces)
@@ -101,4 +103,28 @@ export function safeErrorBrief(err) {
     if (Object.keys(out).length > 0) return out;
   }
   return { thrown: err === null ? 'null' : typeof err };
+}
+
+/**
+ * `err.message` for the operation log, or `fallback` when there is no string
+ * message or reading it throws. Raw text: never for a response.
+ */
+export function rawErrorMessage(err, fallback) {
+  const message = err === null || err === undefined ? undefined : read(err, 'message');
+  return typeof message === 'string' && message !== '' ? message : fallback;
+}
+
+/**
+ * One warn line: `fields` as given, plus each entry of `errors` as its
+ * `safeErrorBrief`. Cannot throw, so a log line can never change a response
+ * or skip the bookkeeping after it.
+ */
+export function logFailure(what, fields, errors) {
+  try {
+    const line = { ...fields };
+    for (const key of Object.keys(errors ?? {})) line[key] = safeErrorBrief(errors[key]);
+    logger.warn(what, line);
+  } catch {
+    // A log line is not worth a failed request.
+  }
 }

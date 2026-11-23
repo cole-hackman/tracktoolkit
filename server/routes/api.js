@@ -9,7 +9,7 @@ import { logOperation, startOperationTimer, extractClientInfo, instrumentRead } 
 import { harvestTracks, harvestPlaylists } from '../lib/catalog.js';
 import { piggybackEnrichment } from '../lib/enrichment.js';
 import logger from '../lib/logger.js';
-import { classifyScError, scErrorResponse, scItemErrorText, SC_ITEM_ERROR_TEXT, tagPlaylistReadFailure } from '../lib/sc-errors.js';
+import { classifyScError, scErrorResponse, scErrorStatus, scItemErrorText, SC_ITEM_ERROR_TEXT, tagPlaylistReadFailure } from '../lib/sc-errors.js';
 import {
   sleep,
   SC_WRITE_PACING_MS,
@@ -32,7 +32,7 @@ import {
   invalidateUserCollections,
   invalidatePlaylistState,
 } from '../lib/social-cache.js';
-import { safeError, safeErrorBrief } from '../lib/safe-error.js';
+import { safeError, safeErrorBrief, logFailure, rawErrorMessage } from '../lib/safe-error.js';
 import { GATE_ACTION_NAME, gateResultKey } from '../lib/gate-results.js';
 import { downloadTrackIdFromUrl, isAllowedDownloadRedirectTarget, isAllowedDownloadUrl } from '../lib/download-utils.js';
 import { cursorEndpoint, InvalidCursorError } from '../lib/sc-cursor.js';
@@ -2007,8 +2007,8 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
           } catch (err) {
             // The Combine page prints `error` verbatim, so it is a fixed phrase
             // picked from the error class, whatever the thrown thing says. The
-            // raw message stays in the log.
-            logger.warn('[merge] source delete failed', { playlistId: id, ...safeError(err) });
+            // log gets the error's name, code and status.
+            logFailure('[merge] source delete failed', { playlistId: id }, { error: err });
             deleteErrors.push({ id, error: mergeDeleteErrorText(err) });
           }
         }
@@ -3406,7 +3406,7 @@ router.post('/sort/unlike', authenticateUser, adminAuth, validateSortUnlike, sor
         if (!anyFailed) firstError = err;
         anyFailed = true;
         results.push({ trackId, status: 'error', error: scItemErrorText(err, 'Unlike failed') });
-        if (err?.status === 429) {
+        if (scErrorStatus(err) === 429) {
           rateLimited = true;
           continue;
         }
@@ -3417,7 +3417,6 @@ router.post('/sort/unlike', authenticateUser, adminAuth, validateSortUnlike, sor
     const removed = results.filter((r) => r.status === 'ok').map((r) => r.trackId);
     if (!clientDisconnected) res.json({ results, rateLimited });
     const failed = results.filter((r) => r.status === 'error').length;
-    if (anyFailed) logger.warn('Sort unlike: items failed', { failed, first: safeErrorBrief(firstError) });
     logOperation({
       userId,
       action: 'sort-likes-unlike',
@@ -3436,6 +3435,7 @@ router.post('/sort/unlike', authenticateUser, adminAuth, validateSortUnlike, sor
       harvestTracks(cachedLikes.collection.filter((t) => t && processed.has(t.id)));
     }
     invalidateUserCollections(userId, ['likes']);
+    if (anyFailed) logFailure('Sort unlike: items failed', { failed }, { first: firstError });
   } catch (error) {
     logger.error('Sort unlike error:', safeError(error));
     invalidateUserCollections(userId, ['likes']);
@@ -3925,10 +3925,6 @@ router.post('/likes/tracks/bulk-unlike', authenticateUser, heavyOperationRateLim
 
     if (!clientDisconnected) res.json({ results, rateLimited });
     const { succeeded, failed, skipped, alreadyGone } = summarizeBulk(results);
-    // The response carries fixed text and the operation log a message only
-    // when every item failed, so this line is where a partial failure's
-    // reason is kept.
-    if (failed > 0) logger.warn('Bulk unlike: items failed', { failed, first: safeErrorBrief(firstError) });
     const allFailed = failed > 0 && succeeded === 0;
     const unlikedIds = results.filter(r => r.status === 'ok' && !r.alreadyGone).map(r => r.trackId);
     logOperation({
@@ -3962,6 +3958,10 @@ router.post('/likes/tracks/bulk-unlike', authenticateUser, heavyOperationRateLim
     invalidateUserCollections(userId, ['likes']);
     // Cold-cache IDs still get names via enrichment (no-ops when already known)
     piggybackEnrichment(trackIds, req.accessToken, req.refreshToken);
+    // Last, and unable to throw. The response carries fixed text and the
+    // operation log a message only when no item succeeded, so this line is
+    // what a partly failed run leaves behind.
+    if (failed > 0) logFailure('Bulk unlike: items failed', { failed }, { first: firstError });
   } catch (error) {
     logger.error('Bulk unlike error:', safeError(error));
     logOperation({
@@ -4017,10 +4017,10 @@ router.post('/likes/tracks/bulk-like', authenticateUser, heavyOperationRateLimit
     const results = [];
     let rateLimited = false;
     // What the first failed like threw, for the server log and (its message,
-    // when every item failed) the operation log. Each result carries fixed
+    // when no item succeeded) the operation log. Each result carries fixed
     // text (scItemErrorText).
     let firstError;
-    let firstErrorMessage;
+    let anyFailed = false;
 
     // Process sequentially to avoid SoundCloud rate limits.
     // NOTE: likeTrack is id-first (accessToken/refreshToken follow) — the
@@ -4034,10 +4034,10 @@ router.post('/likes/tracks/bulk-like', authenticateUser, heavyOperationRateLimit
         await soundcloudClient.likeTrack(trackId, req.accessToken, req.refreshToken);
         results.push({ trackId, status: 'ok' });
       } catch (err) {
-        if (firstErrorMessage === undefined) firstError = err;
-        firstErrorMessage ??= err?.message || 'Like failed';
+        if (!anyFailed) firstError = err;
+        anyFailed = true;
         results.push({ trackId, status: 'error', error: scItemErrorText(err, 'Like failed') });
-        if (err?.status === 429) {
+        if (scErrorStatus(err) === 429) {
           rateLimited = true;
           continue;
         }
@@ -4049,7 +4049,6 @@ router.post('/likes/tracks/bulk-like', authenticateUser, heavyOperationRateLimit
     const succeeded = results.filter(r => r.status === 'ok').length;
     const skipped = results.filter(r => r.status === 'skipped').length;
     const failed = results.length - succeeded - skipped;
-    if (failed > 0) logger.warn('Bulk like: items failed', { failed, first: safeErrorBrief(firstError) });
     const allFailed = failed > 0 && succeeded === 0;
     logOperation({
       userId,
@@ -4061,7 +4060,7 @@ router.post('/likes/tracks/bulk-like', authenticateUser, heavyOperationRateLimit
       clientInfo: extractClientInfo(req),
       trackIds: results.filter(r => r.status === 'ok').map(r => r.trackId),
       errorCode: allFailed ? (rateLimited ? 'RATE_LIMITED' : 'ALL_ITEMS_FAILED') : undefined,
-      errorMessage: allFailed ? firstErrorMessage : undefined,
+      errorMessage: allFailed ? rawErrorMessage(firstError, 'Like failed') : undefined,
       metadata: {
         total: results.length,
         succeeded,
@@ -4078,6 +4077,7 @@ router.post('/likes/tracks/bulk-like', authenticateUser, heavyOperationRateLimit
     }
     invalidateUserCollections(userId, ['likes']);
     piggybackEnrichment(trackIds, req.accessToken, req.refreshToken);
+    if (failed > 0) logFailure('Bulk like: items failed', { failed }, { first: firstError });
   } catch (error) {
     logger.error('Bulk like error:', safeError(error));
     logOperation({
@@ -4155,7 +4155,6 @@ router.post('/followings/bulk-unfollow', authenticateUser, heavyOperationRateLim
 
     if (!clientDisconnected) res.json({ results, rateLimited });
     const { succeeded, failed, skipped, alreadyGone } = summarizeBulk(results);
-    if (failed > 0) logger.warn('Bulk unfollow: items failed', { failed, first: safeErrorBrief(firstError) });
     const allFailed = failed > 0 && succeeded === 0;
     const unfollowedIds = results.filter(r => r.status === 'ok' && !r.alreadyGone).map(r => r.userId);
     logOperation({
@@ -4179,6 +4178,7 @@ router.post('/followings/bulk-unfollow', authenticateUser, heavyOperationRateLim
       },
     });
     invalidateUserCollections(ownerId, ['followings']);
+    if (failed > 0) logFailure('Bulk unfollow: items failed', { failed }, { first: firstError });
   } catch (error) {
     logger.error('Bulk unfollow error:', safeError(error));
     logOperation({
@@ -4282,7 +4282,7 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
     const results = [];
     // What the first failed removal threw: see bulk-like.
     let firstError;
-    let firstErrorMessage;
+    let anyFailed = false;
 
     // Process sequentially to avoid SoundCloud rate limits
     for (const item of items) {
@@ -4290,8 +4290,8 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
         await soundcloudClient.deleteRepost(req.accessToken, req.refreshToken, item.id, item.resourceType);
         results.push({ id: item.id, resourceType: item.resourceType, status: 'ok' });
       } catch (err) {
-        if (firstErrorMessage === undefined) firstError = err;
-        firstErrorMessage ??= err?.message || 'Remove failed';
+        if (!anyFailed) firstError = err;
+        anyFailed = true;
         results.push({ id: item.id, resourceType: item.resourceType, status: 'error', error: scItemErrorText(err, 'Remove failed') });
       }
       // Paced like the other bulk loops: an unpaced 100-item DELETE run was
@@ -4302,7 +4302,6 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
     res.json({ results });
     const succeeded = results.filter(r => r.status === 'ok').length;
     const failed = results.length - succeeded;
-    if (failed > 0) logger.warn('Repost removal: items failed', { failed, first: safeErrorBrief(firstError) });
     logOperation({
       userId: req.user.id,
       action: 'bulk-remove-reposts',
@@ -4311,7 +4310,7 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
       trackIds: results.filter(r => r.status === 'ok' && r.resourceType === 'track').map(r => r.id),
       playlistIds: results.filter(r => r.status === 'ok' && r.resourceType === 'playlist').map(r => r.id),
       errorCode: failed > 0 && succeeded === 0 ? 'ALL_ITEMS_FAILED' : undefined,
-      errorMessage: failed > 0 && succeeded === 0 ? firstErrorMessage : undefined,
+      errorMessage: failed > 0 && succeeded === 0 ? rawErrorMessage(firstError, 'Remove failed') : undefined,
       metadata: { total: results.length, succeeded, failed },
     });
     const cachedReposts = requestCache.get('reposts', req.user.id, 'default');
@@ -4327,6 +4326,7 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
     }
     invalidateUserCollections(req.user.id, ['reposts']);
     piggybackEnrichment(items.filter(i => i.resourceType === 'track').map(i => i.id), req.accessToken, req.refreshToken);
+    if (failed > 0) logFailure('Repost removal: items failed', { failed }, { first: firstError });
   } catch (error) {
     logger.error('Bulk unrepost error:', safeError(error));
     logOperation({
@@ -4339,7 +4339,8 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
       errorCode: error.name || 'BULK_UNREPOST_FAILED',
       errorMessage: safeError(error).message,
     });
-    res.status(500).json({ error: 'Bulk unrepost failed' });
+    // The response may be out already: the bookkeeping runs after it.
+    if (!res.headersSent) res.status(500).json({ error: 'Bulk unrepost failed' });
   }
 });
 

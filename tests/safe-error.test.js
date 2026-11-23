@@ -1,3 +1,5 @@
+import { jest } from '@jest/globals';
+
 /**
  * `safeErrorBrief` describes a thrown value for a summary log line. It is an
  * allowlist: an error's name, code and status when they look like a name, a
@@ -6,7 +8,7 @@
  * copied, so there is nothing to redact, and it cannot throw.
  */
 
-const { safeErrorBrief } = await import('../server/lib/safe-error.js');
+const { safeErrorBrief, logFailure, rawErrorMessage } = await import('../server/lib/safe-error.js');
 
 const SECRETS = [
   '2-AB', 'CDTOKEN', 'BEARERSECRET1', 'JSONSECRET2', 'SPACEDSECRET3', 's-SCHEMELESS4', 's-ENCODED5',
@@ -168,10 +170,56 @@ const HOSTILE_VALUES = [
   ['a revoked proxy', () => { const { proxy, revoke } = Proxy.revocable({}, {}); revoke(); return proxy; }],
 ];
 
-describe('it cannot throw', () => {
+describe('none of it can throw', () => {
   test.each(HOSTILE_VALUES)('safeErrorBrief: %s', (_name, make) => {
     let brief;
     expect(() => { brief = safeErrorBrief(make()); }).not.toThrow();
     expect(JSON.stringify(brief)).not.toContain('GETTER-TEXT');
+  });
+
+  test.each(HOSTILE_VALUES)('rawErrorMessage: %s gives the fallback', (name, make) => {
+    const expected = name.startsWith('a cause') ? 'x' : 'Like failed';
+    expect(rawErrorMessage(make(), 'Like failed')).toBe(expected);
+  });
+
+  test('rawErrorMessage: a string message, else the fallback', () => {
+    expect(rawErrorMessage(new Error('API request failed: 403'), 'f')).toBe('API request failed: 403');
+    expect(rawErrorMessage(new Error(''), 'f')).toBe('f');
+    expect(rawErrorMessage({ message: 5 }, 'f')).toBe('f');
+    expect(rawErrorMessage(null, 'f')).toBe('f');
+  });
+
+  describe('logFailure', () => {
+    let warn;
+    beforeEach(() => { warn = jest.spyOn(console, 'warn').mockImplementation(() => {}); });
+    afterEach(() => jest.restoreAllMocks());
+
+    test('one warn line: the counts, and each error as its brief', () => {
+      logFailure('Bulk like: items failed', { failed: 2 }, { first: Object.assign(new Error('API request failed: 403'), { status: 403 }) });
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toBe('[WARN] Bulk like: items failed');
+      expect(warn.mock.calls[0][1]).toEqual({
+        failed: '2',   // the logger prints numbers as text
+        first: { name: 'Error', status: '403', message: 'API request failed: 403' },
+      });
+    });
+
+    test.each(HOSTILE_VALUES)('%s', (_name, make) => {
+      expect(() => logFailure('x: items failed', { failed: 1 }, { first: make() })).not.toThrow();
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    test('a console that throws', () => {
+      warn.mockImplementation(() => { throw new Error('EPIPE'); });
+
+      expect(() => logFailure('x: items failed', { failed: 1 }, { first: new Error('x') })).not.toThrow();
+    });
+
+    test('hostile counts or a hostile error map', () => {
+      expect(() => logFailure('x', new Proxy({}, { ownKeys: explode }), { first: new Error('x') })).not.toThrow();
+      expect(() => logFailure('x', { failed: 1 }, new Proxy({}, { ownKeys: explode }))).not.toThrow();
+      expect(() => logFailure('x', null, null)).not.toThrow();
+    });
   });
 });

@@ -5,11 +5,10 @@ import request from 'supertest';
 /**
  * Merge with "delete the sources afterwards" reports each delete that failed as
  * `deleteErrors: [{ id, error }]`, and the Combine page prints `error` as-is.
- * It used to be `safeError(err).message`: whatever the thrown thing said. From
- * scRequest that is a status line today (a failed token refresh becomes "Token
- * refresh failed"), but the page should not depend on every thrower staying
- * that tidy, so the errors below stand for any text one might carry. The
- * per-item text is now a fixed phrase chosen from the error class.
+ * It used to be `safeError(err).message`: whatever the thrown thing said. The
+ * errors below stand for any text one might carry. The per-item text is now a
+ * fixed phrase chosen from the error class, and the log line for each failed
+ * delete describes the error by name, code and status (`safeErrorBrief`).
  */
 
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
@@ -72,6 +71,8 @@ const playlists = {
   5: { id: 5, title: 'Src D', track_count: 1, tracks: [{ id: 50, streamable: true }] },
 };
 
+let warned;
+
 beforeEach(() => {
   getPlaylistWithTracks.mockReset().mockImplementation(async (_a, _r, id) => playlists[id]);
   addTracksToPlaylist.mockReset().mockResolvedValue({ id: TARGET });
@@ -85,7 +86,8 @@ beforeEach(() => {
     return {};
   });
   jest.spyOn(console, 'error').mockImplementation(() => {});
-  jest.spyOn(console, 'warn').mockImplementation(() => {});
+  warned = [];
+  jest.spyOn(console, 'warn').mockImplementation((...args) => { warned.push(args); });
 });
 afterEach(() => jest.restoreAllMocks());
 
@@ -104,4 +106,21 @@ test('deleteErrors carry fixed text, never the raw error message', async () => {
     { id: 5, error: 'SoundCloud did not respond — try again later' },
   ]);
   expect(JSON.stringify(res.body)).not.toMatch(/db\.internal|5432|P1001|secret detail/);
+});
+
+test('each failed delete is logged once, by playlist, with the error\'s code or status and not its text', async () => {
+  await request(app).post('/api/playlists/merge').send({
+    sourcePlaylistIds: [2, 3, 4, 5],
+    targetPlaylistId: TARGET,
+    deleteAfterMerge: true,
+  });
+
+  const lines = warned.filter((args) => args[0] === '[WARN] [merge] source delete failed');
+  expect(lines.map((args) => args[1])).toEqual([
+    { playlistId: '2', error: { name: 'Error', code: 'P1001' } },
+    { playlistId: '3', error: { name: 'Error', status: '404' } },
+    { playlistId: '4', error: { name: 'Error', status: '429', message: 'API request failed: 429' } },
+    { playlistId: '5', error: { name: 'Error', code: 'SC_TIMEOUT', status: '504' } },
+  ]);
+  expect(JSON.stringify(warned)).not.toMatch(/db\.internal|5432|secret detail/);
 });
