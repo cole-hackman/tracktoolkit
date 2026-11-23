@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(infra/deploy.sh:*)",
+      "Bash(./infra/deploy.sh:*)",
+      "Bash(bash infra/deploy.sh:*)",
+      "Bash(sh infra/deploy.sh:*)",
+      "Bash(TT_* infra/deploy.sh*)",
+      "Bash(az deployment group create:*)",
+      "Bash(az deployment group delete:*)",
+      "Bash(az deployment sub create:*)",
+      "Bash(az group delete:*)",
+      "Bash(az resource delete:*)",
+      "Bash(az lock delete:*)",
+      "Bash(az keyvault delete:*)",
+      "Bash(az keyvault purge:*)",
+      "Bash(az keyvault secret delete:*)",
+      "Bash(az keyvault secret purge:*)",
+      "Bash(az keyvault secret set:*)",
+      "Bash(az postgres flexible-server delete:*)",
+      "Bash(az postgres flexible-server db delete:*)",
+      "Bash(az postgres flexible-server execute:*)",
+      "Bash(az webapp delete:*)",
+      "Bash(az webapp config appsettings delete:*)",
+      "Bash(az webapp config appsettings set:*)",
+      "Bash(npx prisma db push:*)",
+      "Bash(npx prisma db execute:*)",
+      "Bash(npx prisma migrate dev:*)",
+      "Bash(npx prisma migrate deploy:*)",
+      "Bash(npx prisma migrate reset:*)",
+      "Bash(npx prisma migrate resolve:*)",
+      "Bash(prisma db push:*)",
+      "Bash(prisma migrate:*)",
+      "Bash(npm run prisma:migrate:*)",
+      "Bash(DATABASE_URL=* npx prisma db push*)",
+      "Bash(DATABASE_URL=* npx prisma migrate*)"
+    ]
+  }
+}
