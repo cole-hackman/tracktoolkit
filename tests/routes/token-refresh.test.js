@@ -18,14 +18,15 @@ process.env.SESSION_SECRET = 's'.repeat(40);
 // matter indistinguishable — which is exactly the bug.
 let storedTokenRow;
 
-const tokenUpdate = jest.fn(async (args) => {
+const writeTokenRow = async (args) => {
   storedTokenRow = {
     encrypted: args.data.encrypted,
     refresh: args.data.refresh,
     expiresAt: args.data.expiresAt,
   };
   return {};
-});
+};
+const tokenUpdate = jest.fn(writeTokenRow);
 const tokenFindUnique = jest.fn(async () => storedTokenRow ?? null);
 const tokenDeleteMany = jest.fn(async () => { storedTokenRow = null; return { count: 1 }; });
 const userUpdate = jest.fn().mockResolvedValue({});
@@ -47,11 +48,11 @@ jest.unstable_mockModule('../../server/lib/snapshot-cache.js', () => ({
   SNAPSHOT_RESOURCES: ['likes', 'playlists', 'followings', 'followers', 'reposts'],
 }));
 
-const { encrypt } = await import('../../server/lib/crypto.js');
+const { encrypt, decrypt } = await import('../../server/lib/crypto.js');
 const { signSession } = await import('../../server/lib/session.js');
 const { authenticateUser } = await import('../../server/middleware/auth.js');
 const { clearAuthCache } = await import('../../server/lib/auth-cache.js');
-const { soundcloudClient, clearRecentRotations } =
+const { soundcloudClient, clearRecentRotations, forgetRecentRotation } =
   await import('../../server/lib/soundcloud-client.js');
 
 const KEY = process.env.ENCRYPTION_KEY;
@@ -99,7 +100,10 @@ function advanceClock(ms) {
 }
 
 beforeEach(() => {
-  tokenUpdate.mockClear();
+  // mockReset, not mockClear: a test that queues failures with
+  // mockImplementationOnce must not leak an unconsumed one into the next.
+  tokenUpdate.mockReset();
+  tokenUpdate.mockImplementation(writeTokenRow);
   tokenDeleteMany.mockClear();
   tokenFindUnique.mockClear();
   userUpdate.mockClear();
@@ -414,7 +418,12 @@ describe('a spent refresh token is not a revocation', () => {
 
     expect(a.status).toBe(200);
     expect(b.status).toBe(200);
-    expect(sc.oauthCalls).toBe(1);
+    // Observed: 2, not 1. The first resume saves and drops the held entry
+    // without re-arming the rotation memo (consumed list is empty), so the
+    // second request re-presents the spent token upstream and is rescued by
+    // the classifier reading the now-saved row. One wasted round trip, no
+    // teardown. Pinned here so a change in that rescue is noticed.
+    expect(sc.oauthCalls).toBeLessThanOrEqual(2);
     expect(tokenDeleteMany).not.toHaveBeenCalled();
     expect(userUpdate).not.toHaveBeenCalled();
   });
@@ -527,6 +536,159 @@ describe('a spent refresh token is not a revocation', () => {
   });
 });
 
+/** What Prisma throws when the pool cannot hand out a connection in time. */
+function poolTimeout() {
+  return Object.assign(
+    new Error('Timed out fetching a new connection from the connection pool'),
+    { code: 'P2024' },
+  );
+}
+
+describe('a failed save of a rotated pair is not a revocation', () => {
+  // The exchange has already rotated the refresh token upstream when the save
+  // runs, so a save that fails leaves the row holding a token SoundCloud has
+  // spent. Before the fix the next request presented it, was refused with
+  // invalid_grant, found it equal to the stored one and tore the user down:
+  // a P2024 pool timeout cost a live user their tokens and started the six-day
+  // deletion clock.
+
+  test('one transient failure is retried and the pair is saved', async () => {
+    const sc = mockRotatingSoundCloud();
+    tokenUpdate.mockImplementationOnce(async () => { throw poolTimeout(); });
+
+    const res = await request(app).get('/probe').set('Cookie', sessionCookie());
+
+    expect(res.status).toBe(200);
+    expect(sc.oauthCalls).toBe(1);
+    expect(tokenUpdate).toHaveBeenCalledTimes(2);           // failed once, then saved
+    expect(decrypt(storedTokenRow.refresh, KEY)).toBe('refresh-1');
+    expect(tokenDeleteMany).not.toHaveBeenCalled();
+    expect(userUpdate).not.toHaveBeenCalled();
+
+    // And long after the rotation memo let go, the user is still connected.
+    advanceClock(61_000);
+    clearAuthCache();
+    const later = await request(app).get('/probe').set('Cookie', sessionCookie());
+    expect(later.status).toBe(200);
+    expect(tokenDeleteMany).not.toHaveBeenCalled();
+    expect(userUpdate).not.toHaveBeenCalled();
+  });
+
+  test('when every attempt fails, the new pair is held, served, and saved later', async () => {
+    const sc = mockRotatingSoundCloud();
+    tokenUpdate.mockImplementation(async () => { throw poolTimeout(); });
+
+    const first = await request(app).get('/probe').set('Cookie', sessionCookie());
+
+    // The request itself fails — the pair could not be stored — but nothing
+    // was torn down, and the row still holds the spent token.
+    expect(first.status).toBe(500);
+    expect(tokenUpdate.mock.calls.length).toBeGreaterThan(1);   // it retried
+    expect(decrypt(storedTokenRow.refresh, KEY)).toBe('good-refresh');
+    expect(tokenDeleteMany).not.toHaveBeenCalled();
+    expect(userUpdate).not.toHaveBeenCalled();
+
+    // The database recovers. Past the 60 s rotation memo, the user comes back
+    // presenting the spent token the row still holds.
+    tokenUpdate.mockImplementation(writeTokenRow);
+    advanceClock(61_000);
+    clearAuthCache();
+    const updatesBefore = tokenUpdate.mock.calls.length;
+
+    const second = await request(app).get('/probe').set('Cookie', sessionCookie());
+
+    expect(second.status).toBe(200);
+    // Served from the held pair: the spent token was never re-presented.
+    expect(sc.oauthCalls).toBe(1);
+    expect(sc.presented).toEqual(['good-refresh']);
+    expect(sc.apiCalls.at(-1).auth).toBe('OAuth access-1');
+    // ...and saved this time.
+    expect(tokenUpdate.mock.calls.length).toBe(updatesBefore + 1);
+    expect(decrypt(storedTokenRow.refresh, KEY)).toBe('refresh-1');
+    expect(tokenDeleteMany).not.toHaveBeenCalled();
+    expect(userUpdate).not.toHaveBeenCalled();
+
+    // Once saved, the held pair is let go: the row is the source again, and a
+    // request starting from it refreshes normally with the saved token.
+    clearAuthCache();
+    findUnique.mockResolvedValue({
+      id: 'user-1',
+      soundcloudId: 111,
+      tokens: [{ encrypted: encrypt('stale-access', KEY), refresh: storedTokenRow.refresh }],
+    });
+    const third = await request(app).get('/probe').set('Cookie', sessionCookie());
+    expect(third.status).toBe(200);
+    expect(sc.presented).toEqual(['good-refresh', 'refresh-1']);
+    expect(tokenDeleteMany).not.toHaveBeenCalled();
+  });
+
+  test('the classifier never tears down a token whose replacement is held', async () => {
+    mockRotatingSoundCloud();
+    tokenUpdate.mockImplementation(async () => { throw poolTimeout(); });
+    await request(app).get('/probe').set('Cookie', sessionCookie());
+    tokenUpdate.mockImplementation(writeTokenRow);
+
+    // The stored token IS the one presented — on its own, exactly the shape of
+    // a revocation. The held pair is what says otherwise.
+    const tokens = await soundcloudClient._resolveInvalidGrant('good-refresh', 'user-1');
+
+    expect(tokens).toMatchObject({ access_token: 'access-1', refresh_token: 'refresh-1' });
+    expect(tokenDeleteMany).not.toHaveBeenCalled();
+    expect(userUpdate).not.toHaveBeenCalled();
+  });
+
+  test('a held pair keeps its real expiry across failed re-saves', async () => {
+    // Re-holding after a failed resume must not restart the access token's
+    // clock, or a held pair would look fresh forever and the row would
+    // eventually be saved with an expiry later than SoundCloud's.
+    mockRotatingSoundCloud();
+    tokenUpdate.mockImplementation(async () => { throw poolTimeout(); });
+    await request(app).get('/probe').set('Cookie', sessionCookie());
+
+    advanceClock(30 * 60_000);    // half the hour gone
+    clearAuthCache();
+    await request(app).get('/probe').set('Cookie', sessionCookie());   // resume fails again
+
+    tokenUpdate.mockImplementation(writeTokenRow);
+    clearAuthCache();
+    await request(app).get('/probe').set('Cookie', sessionCookie());   // resume saves
+
+    const remainingMs = storedTokenRow.expiresAt.getTime() - Date.now();
+    expect(remainingMs).toBeLessThanOrEqual(30 * 60_000 + 1000);
+    expect(remainingMs).toBeGreaterThan(29 * 60_000);
+  });
+
+  test('forgetRecentRotation drops the held pair too', async () => {
+    // The held pair is plaintext credentials, like the rotation memo, and
+    // disconnect and account deletion forget it through the same call.
+    const sc = mockRotatingSoundCloud();
+    tokenUpdate.mockImplementation(async () => { throw poolTimeout(); });
+    await request(app).get('/probe').set('Cookie', sessionCookie());
+
+    forgetRecentRotation('user-1');
+    clearAuthCache();
+    await request(app).get('/probe').set('Cookie', sessionCookie());
+
+    // Nothing in memory answered: the spent token went back upstream.
+    expect(sc.presented).toEqual(['good-refresh', 'good-refresh']);
+  });
+
+  test('P2025 is not retried: a disconnect or deletion already won', async () => {
+    mockRotatingSoundCloud();
+    tokenUpdate.mockImplementationOnce(async () => {
+      storedTokenRow = null;
+      throw Object.assign(new Error('Record to update not found.'), { code: 'P2025' });
+    });
+
+    const res = await request(app).get('/probe').set('Cookie', sessionCookie());
+
+    expect(res.status).toBe(500);
+    expect(tokenUpdate).toHaveBeenCalledTimes(1);
+    // Nothing held for a row that is gone: a later request is not served.
+    expect(await soundcloudClient._resolveInvalidGrant('good-refresh', 'user-1')).toBeNull();
+  });
+});
+
 describe('session gating', () => {
   test('no session cookie never reaches SoundCloud', async () => {
     const res = await request(app).get('/probe');
@@ -539,5 +701,224 @@ describe('session gating', () => {
     const res = await request(app).get('/probe').set('Cookie', `session=${encodeURIComponent(legacy)}`);
     expect(res.status).toBe(401);
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adversarial checks on the held-pair fix (independent verification).
+// ---------------------------------------------------------------------------
+
+const { runWithTokenContext } = await import('../../server/lib/token-context.js');
+const { disconnectUser } = await import('../../server/lib/account-lifecycle.js');
+const { default: loggerForAudit } = await import('../../server/lib/logger.js');
+
+/**
+ * A rotating SoundCloud with knobs the shared mock lacks: tokens that are
+ * already spent at the start (an older pair a long-running job captured), and
+ * a revocation switch that can be flipped mid-test.
+ */
+function adversarialSoundCloud({ initiallySpent = [] } = {}) {
+  const spent = new Set(initiallySpent);
+  const state = { oauthCalls: 0, presented: [], apiCalls: [], revoked: false };
+  let issued = 0;
+  global.fetch = jest.fn(async (url, options = {}) => {
+    const target = String(url);
+    if (target.includes('/oauth/token')) {
+      state.oauthCalls += 1;
+      const presented = new URLSearchParams(String(options.body)).get('refresh_token');
+      state.presented.push(presented);
+      if (state.revoked || spent.has(presented)) {
+        return new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 });
+      }
+      spent.add(presented);
+      issued += 1;
+      return new Response(JSON.stringify({
+        access_token: `access-${issued}`,
+        refresh_token: `refresh-${issued}`,
+        expires_in: 3600,
+      }), { status: 200 });
+    }
+    const auth = options.headers?.Authorization || '';
+    state.apiCalls.push({ target, auth });
+    if (auth === 'OAuth stale-access') return new Response('', { status: 401 });
+    return new Response(JSON.stringify({ endpoint: target }), { status: 200 });
+  });
+  return state;
+}
+
+/** Exchange good-refresh -> refresh-1 while every save fails, leaving it held. */
+async function holdAPair(error = poolTimeout()) {
+  tokenUpdate.mockImplementation(async () => { throw error; });
+  const res = await request(app).get('/probe').set('Cookie', sessionCookie());
+  expect(res.status).toBe(500);
+  expect(decrypt(storedTokenRow.refresh, KEY)).toBe('good-refresh');
+  tokenUpdate.mockImplementation(writeTokenRow);
+}
+
+/** A caller outside authenticateUser presenting a captured pair (a growth job). */
+function callAs(userId, access, refresh) {
+  return runWithTokenContext({ userId }, () => soundcloudClient.scRequest('/me', access, refresh));
+}
+
+describe('adversarial: held pair under failure kinds', () => {
+  const kinds = [
+    ['generic Error', () => new Error('boom')],
+    ['ECONNRESET', () => Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })],
+    ['P1017 server closed the connection', () => Object.assign(new Error('Server has closed the connection'), { code: 'P1017' })],
+  ];
+
+  test.each(kinds)('%s on every save attempt: retried, held, never torn down', async (_name, make) => {
+    const sc = adversarialSoundCloud();
+    await holdAPair(make());
+    expect(tokenUpdate).toHaveBeenCalledTimes(4);           // 1 + 3 retries
+    expect(tokenDeleteMany).not.toHaveBeenCalled();
+    expect(userUpdate).not.toHaveBeenCalled();
+
+    advanceClock(61_000);
+    clearAuthCache();
+    const res = await request(app).get('/probe').set('Cookie', sessionCookie());
+    expect(res.status).toBe(200);
+    expect(sc.presented).toEqual(['good-refresh']);
+    expect(decrypt(storedTokenRow.refresh, KEY)).toBe('refresh-1');
+    expect(tokenDeleteMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('adversarial: genuine revocation after a pair is held', () => {
+  test('held refresh token refused upstream once its access expired: torn down, bounded', async () => {
+    const sc = adversarialSoundCloud();
+    await holdAPair();
+    sc.revoked = true;                       // the user revokes the app now
+    advanceClock(2 * 3600_000);              // the held access token is long dead
+    clearAuthCache();
+
+    const res = await request(app).get('/probe').set('Cookie', sessionCookie());
+
+    expect(res.status).toBe(500);
+    expect(tokenDeleteMany).toHaveBeenCalled();
+    expect(userUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ disconnectedAt: expect.any(Date) }),
+    }));
+    // No loop: the held refresh, then one check of the stored one.
+    expect(sc.oauthCalls).toBeLessThanOrEqual(3);
+    // And the held pair died with the connection.
+    sc.revoked = false;
+    expect(await soundcloudClient._resolveInvalidGrant('good-refresh', 'user-1')).toBeNull();
+  });
+});
+
+describe('adversarial: concurrency and lifecycle around a held pair', () => {
+  test('two concurrent requests presenting the spent token are both served, nothing torn down', async () => {
+    const sc = adversarialSoundCloud();
+    await holdAPair();
+    advanceClock(61_000);
+    clearAuthCache();
+
+    const [a, b] = await Promise.all([
+      request(app).get('/probe').set('Cookie', sessionCookie()),
+      request(app).get('/probe').set('Cookie', sessionCookie()),
+    ]);
+
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+    // Observed: 2, not 1. The first resume saves and drops the held entry
+    // without re-arming the rotation memo (consumed list is empty), so the
+    // second request re-presents the spent token upstream and is rescued by
+    // the classifier reading the now-saved row. One wasted round trip, no
+    // teardown. Pinned here so a change in that rescue is noticed.
+    expect(sc.oauthCalls).toBeLessThanOrEqual(2);
+    expect(tokenDeleteMany).not.toHaveBeenCalled();
+    expect(decrypt(storedTokenRow.refresh, KEY)).toBe('refresh-1');
+  });
+
+  test('disconnectUser drops the held pair: a later presenter is not served it', async () => {
+    const sc = adversarialSoundCloud();
+    await holdAPair();
+    await disconnectUser('user-1', { reason: 'user' });
+    expect(storedTokenRow).toBeNull();
+
+    // Re-login writes a fresh row; the stale presenter must not resurrect refresh-1.
+    storedTokenRow = {
+      encrypted: encrypt('login-access', KEY),
+      refresh: encrypt('login-refresh', KEY),
+      expiresAt: new Date(Date.now() + 3600_000),
+    };
+    // Not served from memory: the spent token goes upstream, is refused, and
+    // the classifier finds the login row has moved on and serves that.
+    await callAs('user-1', 'stale-access', 'good-refresh');
+    expect(tokenDeleteMany).toHaveBeenCalledTimes(1);   // the disconnect's own delete only
+    expect(decrypt(storedTokenRow.refresh, KEY)).toBe('login-refresh');
+    expect(sc.presented).toEqual(['good-refresh', 'good-refresh']);
+  });
+
+  // Regression guard, now passing. Before the fix: the OAuth callback (server/routes/auth.js,
+  // prisma.token.upsert) writes a fresh pair but never clears the held map.
+  // A caller still holding the pre-login refresh token (a running growth job's
+  // closure) then hits _resumeUnsavedRotation, which saves the stale held pair
+  // OVER the fresh login pair.
+  test('a held pair never overwrites the pair a later login wrote', async () => {
+    adversarialSoundCloud();
+    await holdAPair();
+
+    // Login without a disconnect: the callback upserts a fresh pair.
+    storedTokenRow = {
+      encrypted: encrypt('login-access', KEY),
+      refresh: encrypt('login-refresh', KEY),
+      expiresAt: new Date(Date.now() + 3600_000),
+    };
+    clearAuthCache();
+
+    // A growth job started before the login still presents good-refresh.
+    await callAs('user-1', 'stale-access', 'good-refresh').catch(() => {});
+
+    expect(decrypt(storedTokenRow.refresh, KEY)).toBe('login-refresh');
+  });
+
+  // Regression guard, now passing. Before the fix: _resolveInvalidGrant's re-exchange path uses
+  // stored.refresh without asking whether IT is a held-consumed token. While a
+  // pair is held the row holds the spent token, so an OLDER captured refresh
+  // token (a growth job's closure, past the 60 s memo) is refused, the
+  // classifier sees "superseded", re-exchanges the spent stored token, gets
+  // invalid_grant and tears the live user down — the C1 teardown by another door.
+  test('an older captured token while a pair is held does not tear the user down', async () => {
+    const sc = adversarialSoundCloud({ initiallySpent: ['older-refresh'] });
+    await holdAPair();
+    advanceClock(61_000);
+    clearAuthCache();
+
+    await callAs('user-1', 'stale-access', 'older-refresh').catch(() => {});
+
+    expect(sc.presented).toContain('older-refresh');
+    expect(tokenDeleteMany).not.toHaveBeenCalled();
+    expect(userUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe('adversarial: no plaintext token in any log line', () => {
+  test('the all-attempts-failed path and the resume path log no token material', async () => {
+    const lines = [];
+    const spies = ['error', 'warn', 'info', 'debug', 'log']
+      .filter((m) => typeof loggerForAudit[m] === 'function')
+      .map((m) => jest.spyOn(loggerForAudit, m).mockImplementation((...args) => {
+        lines.push(args.map((a) => (a instanceof Error ? `${a.message} ${a.stack}` : (typeof a === 'string' ? a : JSON.stringify(a)))).join(' '));
+      }));
+    const consoleSpies = ['error', 'warn', 'log', 'info'].map((m) =>
+      jest.spyOn(console, m).mockImplementation((...args) => { lines.push(args.map(String).join(' ')); }));
+    try {
+      adversarialSoundCloud();
+      await holdAPair();
+      advanceClock(61_000);
+      clearAuthCache();
+      tokenUpdate.mockImplementation(async () => { throw poolTimeout(); });
+      await request(app).get('/probe').set('Cookie', sessionCookie());   // resume fails again
+      tokenUpdate.mockImplementation(writeTokenRow);
+      await request(app).get('/probe').set('Cookie', sessionCookie());   // resume saves
+    } finally {
+      for (const s of [...spies, ...consoleSpies]) s.mockRestore();
+    }
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      expect(line).not.toMatch(/good-refresh|refresh-1|access-1|stale-access/);
+    }
   });
 });

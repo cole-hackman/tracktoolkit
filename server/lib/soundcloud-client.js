@@ -1,10 +1,12 @@
 import dotenv from 'dotenv';
 dotenv.config();
+import { createHash } from 'crypto';
 import { encrypt, decrypt } from './crypto.js';
 import logger from './logger.js';
 import prisma from './prisma.js';
 import { getTokenContext, countScCall } from './token-context.js';
 import { invalidateCachedAuth } from './auth-cache.js';
+import { sleep } from './pacing.js';
 import { isAllowedDownloadUrl, isAllowedDownloadRedirectTarget, isAllowedStreamUrl } from './download-utils.js';
 import { cursorEndpoint } from './sc-cursor.js';
 import { extractSecretToken, redactSecretToken } from './secret-link.js';
@@ -251,18 +253,139 @@ function readRecentRotation(userId, presentedRefreshToken) {
 }
 
 /**
- * Forget a user's last rotation. Called wherever the stored tokens stop being
- * what this process thinks they are — the same contract as
- * `invalidateCachedAuth`, and for the same reason.
+ * Rotated pairs that could not be saved, keyed by userId:
+ * `{ consumed: Set<sha256(refresh token)>, tokens, expiresAt }`.
+ *
+ * The exchange rotates the refresh token upstream BEFORE the save runs, so a
+ * save that fails for good (a P2024 pool timeout, a reset connection) leaves
+ * the row holding a token SoundCloud has already spent. The next request
+ * presents it, is refused with invalid_grant, and `_resolveInvalidGrant` —
+ * finding the stored token equal to the one presented — would conclude
+ * "revoked" and tear a live user down. Holding the new pair here is what
+ * stops that: a caller presenting a consumed token is handed the held pair
+ * (and the save is tried again) instead of being sent upstream or classified.
+ *
+ * Unlike the rotation memo this has no TTL, because the danger it covers does
+ * not expire: the row stays wrong until a save succeeds. An entry is dropped
+ * on the first successful save and by `forgetRecentRotation` (disconnect,
+ * account deletion). Only hashes of the consumed tokens are kept; the pair
+ * itself is plaintext, like the rotation memo, for the same reason.
+ *
+ * **It does not survive a restart.** A process that dies holding a pair
+ * leaves the row on the spent token, and that user's next request is torn
+ * down exactly as before. The durable fix is a database-side guard (a
+ * `rotatedAt` column or a compare-and-swap on `refresh`) — the same
+ * prerequisite as raising `numberOfWorkers` above 1.
  */
-export function forgetRecentRotation(userId) {
-  if (userId != null) recentRotations.delete(userId);
+const unsavedRotations = new Map();
+
+function hashRefreshToken(token) {
+  return createHash('sha256').update(String(token)).digest('hex');
 }
 
-/** Drop every remembered rotation. Tests only. */
+function holdUnsavedRotation(userId, consumedTokens, tokens) {
+  if (!userId || !tokens?.access_token || !tokens?.refresh_token) return;
+  // Merge with an earlier entry: if a held pair was itself exchanged and that
+  // save failed too, every token spent along the way still maps to the newest
+  // pair.
+  const consumed = new Set(unsavedRotations.get(userId)?.consumed || []);
+  for (const token of consumedTokens || []) {
+    if (token) consumed.add(hashRefreshToken(token));
+  }
+  if (consumed.size === 0) return;
+  unsavedRotations.set(userId, {
+    consumed,
+    tokens,
+    expiresAt: Date.now() + ((tokens.expires_in || 3600) * 1000),
+  });
+}
+
+function readUnsavedRotation(userId, presentedRefreshToken) {
+  const entry = unsavedRotations.get(userId);
+  if (!entry || !presentedRefreshToken) return null;
+  return entry.consumed.has(hashRefreshToken(presentedRefreshToken)) ? entry : null;
+}
+
+/** The held pair with `expires_in` counted from now, not from the exchange,
+ *  so re-saving or re-holding it does not push its expiry forward. */
+function heldTokensNow(entry) {
+  return {
+    ...entry.tokens,
+    expires_in: Math.max(0, Math.floor((entry.expiresAt - Date.now()) / 1000)),
+  };
+}
+
+/**
+ * Forget-generations for users with a save or resume in progress:
+ * userId → `{ generation, active }`.
+ *
+ * A save spans awaits (the update, the retry sleeps), and a disconnect, an
+ * account deletion or a login can complete inside one of them — each ends with
+ * `forgetRecentRotation`. Without this, a save that then failed would hold and
+ * remember its pair AFTER that forget, leaving a live plaintext pair in the
+ * no-TTL held map for a user who had just disconnected; and a retry would
+ * write the older pair over the row a login had just upserted. Each save
+ * captures the generation at entry; `forgetRecentRotation` bumps it; a save
+ * that sees it moved never holds, remembers or serves its pair, and compares
+ * against the row before writing again.
+ *
+ * Bounded: an entry exists only while at least one save or resume for that
+ * user is running, and is deleted when the last one ends. A forget with no
+ * save in flight has nothing to tell and records nothing.
+ *
+ * This narrows the window to what lies between a read and a write; it cannot
+ * close a cross-await race. The durable fix is the `rotatedAt` /
+ * compare-and-swap guard named on `_resolveInvalidGrant`.
+ */
+const persistWatches = new Map();
+
+/** What `_readStoredTokens` returns, when asked, for a read that failed. */
+const STORED_UNREADABLE = Symbol('stored-tokens-unreadable');
+
+function beginPersistWatch(userId) {
+  let watch = persistWatches.get(userId);
+  if (!watch) {
+    watch = { generation: 0, active: 0 };
+    persistWatches.set(userId, watch);
+  }
+  watch.active += 1;
+  const start = watch.generation;
+  return {
+    forgotten: () => watch.generation !== start,
+    end: () => {
+      watch.active -= 1;
+      if (watch.active === 0 && persistWatches.get(userId) === watch) persistWatches.delete(userId);
+    },
+  };
+}
+
+/**
+ * Forget a user's last rotation, and any rotated pair still waiting to be
+ * saved. Called wherever the stored tokens stop being what this process thinks
+ * they are — the same contract as `invalidateCachedAuth`, and for the same
+ * reason. Both maps hold plaintext tokens. A save in flight for the user is
+ * told too (`persistWatches`), so it cannot re-create what this just dropped.
+ */
+export function forgetRecentRotation(userId) {
+  if (userId != null) {
+    recentRotations.delete(userId);
+    unsavedRotations.delete(userId);
+    const watch = persistWatches.get(userId);
+    if (watch) watch.generation += 1;
+  }
+}
+
+/** Drop every remembered rotation and held pair. Tests only. */
 export function clearRecentRotations() {
   recentRotations.clear();
+  unsavedRotations.clear();
 }
+
+/**
+ * Retries for saving a rotated pair, after the first attempt. Short, because a
+ * request is waiting on them; the held pair above covers a longer outage.
+ */
+const PERSIST_RETRY_DELAYS_MS = [50, 150, 400];
 
 class SoundCloudClient {
   constructor() {
@@ -350,6 +473,23 @@ class SoundCloudClient {
     // No user context => nothing to collide on (and nothing to persist).
     if (!userId) return this._refreshAndPersistNow(refreshToken, null);
 
+    // An earlier exchange spent this token and its replacement never reached
+    // the database. Checked before the rotation memo, because only this path
+    // tries the save again. Its access token still good: serve it. Expired:
+    // the held refresh token is the live one upstream, so exchange that one.
+    const held = readUnsavedRotation(userId, refreshToken);
+    if (held) {
+      if (held.expiresAt - Date.now() > ACCESS_TOKEN_SKEW_MS) {
+        const resumed = await this._resumeUnsavedRotation(userId, held);
+        // null: the row has moved on (a later login), and the held pair was
+        // dropped. Fall through to the ordinary path, which settles a
+        // superseded token against the database.
+        if (resumed) return resumed;
+      } else {
+        refreshToken = held.tokens.refresh_token;
+      }
+    }
+
     // Sequential case: an earlier call in this same request (or one a moment
     // ago) already spent this exact refresh token. Presenting it again would
     // be answered `invalid_grant`, which upstream is indistinguishable from a
@@ -425,26 +565,127 @@ class SoundCloudClient {
    * `consumedTokens` are the refresh tokens this exchange spent. Each one is
    * now dead upstream, so a later caller that presents one is served from the
    * rotation memo instead of being reported as revoked.
+   *
+   * The save is retried (`PERSIST_RETRY_DELAYS_MS`), except on P2025: the row
+   * is gone because a disconnect or an account deletion won the race, and the
+   * pair must die with it. If every attempt fails the pair is held in
+   * `unsavedRotations` rather than dropped — see there for why dropping it
+   * gets the user torn down — and the error is rethrown.
    */
   async _persistRefreshedTokens(userId, newTokens, consumedTokens) {
     if (!userId || !newTokens?.access_token || !newTokens?.refresh_token) return false;
 
     const expiresAt = new Date(Date.now() + ((newTokens.expires_in || 3600) * 1000));
-    await prisma.token.update({
-      where: { userId },
-      data: {
-        encrypted: encrypt(newTokens.access_token, this.encryptionKey),
-        refresh: encrypt(newTokens.refresh_token, this.encryptionKey),
-        expiresAt,
-        updatedAt: new Date(),
-      },
-    });
+    const data = {
+      encrypted: encrypt(newTokens.access_token, this.encryptionKey),
+      refresh: encrypt(newTokens.refresh_token, this.encryptionKey),
+      expiresAt,
+    };
+    const watch = beginPersistWatch(userId);
+    try {
+      for (let attempt = 0; ; attempt++) {
+        // A disconnect, deletion or login completed since this save began.
+        // Write again only over a row known to still hold a token this pair
+        // replaced. A row known to be missing goes ahead and gets its P2025.
+        // An unreadable row is neither: it may be a login's fresh pair, so
+        // it is never written over.
+        if (attempt > 0 && watch.forgotten()) {
+          const stored = await this._readStoredTokens(userId, { distinguishUnreadable: true });
+          const replaced = new Set((consumedTokens || []).filter(Boolean));
+          if (stored === STORED_UNREADABLE || (stored && !replaced.has(stored.refresh))) {
+            throw Object.assign(new Error('Token save abandoned: the stored pair changed during the save'), { code: 'TOKEN_SAVE_SUPERSEDED' });
+          }
+        }
+        try {
+          await prisma.token.update({ where: { userId }, data: { ...data, updatedAt: new Date() } });
+          break;
+        } catch (error) {
+          if (error?.code === 'P2025') throw error;
+          if (attempt < PERSIST_RETRY_DELAYS_MS.length) {
+            await sleep(PERSIST_RETRY_DELAYS_MS[attempt]);
+            continue;
+          }
+          // Forgotten while saving: holding now would re-create, after the
+          // forget, the plaintext pair it just dropped.
+          if (watch.forgotten()) throw error;
+          // Every attempt failed. The tokens in `consumedTokens` are spent
+          // upstream and `newTokens` is the only live pair; keep it.
+          logger.error(`[auth] could not save a rotated token pair after ${attempt + 1} attempts; holding it in memory`);
+          holdUnsavedRotation(userId, consumedTokens, newTokens);
+          invalidateCachedAuth(userId);
+          rememberRotation(userId, consumedTokens, newTokens);
+          throw error;
+        }
+      }
+    } finally {
+      watch.end();
+    }
+    // Saved: the row is the source of truth again.
+    unsavedRotations.delete(userId);
     // The auth memo is now holding the tokens we just replaced. SoundCloud
     // rotates the refresh token on every exchange, so serving the memo after
     // this point would hand out a refresh token that no longer works.
     invalidateCachedAuth(userId);
     rememberRotation(userId, consumedTokens, newTokens);
     return true;
+  }
+
+  /**
+   * Serve a held pair (see `unsavedRotations`) and try once more to save it.
+   * A save that fails again keeps the pair held and still returns it: the
+   * pair is live upstream whether or not the row has caught up.
+   *
+   * The save only overwrites a row that still holds a token this pair
+   * replaced. A row that has moved on to something else was written by a
+   * later login (the callback forgets the held pair too, but this does not
+   * rely on it), and writing the held pair over it would replace a fresh
+   * grant with an older one. Then the held pair is dropped and null returned.
+   * The read and the write are separated by an await, so this narrows the
+   * race rather than closing it; ciphertext is randomly salted, so the
+   * compare cannot be pushed into the update's WHERE. The durable answer is
+   * the same `rotatedAt` / compare-and-swap guard named above.
+   */
+  async _resumeUnsavedRotation(userId, held) {
+    // Forgotten mid-resume (see `persistWatches`): serve nothing.
+    const watch = beginPersistWatch(userId);
+    try {
+      const tokens = await this._resumeUnsavedRotationNow(userId, held);
+      return watch.forgotten() ? null : tokens;
+    } finally {
+      watch.end();
+    }
+  }
+
+  async _resumeUnsavedRotationNow(userId, held) {
+    const tokens = heldTokensNow(held);
+    const stored = await this._readStoredTokens(userId);
+    // Unreadable or missing row: no evidence either way, so do not write. The
+    // pair is still live upstream; serve it and leave it held.
+    if (!stored) return tokens;
+    if (stored.refresh === held.tokens.refresh_token) {
+      // Already saved (another request got there first).
+      unsavedRotations.delete(userId);
+      return tokens;
+    }
+    if (!held.consumed.has(hashRefreshToken(stored.refresh))) {
+      logger.warn('[auth] dropping a held token pair: the stored pair has moved on since it was held');
+      forgetRecentRotation(userId);
+      return null;
+    }
+    try {
+      // No consumed tokens to add: the held entry already maps them.
+      await this._persistRefreshedTokens(userId, tokens, []);
+    } catch (error) {
+      // P2025: the row went while we held its replacement. Nothing to serve.
+      // Superseded: a login wrote a newer pair; the held one was forgotten.
+      if (error?.code === 'TOKEN_SAVE_SUPERSEDED') return null;
+      if (error?.code === 'P2025') {
+        unsavedRotations.delete(userId);
+        throw error;
+      }
+      // Already logged and still held by _persistRefreshedTokens.
+    }
+    return tokens;
   }
 
   /**
@@ -455,8 +696,12 @@ class SoundCloudClient {
    * because the only thing this is used for is deciding whether to destroy a
    * user's connection. That decision must rest on positive evidence; a
    * database hiccup or a rotated key must never supply it.
+   *
+   * `distinguishUnreadable` returns `STORED_UNREADABLE` instead of null for a
+   * failed read, for the one caller where "missing" and "unknown" lead to
+   * different writes (the compare before a save retry).
    */
-  async _readStoredTokens(userId) {
+  async _readStoredTokens(userId, { distinguishUnreadable = false } = {}) {
     try {
       const row = await prisma.token.findUnique({ where: { userId } });
       if (!row?.refresh) return null;
@@ -468,8 +713,8 @@ class SoundCloudClient {
       };
     } catch {
       // No identifiers, no ciphertext — just the fact.
-      logger.warn('[auth] could not read the stored token pair while classifying invalid_grant');
-      return null;
+      logger.warn('[auth] could not read the stored token pair');
+      return distinguishUnreadable ? STORED_UNREADABLE : null;
     }
   }
 
@@ -512,6 +757,12 @@ class SoundCloudClient {
    *   original error propagate (including after a genuine disconnect)
    */
   async _resolveInvalidGrant(presentedRefreshToken, userId) {
+    // A token whose replacement is held in memory is spent, not revoked, even
+    // though the row still holds it — that is exactly what a failed save
+    // looks like below. Never tear it down.
+    const held = readUnsavedRotation(userId, presentedRefreshToken);
+    if (held) return heldTokensNow(held);
+
     const stored = await this._readStoredTokens(userId);
 
     // Nothing readable to compare against: either the row is already gone (a
@@ -559,6 +810,20 @@ class SoundCloudClient {
     // The stored access token has expired too — a long-running job holding one
     // captured pair for over an hour. One exchange with the CURRENT refresh
     // token; if that also comes back invalid_grant, the grant really is gone.
+    // The stored token was itself spent by an exchange whose result never
+    // reached the row: the held pair is the live one. Re-exchanging the
+    // stored token would be refused with invalid_grant and read as revocation.
+    // Unless the token just refused IS the held one: that is the live token
+    // being refused on its own merits, which is a revocation.
+    const heldForStored = readUnsavedRotation(userId, stored.refresh);
+    if (heldForStored) {
+      if (heldForStored.tokens.refresh_token !== presentedRefreshToken) {
+        return heldTokensNow(heldForStored);
+      }
+      await this._disconnectRevoked(userId);
+      return null;
+    }
+
     let refreshed;
     try {
       refreshed = await this.refreshTokens(stored.refresh);

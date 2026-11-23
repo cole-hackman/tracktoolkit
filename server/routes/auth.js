@@ -174,6 +174,7 @@ router.get('/callback', async (req, res) => {
         expiresAt
       }
     });
+    forgetRecentRotation(user.id); // a held unsaved pair must never overwrite this login's
 
     // Create session data
     const sessionData = {
