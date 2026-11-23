@@ -1178,7 +1178,8 @@ Two consequences worth holding onto:
 - Pushes that only touch `**.md`, `docs/**`, `infra/**`,
   `tools/uptime-worker/**`, `.gitignore` or `LICENSE` skip the run.
   Infrastructure changes go through `infra/deploy.sh` instead, and manual
-  `workflow_dispatch` stays for redeploys and for deploying a non-`main` ref.
+  `workflow_dispatch` stays for redeploys, including an older commit on `main`
+  (the `ref` input). Commits that are not on `main` are refused.
 
 Auth is OIDC through the `azure` GitHub environment: `AZURE_CLIENT_ID`,
 `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` are repository *variables*, not
