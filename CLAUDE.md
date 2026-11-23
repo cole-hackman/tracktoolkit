@@ -559,7 +559,8 @@ CSV export; title/artist from the catalog, else from the gate report), people
 (per-channel counts and an `extension` badge = any gate report from that
 account, ever) and a recent-events trail. `tests/routes/downloads-usage.integration.test.js`
 runs the SQL against a real Postgres when `TT_TEST_DATABASE_URL` points at a
-throwaway database; without it the suite skips.
+throwaway database on localhost with `test` in its name (`tests/setup-env.js`
+stops every run otherwise); without it the suite skips.
 
 **Feedback is a view, not a panel in Archive.** `views/FeedbackView.tsx` reads
 the four `/api/admin/feedback-items*` routes: status tabs (with counts from
@@ -891,7 +892,10 @@ made the guard refuse every playlist containing one (101 of 148 PUTs in
 production). `readPlaylistForRewrite` therefore always calls
 `getPlaylistWithTracks(..., { allAccess: true })` (`&access=playable,preview,blocked`).
 Everything else keeps the default: the merge's *source* reads still filter
-blocked tracks out of what gets merged in. A short read that survives all-access
+blocked tracks out of what gets merged in. Merge & Delete therefore re-reads
+every source and every written playlist (`findUncopiedSources`) and deletes
+nothing unless every source track is in them; the kept sources come back in
+`deleteErrors` with the reason. A short read that survives all-access
 means entries SoundCloud will not return at any level (deleted/private); that
 is still refused, and logs `[playlist-rewrite] refused short read`.
 `GET /api/playlists/:id?access=all` returns the same all-access read for the
@@ -953,7 +957,7 @@ clone, and every bulk write.
 | `APP_URLS` | Yes | Comma-separated CORS allowlist. Production is the single origin `https://tracktoolkit.com` — the app is same-origin, so there is nothing else to allow |
 | `SURVEY_ENABLED` | No | Kill switch for a **future** in-app survey. It no longer affects the rebrand name vote, which is closed in code (`REBRAND_VOTE_CONCLUDED`) and cannot be switched back on from the environment |
 | `SURVEY_CAMPAIGN_ID` | No | Campaign identifier for the (closed) vote, default `2026-rebrand-name-v1`. Only the admin read paths use it now; it no longer gates any prompt |
-| `GROWTH_AUTOCHECK` | No | Set to `false` to disable the daily growth follow-back scheduler |
+| `GROWTH_AUTOCHECK` | No | Set to `false` to disable the daily growth follow-back scheduler. This and the retention job only start when `NODE_ENV=production` |
 | `ADMIN_IDS` | No | Comma-separated SoundCloud numeric user IDs allowed into `/api/admin/*`. Unset or empty = **nobody** (fails closed) |
 | `DOWNLOAD_ALLOWLIST` | No | Comma-separated SoundCloud numeric user IDs (plus every admin) that get `canDownload`: the Downloads page's "Download all" queue and gate tools (Hypeddit always; Droploud and Cobrand gates get checkboxes when the extension reports support), and `POST /api/downloads/links`. One definition, `server/lib/download-access.js`, backs both `/api/auth/me` and `requireCanDownload`. Unset = admins only |
 | `SC_ROTATION_MEMO_TTL_MS` | No | How long the refresh-rotation memo in `soundcloud-client.js` keeps the last exchange's plaintext pair (default `60000`). It exists so a route's second SoundCloud call is not told its already-spent refresh token means "revoked". Lowering it costs an extra refused exchange per multi-call request at a token boundary; raising it keeps decrypted tokens in memory longer. It is **not** the safety net — `_resolveInvalidGrant` is — so a wrong value here degrades latency, not correctness |
@@ -1178,7 +1182,8 @@ Two consequences worth holding onto:
 - Pushes that only touch `**.md`, `docs/**`, `infra/**`,
   `tools/uptime-worker/**`, `.gitignore` or `LICENSE` skip the run.
   Infrastructure changes go through `infra/deploy.sh` instead, and manual
-  `workflow_dispatch` stays for redeploys and for deploying a non-`main` ref.
+  `workflow_dispatch` stays for redeploys, including an older commit on `main`
+  (the `ref` input). Commits that are not on `main` are refused.
 
 Auth is OIDC through the `azure` GitHub environment: `AZURE_CLIENT_ID`,
 `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` are repository *variables*, not

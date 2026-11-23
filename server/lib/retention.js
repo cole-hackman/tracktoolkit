@@ -57,6 +57,7 @@ import { Prisma } from '@prisma/client';
 import prisma from './prisma.js';
 import logger from './logger.js';
 import { safeError } from './safe-error.js';
+import { backgroundJobsAllowed } from './background-jobs.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -476,6 +477,10 @@ export function resolveIntervalMs() {
 }
 
 export function startRetentionScheduler() {
+  if (!backgroundJobsAllowed()) {
+    logger.info('[retention] Not started: NODE_ENV is not production');
+    return null;
+  }
   if (process.env.RETENTION_ENABLED === 'false') {
     // Note for whoever is about to use this to "preview" a sweep: it does not.
     // Nothing is scheduled, so no counts are logged, and silence here is

@@ -1029,11 +1029,13 @@ export const validateGrowthEngageBatch = [
 /**
  * Validation rules for reversing growth actions (POST /api/growth/reverse)
  */
+export const GROWTH_REVERSE_MAX = 100;
+
 export const validateReverseGrowthActions = [
   body('actionIds')
     .optional()
-    .isArray()
-    .withMessage('actionIds must be an array'),
+    .isArray({ min: 1, max: GROWTH_REVERSE_MAX })
+    .withMessage(`actionIds must be an array with 1-${GROWTH_REVERSE_MAX} items`),
   body('filter')
     .optional()
     .isObject()
@@ -1041,7 +1043,8 @@ export const validateReverseGrowthActions = [
   body('filter.sessionId')
     .optional()
     .isString()
-    .withMessage('filter.sessionId must be a string'),
+    .notEmpty()
+    .withMessage('filter.sessionId must be a non-empty string'),
   body('filter.followedBack')
     .optional()
     .isBoolean()
@@ -1054,6 +1057,11 @@ export const validateReverseGrowthActions = [
   body().custom((value) => {
     if (!value.actionIds && !value.filter) {
       throw new Error('Either actionIds or filter must be provided');
+    }
+    // A filter that names none of these would match every action the user has.
+    const { sessionId, actionType, followedBack } = value.filter || {};
+    if (value.filter && !sessionId && !actionType && followedBack === undefined) {
+      throw new Error('filter must name a sessionId, actionType or followedBack');
     }
     return true;
   }),

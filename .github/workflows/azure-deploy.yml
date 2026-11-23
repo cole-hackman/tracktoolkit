@@ -2,7 +2,8 @@ name: Deploy to Azure App Service
 
 #
 # Auth is OIDC (no long-lived secret): the `azure` GitHub environment is the
-# federated-credential subject, so any branch can deploy through it. The three
+# federated-credential subject. Only commits on main are deployed: the job runs
+# for refs/heads/main only, and a `ref` input must be an ancestor of it. The three
 # AZURE_* values are repository variables, not secrets — they are identifiers.
 # Every merge to main deploys (the cutover in docs/internal/MIGRATION.md is
 # done; this replaced DigitalOcean's deploy_on_push on 2026-09-22). Pushes that
@@ -22,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Git ref to build and deploy (defaults to the ref the run was started from)
+        description: Commit on main to build and deploy (defaults to the tip of main)
         required: false
 
 permissions:
@@ -39,12 +40,22 @@ env:
 
 jobs:
   build-and-deploy:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: azure
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Require a commit that is on main
+        run: |
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
+            echo "::error::$(git rev-parse HEAD) is not on main. Only commits on main are deployed."
+            exit 1
+          fi
 
       - uses: actions/setup-node@v4
         with:

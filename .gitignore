@@ -44,8 +44,9 @@ build/
 security_audit.md
 users.csv
 
-# Local agent/IDE settings
-.claude/
+# Local agent/IDE settings (settings.json holds the shared deny rules)
+.claude/*
+!.claude/settings.json
 
 # Root scratch scripts
 /check.js

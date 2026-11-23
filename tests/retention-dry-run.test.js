@@ -309,8 +309,9 @@ describe('RETENTION_DRY_RUN', () => {
  * Node process open long past the end of the suite.
  */
 describe('RETENTION_DRY_RUN at boot', () => {
-  beforeEach(() => { jest.useFakeTimers({ now: NOW }); });
-  afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); });
+  const originalNodeEnv = process.env.NODE_ENV;
+  beforeEach(() => { process.env.NODE_ENV = 'production'; jest.useFakeTimers({ now: NOW }); });
+  afterEach(() => { process.env.NODE_ENV = originalNodeEnv; jest.clearAllTimers(); jest.useRealTimers(); });
 
   test('RETENTION_ENABLED=false still schedules nothing, and says so', () => {
     process.env.RETENTION_ENABLED = 'false';

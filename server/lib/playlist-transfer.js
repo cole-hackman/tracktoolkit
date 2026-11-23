@@ -71,6 +71,53 @@ export async function readPlaylistForRewrite(client, accessToken, refreshToken, 
 }
 
 /**
+ * Check that every track of every source playlist is in the written playlists,
+ * before the sources are deleted.
+ *
+ * Both sides are read back from SoundCloud with all access levels, because a
+ * write that answered 200 can still have dropped a track. A source that cannot
+ * be read in full counts as not copied, and if the written playlists cannot be
+ * read in full nothing does. One bad source keeps them all.
+ *
+ * @returns {Promise<{ id: number, error: string }[]>} one row per source to
+ *   keep, with the text shown to the user; empty when all may be deleted.
+ */
+export async function findUncopiedSources(client, accessToken, refreshToken, { sourceIds, writtenIds }) {
+  const read = (id) => readPlaylistForRewrite(client, accessToken, refreshToken, id);
+  const copied = new Set();
+  let writtenUnreadable = false;
+  for (const id of writtenIds) {
+    try {
+      for (const trackId of (await read(id)).ids) copied.add(trackId);
+    } catch {
+      writtenUnreadable = true;
+    }
+  }
+
+  const problems = new Map();
+  for (const id of sourceIds) {
+    if (writtenUnreadable) {
+      problems.set(id, 'Kept: the merged playlist could not be checked');
+      continue;
+    }
+    try {
+      const { playlist, ids } = await read(id);
+      const missing = new Set(ids.filter((trackId) => !copied.has(trackId))).size;
+      if (!Number.isInteger(playlist?.track_count)) problems.set(id, 'Kept: its full track list could not be read');
+      else if (missing > 0) problems.set(id, `Kept: ${missing} of its tracks ${missing === 1 ? 'was' : 'were'} not copied`);
+    } catch {
+      problems.set(id, 'Kept: its full track list could not be read');
+    }
+  }
+
+  if (problems.size === 0) return [];
+  return sourceIds.map((id) => ({
+    id,
+    error: problems.get(id) || 'Kept: another playlist in this merge was not fully copied',
+  }));
+}
+
+/**
  * An append target that already holds more than MAX_PLAYLIST_TRACKS. Appending
  * would have to rewrite it at 500 and push the rest into an overflow playlist,
  * and a failure partway would lose the tracks beyond 500, so it is refused

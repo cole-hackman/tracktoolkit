@@ -4,6 +4,7 @@ import { decrypt } from './crypto.js';
 import { safeError } from './safe-error.js';
 import { sleep } from './pacing.js';
 import { runWithTokenContext } from './token-context.js';
+import { backgroundJobsAllowed } from './background-jobs.js';
 
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // daily
 const INITIAL_DELAY_MS = 5 * 60 * 1000; // let the server settle first
@@ -105,9 +106,14 @@ export async function runScheduledFollowbackChecks(soundcloudClient) {
 }
 
 /**
- * Start the daily follow-back scheduler. Disable with GROWTH_AUTOCHECK=false.
+ * Start the daily follow-back scheduler. Production only; disable with
+ * GROWTH_AUTOCHECK=false.
  */
 export function startGrowthScheduler(soundcloudClient) {
+  if (!backgroundJobsAllowed()) {
+    logger.info('[GrowthScheduler] Not started: NODE_ENV is not production');
+    return null;
+  }
   if (process.env.GROWTH_AUTOCHECK === 'false') {
     logger.info('[GrowthScheduler] Disabled via GROWTH_AUTOCHECK=false');
     return null;

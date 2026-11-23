@@ -2,9 +2,12 @@
 # Deploys infra/main.bicep into the resource group and writes the secrets the
 # web app reads through Key Vault references.
 #
-# Usage:
-#   TT_PG_ADMIN_PASSWORD='<strong password>' infra/deploy.sh
-#   TT_PARAMS=infra/main.cutover.bicepparam ... infra/deploy.sh   # domain cutover values
+# Usage (TT_PARAMS is required; there is no default parameter file):
+#   TT_PARAMS=infra/main.cutover.bicepparam TT_PG_ADMIN_PASSWORD='...' infra/deploy.sh   # the live app
+#   TT_PARAMS=infra/main.bicepparam TT_PG_ADMIN_PASSWORD='...' infra/deploy.sh           # a stack with no custom domain
+#
+# Prints an ARM what-if and waits for the target host to be typed before it
+# changes anything, so it only runs from a terminal.
 #
 # Idempotent: re-running updates in place. Secrets are only (re)written when
 # the matching TT_SECRET_* variable is set, so a plain re-run never clobbers
@@ -28,6 +31,28 @@ BASE="${TT_BASE_NAME:-tracktoolkit}"
 KV="${BASE}-kv"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
+PARAMS="${TT_PARAMS:-}"
+if [ -z "$PARAMS" ] || [ ! -f "$PARAMS" ]; then
+  echo "TT_PARAMS must name an existing .bicepparam file." >&2
+  echo "The live app uses infra/main.cutover.bicepparam." >&2
+  exit 1
+fi
+# Both parameter files use the same app name, so the host is what tells them
+# apart. Read it from the file itself rather than trusting the file name.
+param_value() { sed -nE "s/^param $1 = '([^']*)'.*/\1/p" "$PARAMS"; }
+PARAM_BASE="$(param_value baseName)"
+if [ "$PARAM_BASE" != "$BASE" ]; then
+  echo "TT_PARAMS deploys '$PARAM_BASE' but TT_BASE_NAME is '$BASE'. Set both to the same app." >&2
+  exit 1
+fi
+APP_URL="$(param_value appUrl)"
+TARGET_HOST="${APP_URL#https://}"
+TARGET_HOST="${TARGET_HOST:-${BASE}.azurewebsites.net}"
+if [ ! -t 0 ]; then
+  echo "infra/deploy.sh asks for a typed confirmation, so run it from a terminal." >&2
+  exit 1
+fi
+
 : "${TT_PG_ADMIN_PASSWORD:?set TT_PG_ADMIN_PASSWORD (or read it from Key Vault secret postgres-admin-password)}"
 export TT_PG_ADMIN_PASSWORD
 export TT_DEPLOYER_OBJECT_ID="${TT_DEPLOYER_OBJECT_ID:-$(az ad signed-in-user show --query id -o tsv)}"
@@ -45,12 +70,45 @@ if [ -z "${TT_ASSIGN_DEPLOYER_ROLE:-}" ]; then
 fi
 export TT_ASSIGN_DEPLOYER_ROLE
 
-az group create --name "$RG" --location "$LOCATION" --output none
+GROUP_EXISTS="$(az group exists --name "$RG")"
+if [ "$GROUP_EXISTS" = true ]; then
+  az deployment group what-if \
+    --resource-group "$RG" \
+    --template-file "$HERE/main.bicep" \
+    --parameters "$PARAMS"
+else
+  echo "Resource group $RG does not exist yet, so there is nothing to compare with."
+fi
+
+cat <<WARN
+
+WARNING: this changes web app '$BASE' in resource group '$RG' so that it serves $TARGET_HOST.
+WARNING: the app settings in main.bicep replace the whole live list. Any setting
+  added by hand (RETENTION_DRY_RUN, RETENTION_ENABLED, CHROME_EXTENSION_IDS,
+  SURVEY_*, SC_*) is removed and the app restarts. The what-if may not list them.
+  Without RETENTION_DRY_RUN the next retention run deletes accounts for real.
+WARNING: Key Vault purge protection cannot be turned off once it is on.
+WARN
+if [ -z "$APP_URL" ]; then
+  echo "WARNING: $PARAMS sets no appUrl. On the live app this moves sign-in and CORS to $TARGET_HOST, and users cannot log in."
+fi
+if grep -q '^param customHostnames = \[$' "$PARAMS" && ! grep -q '^param bindManagedCertificates = true' "$PARAMS"; then
+  echo "WARNING: $PARAMS lists custom hostnames without bindManagedCertificates = true. Their certificates are detached and HTTPS stops working."
+fi
+printf 'Type %s to continue: ' "$TARGET_HOST"
+CONFIRM=''
+read -r CONFIRM || true
+if [ "$CONFIRM" != "$TARGET_HOST" ]; then
+  echo "Not confirmed. Nothing was changed." >&2
+  exit 1
+fi
+
+[ "$GROUP_EXISTS" = true ] || az group create --name "$RG" --location "$LOCATION" --output none
 az deployment group create \
   --name "tracktoolkit-$(date +%Y%m%d%H%M%S)" \
   --resource-group "$RG" \
   --template-file "$HERE/main.bicep" \
-  --parameters "${TT_PARAMS:-$HERE/main.bicepparam}" \
+  --parameters "$PARAMS" \
   --output table
 
 put_secret() { # name, value

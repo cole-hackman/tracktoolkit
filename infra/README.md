@@ -18,14 +18,32 @@ operator's quick reference.
 
 ```bash
 # First time: pick a strong password; it is stored in Key Vault as postgres-admin-password.
-TT_PG_ADMIN_PASSWORD='...' infra/deploy.sh
-# Later runs: read it back rather than inventing a new one.
-TT_PG_ADMIN_PASSWORD="$(az keyvault secret show --vault-name tracktoolkit-kv --name postgres-admin-password --query value -o tsv)" infra/deploy.sh
+TT_PARAMS=infra/main.bicepparam TT_PG_ADMIN_PASSWORD='...' infra/deploy.sh
+# The live app: read the password back rather than inventing a new one.
+TT_PARAMS=infra/main.cutover.bicepparam TT_PG_ADMIN_PASSWORD="$(az keyvault secret show --vault-name tracktoolkit-kv --name postgres-admin-password --query value -o tsv)" infra/deploy.sh
 ```
+
+`TT_PARAMS` is required. `main.cutover.bicepparam` holds the live app's values;
+`main.bicepparam` uses the same app name but sets no domain, so applying it to
+the live app breaks sign-in. The script prints an ARM what-if and deploys only
+after you type the host it is about to change.
+
+The template replaces the whole app-settings list. Before a run, list what is
+set by hand and not in `main.bicep`, and add it back afterwards:
+`az webapp config appsettings list -n tracktoolkit -g rg-tracktoolkit --query "[].name" -o tsv`.
 
 Optional environment: `TT_CLIENT_IP` (adds a Postgres firewall rule for your
 workstation), `TT_SECRET_*` (writes the matching Key Vault secret; see the
 header of `deploy.sh` for the full list).
+
+### Delete protection
+
+`main.bicep` puts a `CanNotDelete` lock on the Postgres server and on the Key
+Vault, and turns on vault purge protection. **Purge protection is irreversible
+once deployed.** The deployer needs Owner or User Access Administrator to create
+the locks. While the Postgres lock exists, deleting a database or a firewall
+rule (for example `operator-client-ip`) through ARM is refused; remove the lock
+first, then redeploy to restore it.
 
 ## Deploy the application
 
@@ -33,8 +51,8 @@ header of `deploy.sh` for the full list).
 #52, 2026-09-22, which replaced DigitalOcean's `deploy_on_push`), so merging to
 `main` is deploying. Pushes that only touch `**.md`, `docs/**`, `infra/**`,
 `.gitignore` or `LICENSE` skip the run; infrastructure changes go through
-`infra/deploy.sh` instead. Manual dispatch stays for redeploys and for
-deploying a non-`main` ref (`gh workflow run azure-deploy.yml --ref <branch>`).
+`infra/deploy.sh` instead. Manual dispatch stays for redeploys, including
+of an older commit on `main` (the `ref` input); any other commit is refused.
 It builds on Linux so the
 Prisma engine matches the App Service image, runs the Jest suite, builds the
 Next.js static export, and ships one zip. Oryx is disabled on the app

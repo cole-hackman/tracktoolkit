@@ -1,4 +1,5 @@
-// Parameters for the parallel (no-traffic) stack. Secrets are NOT here:
+// Parameters for a stack with no custom domain. NOT the live app's values: those
+// are in main.cutover.bicepparam, which uses the same baseName. Secrets are NOT here:
 // postgresAdminPassword and deployerObjectId come from the environment that
 // infra/deploy.sh sets up. Cutover values live on prep/domain-switch.
 using 'main.bicep'
