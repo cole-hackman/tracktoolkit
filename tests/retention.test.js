@@ -1,5 +1,7 @@
 import { jest } from '@jest/globals';
 
+const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
+
 // A fixed clock so every cutoff assertion is an exact date, not a tolerance.
 const NOW = Date.parse('2026-09-22T12:00:00.000Z');
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -499,8 +501,16 @@ describe('the Feedback model may not exist yet', () => {
 });
 
 describe('scheduler', () => {
-  beforeEach(() => { jest.useFakeTimers({ now: NOW }); });
-  afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); });
+  beforeEach(() => { process.env.NODE_ENV = 'production'; jest.useFakeTimers({ now: NOW }); });
+  afterEach(() => { process.env.NODE_ENV = ORIGINAL_NODE_ENV; jest.clearAllTimers(); jest.useRealTimers(); });
+
+  test.each(['development', 'test', ''])('NODE_ENV=%p schedules nothing', async (nodeEnv) => {
+    process.env.NODE_ENV = nodeEnv;
+    expect(startRetentionScheduler()).toBeNull();
+    jest.advanceTimersByTime(40 * DAY_MS);
+    await flush();
+    expect(operationLogDeleteMany).not.toHaveBeenCalled();
+  });
 
   test('RETENTION_ENABLED=false disables it entirely', () => {
     process.env.RETENTION_ENABLED = 'false';
@@ -605,7 +615,9 @@ describe('RETENTION_INTERVAL_MS is clamped to the deletion deadline', () => {
 
   test('the scheduler uses the clamped value, not the configured one', async () => {
     process.env.RETENTION_INTERVAL_MS = String(7 * DAY);
+    process.env.NODE_ENV = 'production';
     const interval = startRetentionScheduler();
+    process.env.NODE_ENV = ORIGINAL_NODE_ENV;
     try {
       jest.advanceTimersByTime(10 * 60 * 1000);   // the initial run
       await flush();

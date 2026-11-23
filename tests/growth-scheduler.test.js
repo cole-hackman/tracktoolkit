@@ -42,7 +42,7 @@ jest.unstable_mockModule('../server/lib/pacing.js', () => ({
 const { encrypt } = await import('../server/lib/crypto.js');
 const { soundcloudClient, clearRecentRotations } =
   await import('../server/lib/soundcloud-client.js');
-const { runScheduledFollowbackChecks } = await import('../server/lib/growth-scheduler.js');
+const { runScheduledFollowbackChecks, startGrowthScheduler } = await import('../server/lib/growth-scheduler.js');
 
 const KEY = process.env.ENCRYPTION_KEY;
 const ORIGINAL_FETCH = global.fetch;
@@ -146,5 +146,24 @@ describe('the scheduled follow-back check refreshes inside a token context', () 
     expect(result).toEqual({ usersChecked: 0, actionsChecked: 0 });
     expect(sc.oauthCalls).toBe(0);
     expect(global.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('startGrowthScheduler', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  beforeEach(() => { jest.useFakeTimers(); });
+  afterEach(() => { process.env.NODE_ENV = originalNodeEnv; jest.clearAllTimers(); jest.useRealTimers(); });
+
+  test.each(['development', 'test', ''])('NODE_ENV=%p schedules nothing', (nodeEnv) => {
+    process.env.NODE_ENV = nodeEnv;
+    expect(startGrowthScheduler(soundcloudClient)).toBeNull();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test('production schedules the daily check', () => {
+    process.env.NODE_ENV = 'production';
+    const interval = startGrowthScheduler(soundcloudClient);
+    expect(interval).not.toBeNull();
+    clearInterval(interval);
   });
 });
