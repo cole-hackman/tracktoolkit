@@ -410,6 +410,25 @@ All `/growth/*` routes are `authenticateUser`; the write-heavy ones also carry
 `heavyOperationRateLimiter`. Follow caps are enforced server-side (50/24h +
 30-minute session cooldown) regardless of what the client requests.
 
+**The caps follow the SoundCloud account, not the `User` row.**
+`GrowthAction` rows are keyed by `User.id` and cascade away with the account,
+and the next login makes a new `User.id`, so counting the table alone let
+"delete account, log in again" reset both limits. `getGrowthBudget(prisma,
+userId, soundcloudId)` also reads an in-memory ledger in `growth-engine.js`
+(`soundcloudId → timestamps`, pruned to 24 h on every read and write):
+`used24h` is the larger of the two counts and the cooldown runs from the later
+of the two last actions. A follow is recorded the moment SoundCloud accepts
+it, **before** the `growthAction.create`, so a follow whose row write fails
+still counts; a session start and a like start the cooldown only. Both routes
+(`/growth/limits`, `/growth/engage`) and `startEngagementJob` take
+`req.user.soundcloudId`. Two limits, both deliberate: the ledger **resets on
+restart** and is per-process (sound only because the app is pinned to one
+worker), and the durable alternative — a table keyed by an HMAC of the
+SoundCloud id, purged after 24 h — was skipped for privacy, because it would
+keep a per-account database record past account deletion. The ledger outlives
+deletion too, but only in memory, for at most a day, and only this check reads
+it. `tests/routes/growth-limits.test.js` pins delete → re-login → 429.
+
 **Genre focus** (`genre` on `POST /growth/discover`, one of
 `GENRE_FOCUS_SLUGS` in `server/lib/genres.js`; the client list is
 `frontend-UI/src/lib/genres.ts` and `tests/genre-list-parity.test.js` fails if
@@ -1059,25 +1078,6 @@ Every SoundCloud call goes through `scRequest()` in `soundcloud-client.js`
 `sleep(SC_WRITE_PACING_MS)` from `server/lib/pacing.js` — don't hardcode a
 delay.
 
-### Error Sanitization
-
-`server/middleware/rateLimiter.js` and the global error handler both strip patterns like `token=`, `secret=`, `password=`, `encryption_key=` from error messages and JSON responses before they reach the client.
-
-### Login Pre-warming
-
-Before the OAuth redirect, the frontend pings `/health` (with a 1.2s timeout) to
-warm the backend and reduce OAuth callback latency. It was written for a
-free-tier dyno that slept; App Service has `alwaysOn`, so it now buys much
-less — the timeout means it costs nothing either way, so it stays.
-
----
-
-## Known Limitations & Edge Cases
-
-1. **500-Track Playlist Cap**: SoundCloud enforces this server-side. Auto-splitting creates multiple playlists (e.g., "My Mix (1/3)"). Users must manage multiple playlists instead of one.
-
-2. **Rate Limiting (429)**: SoundCloud's limits are undocumented. The app uses 300–500ms delays between API calls and respects `Retry-After` headers. Large bulk operations (unlike 1000+ tracks) will be slow and may still occasionally 429.
-
 **An id that goes into a SoundCloud path is validated as a whole positive
 integer, never with `parseInt`.** `parseInt("2/../../me/followings/777?")` is
 2, which is how a merge source id once reached `/playlists/${id}` (and its
@@ -1110,6 +1110,25 @@ number, not the caller's value, in the path
 /playlists/:id`'s `tracks`/`remove` and from-likes' `trackIds` still check
 with `parseInt`, but those ids only go into the JSON body as
 `soundcloud:tracks:N` URNs, never into a path.
+
+### Error Sanitization
+
+`server/middleware/rateLimiter.js` and the global error handler both strip patterns like `token=`, `secret=`, `password=`, `encryption_key=` from error messages and JSON responses before they reach the client.
+
+### Login Pre-warming
+
+Before the OAuth redirect, the frontend pings `/health` (with a 1.2s timeout) to
+warm the backend and reduce OAuth callback latency. It was written for a
+free-tier dyno that slept; App Service has `alwaysOn`, so it now buys much
+less — the timeout means it costs nothing either way, so it stays.
+
+---
+
+## Known Limitations & Edge Cases
+
+1. **500-Track Playlist Cap**: SoundCloud enforces this server-side. Auto-splitting creates multiple playlists (e.g., "My Mix (1/3)"). Users must manage multiple playlists instead of one.
+
+2. **Rate Limiting (429)**: SoundCloud's limits are undocumented. The app uses 300–500ms delays between API calls and respects `Retry-After` headers. Large bulk operations (unlike 1000+ tracks) will be slow and may still occasionally 429.
 
 3. **Token Refresh Timing**: Tokens are only refreshed on-demand when a 401 occurs. There's no proactive refresh daemon. If a token expires mid-session, the next request triggers a refresh and retry — transparent to the user, but adds latency.
 

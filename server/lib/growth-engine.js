@@ -43,14 +43,84 @@ export const GROWTH_BATCH_MAX = 50;
 const BATCH_DELAY_MIN_MS = 2000;
 const BATCH_DELAY_JITTER_MS = 3000;
 
+/* ── Follow ledger keyed by SoundCloud account ─────────────────────────────
+ * GrowthAction rows are keyed by the internal User.id and cascade-delete with
+ * the user, and the next login creates a new User.id. Counted from the table
+ * alone, "delete account, log in again" handed back a fresh 50-follow budget
+ * and no cooldown — against the very account SoundCloud would flag.
+ *
+ * This ledger remembers, per SoundCloud id, when follows succeeded upstream
+ * and when actions/sessions happened, for 24 hours. getGrowthBudget takes the
+ * stricter of it and the table. Deliberate limits:
+ * - In memory, so a restart forgets it. That is sound only because the app is
+ *   pinned to one worker (infra/main.bicep); a second instance would keep its
+ *   own ledger.
+ * - The durable alternative — a table keyed by an HMAC of the SoundCloud id,
+ *   purged after 24 h — was skipped on purpose, for privacy: it would write a
+ *   per-account record to the database that outlives account deletion. The
+ *   ledger also outlives deletion, but only in process memory and for at most
+ *   24 hours, and nothing reads it except this budget check.
+ * - Bounded: every read and write drops timestamps older than the window, and
+ *   an account with nothing left is removed from the map.
+ */
+const LEDGER_WINDOW_MS = 24 * 60 * 60 * 1000;
+const followLedger = new Map(); // String(soundcloudId) -> { follows: number[], actions: number[] }
+
+function ledgerKey(soundcloudId) {
+  if (soundcloudId === null || soundcloudId === undefined || soundcloudId === '') return null;
+  return String(soundcloudId);
+}
+
+function pruneLedgerEntry(key, now) {
+  const entry = followLedger.get(key);
+  if (!entry) return null;
+  const cutoff = now - LEDGER_WINDOW_MS;
+  entry.follows = entry.follows.filter((t) => t > cutoff);
+  entry.actions = entry.actions.filter((t) => t > cutoff);
+  if (entry.follows.length === 0 && entry.actions.length === 0) {
+    followLedger.delete(key);
+    return null;
+  }
+  return entry;
+}
+
+/**
+ * Record a growth event for a SoundCloud account. `kind` is 'follow' (counts
+ * against the cap and starts the cooldown) or 'action' (a session start or a
+ * like: starts the cooldown only, as any GrowthAction row does).
+ */
+export function recordGrowthEvent(soundcloudId, kind) {
+  const key = ledgerKey(soundcloudId);
+  if (!key) return;
+  const now = Date.now();
+  // Sweep every account on a write, so accounts that never come back cannot
+  // accumulate; one entry per growth user in the last day is the ceiling.
+  for (const k of followLedger.keys()) pruneLedgerEntry(k, now);
+  const entry = followLedger.get(key) || { follows: [], actions: [] };
+  if (kind === 'follow') entry.follows.push(now);
+  entry.actions.push(now);
+  followLedger.set(key, entry);
+}
+
+function readLedger(soundcloudId) {
+  const key = ledgerKey(soundcloudId);
+  const entry = key ? pruneLedgerEntry(key, Date.now()) : null;
+  if (!entry) return { follows: 0, lastActionAt: null };
+  return { follows: entry.follows.length, lastActionAt: Math.max(...entry.actions) };
+}
+
 /**
  * Compute the user's remaining follow budget and session cooldown.
  * Counts every follow action in the last 24h (reversed or not — reversing
  * doesn't refund budget, since the write still happened on SoundCloud).
+ *
+ * `soundcloudId` reads the in-memory ledger above, so the budget follows the
+ * SoundCloud account rather than the User row: the larger of the two counts
+ * wins, and the cooldown runs from the later of the two last actions.
  */
-export async function getGrowthBudget(prisma, userId) {
+export async function getGrowthBudget(prisma, userId, soundcloudId) {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const used24h = await prisma.growthAction.count({
+  const dbUsed24h = await prisma.growthAction.count({
     where: { userId, actionType: 'follow', createdAt: { gte: since } },
   });
 
@@ -60,9 +130,16 @@ export async function getGrowthBudget(prisma, userId) {
     select: { createdAt: true, sessionId: true },
   });
 
+  const ledger = readLedger(soundcloudId);
+  const used24h = Math.max(dbUsed24h, ledger.follows);
+  const lastActionAt = Math.max(
+    lastAction ? new Date(lastAction.createdAt).getTime() : -Infinity,
+    ledger.lastActionAt ?? -Infinity,
+  );
+
   let cooldownRemainingMs = 0;
-  if (lastAction) {
-    const elapsed = Date.now() - new Date(lastAction.createdAt).getTime();
+  if (Number.isFinite(lastActionAt)) {
+    const elapsed = Date.now() - lastActionAt;
     cooldownRemainingMs = Math.max(0, GROWTH_SESSION_COOLDOWN_MS - elapsed);
   }
 
@@ -538,6 +615,9 @@ export class GrowthEngine {
       const target = job.targets[i];
       try {
         await this.soundcloudClient.followUser(target.userId, accessToken, refreshToken);
+        // Before the row write: a follow whose DB write fails still happened
+        // on SoundCloud, so it still counts against the cap.
+        recordGrowthEvent(job.soundcloudId, 'follow');
         job.followed++;
         await prisma.growthAction.create({
           data: {
@@ -567,6 +647,7 @@ export class GrowthEngine {
         }
         try {
           await this.soundcloudClient.likeTrack(target.likeTrackId, accessToken, refreshToken);
+          recordGrowthEvent(job.soundcloudId, 'action');
           job.liked++;
           await prisma.growthAction.create({
             data: {
@@ -607,6 +688,7 @@ export class GrowthEngine {
 export function startEngagementJob(engine, {
   prisma,
   userId,
+  soundcloudId,
   accessToken,
   refreshToken,
   targets,
@@ -625,6 +707,7 @@ export function startEngagementJob(engine, {
 
   const job = {
     userId,
+    soundcloudId,
     sessionId: `sess_${Date.now()}`,
     sessionLabel,
     inspirationIds,
@@ -642,6 +725,9 @@ export function startEngagementJob(engine, {
     finishedAt: null,
   };
   engagementJobs.set(userId, job);
+  // The session start alone begins the cooldown, as it would in the ledger's
+  // absence once the first follow row landed.
+  recordGrowthEvent(soundcloudId, 'action');
 
   // Fires exactly once when the job reaches any terminal state — complete,
   // cancelled, or crashed. The route uses it to invalidate the followings and
