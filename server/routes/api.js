@@ -20,7 +20,7 @@ import {
 } from '../lib/pacing.js';
 import { runBulkDelete, summarizeBulk, createUserRunLock } from '../lib/bulk-write.js';
 import { extractNumericId, normalizeResource, normalizeResourceV2, normalizeTrackForLibraryBrowser, normalizePlaylistForLibraryBrowser } from '../lib/normalize.js';
-import { getCachedResolve, setCachedResolve } from '../lib/resolve-cache.js';
+import { getCachedResolve, setCachedResolve, isShareableResolve } from '../lib/resolve-cache.js';
 import {
   CACHE_TTL,
   getCachedUserPayload,
@@ -1403,8 +1403,9 @@ async function handleResolve(req, res) {
     const cleaned = sanitizeUrl(rawUrl);
     if (!cleaned) return res.status(400).json({ error: 'Invalid SoundCloud URL' });
 
-    const cached = getCachedResolve(cleaned);
-    if (cached) {
+    const cachedEntry = getCachedResolve(cleaned);
+    if (cachedEntry) {
+      const cached = cachedEntry.v1;
       logOperation({
         userId: req.user.id,
         action: 'resolve',
@@ -1415,7 +1416,10 @@ async function handleResolve(req, res) {
       });
       if (!useV2) return res.json(cached);
       return res.json({
-        data: normalizeResourceV2(cached) || cached,
+        // The v2 payload stored at write time. Running normalizeResourceV2 on
+        // the v1 object here would fall through its heuristics and label every
+        // track and playlist `user` (v1 has `type`, not `kind`).
+        data: cachedEntry.v2 || cached,
         meta: {
           version: '2',
           source_url: cleaned,
@@ -1474,12 +1478,18 @@ async function handleResolve(req, res) {
       }
     } catch {}
 
-    setCachedResolve(cleaned, normalized);
+    const normalizedV2 = normalizeResourceV2(resource);
+    // The cache is shared by every user and keyed by URL alone, so only what
+    // anyone could resolve goes in. A private track or playlist resolved with
+    // this user's token must not be served to the next caller from memory.
+    if (isShareableResolve(resource)) {
+      setCachedResolve(cleaned, { v1: normalized, v2: normalizedV2 });
+    }
     if (!useV2) {
       res.json(normalized);
     } else {
       res.json({
-        data: normalizeResourceV2(resource),
+        data: normalizedV2,
         meta: {
           version: '2',
           source_url: cleaned,
@@ -3662,11 +3672,13 @@ router.post('/resolve/batch', authenticateUser, heavyOperationRateLimiter, valid
         return { result: { url: rawUrl, status: 'error', error: 'Invalid SoundCloud URL' }, index };
       }
 
-      // Check cache first
+      // Check cache first. Entries are { v1, v2 }, both built from the raw
+      // resource when it was cached (see resolve-cache.js); v2 cannot be
+      // rebuilt from v1, which carries `type`, not `kind`.
       const cached = getCachedResolve(url);
       if (cached) {
-        const cachedData = useV2 ? (normalizeResourceV2(cached) || cached) : cached;
-        return { result: { url: rawUrl, status: 'ok', data: cachedData }, index, resource: cached };
+        const cachedData = useV2 ? (cached.v2 || cached.v1) : cached.v1;
+        return { result: { url: rawUrl, status: 'ok', data: cachedData }, index, resource: cached.v1 };
       }
 
       try {
@@ -3684,8 +3696,12 @@ router.post('/resolve/batch', authenticateUser, heavyOperationRateLimiter, valid
         if (normalizedV1) {
           if (normalizedV1.type === 'track') harvestTracks([resource]);
           else if (normalizedV1.type === 'playlist') harvestPlaylists([resource]);
-          setCachedResolve(url, normalizedV1);
-          const payload = useV2 ? normalizeResourceV2(resource) : normalizedV1;
+          const normalizedV2 = normalizeResourceV2(resource);
+          // Shared, URL-keyed cache: public resources and user profiles only.
+          if (isShareableResolve(resource)) {
+            setCachedResolve(url, { v1: normalizedV1, v2: normalizedV2 });
+          }
+          const payload = useV2 ? normalizedV2 : normalizedV1;
           return { result: { url: rawUrl, status: 'ok', data: payload }, index, resource: normalizedV1 };
         }
         return { result: { url: rawUrl, status: 'error', error: 'Could not parse resource' }, index };
