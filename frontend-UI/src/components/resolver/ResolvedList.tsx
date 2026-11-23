@@ -5,6 +5,7 @@ import NextLink from "next/link";
 import { Link2, ExternalLink, Music, Users, ListMusic, X, Download, RotateCcw, Copy } from "lucide-react";
 import { Button, ListSearch, Panel, Select, useAnnounce } from "@/components/ui";
 import { useListSearch } from "@/lib/list-search";
+import { csvEscape } from "@/lib/csv";
 import {
   formatCompactNumber,
   formatDuration,
@@ -106,7 +107,9 @@ export function ResolvedList({
             ? r.data.user?.username || r.data?.username || ""
             : r.data?.username || "";
         const cells = [r.index, r.status, r.data?.type || "", title || "", artist, r.url, r.data?.permalink_url || ""];
-        return cells.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",");
+        // Titles and usernames are other people's text: csvEscape adds the
+        // spreadsheet formula guard on top of the quoting.
+        return cells.map(csvEscape).join(",");
       }),
     ];
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });

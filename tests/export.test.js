@@ -21,8 +21,13 @@ function formatTitleArtistUrlLine(track) {
   return url ? `${base} | ${url}` : base;
 }
 
+// Mirrors csvEscape in frontend-UI/src/lib/csv.ts, which escapeCsvCell now
+// delegates to (formula guard on strings; the real coverage is
+// frontend-UI/e2e/export-csv.unit.spec.ts).
 function escapeCsvCell(value) {
-  return `"${String(value ?? "").replaceAll('"', '""')}"`;
+  const raw = String(value ?? "");
+  const safe = typeof value === "string" && /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+  return `"${safe.replaceAll('"', '""')}"`;
 }
 
 function tracksToCsv(tracks) {
