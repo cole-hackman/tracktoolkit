@@ -259,7 +259,8 @@ looked at once, on the analysis date.
 - The run is stopped early only for harm: a guardrail far out of line, or a
   bug in the panel. Stop with `FLAGS_KILL=guided-first-run`. An experiment
   stopped early is reported as stopped, with its estimate and interval, and
-  is not a result.
+  is not a result. The console marks such a run "Stopped" and shows no
+  comparison for it.
 - If fewer than `n` accounts per arm are enrolled at `END`, `END` may be
   moved later once, using only the enrolment counts. Record the change here
   with its date. The outcome columns are not consulted for this.
@@ -495,6 +496,10 @@ not pass.
 - The exposure is recorded when the server answers. If the answer is lost on
   the way to the page, a guided account sees control on that load and is
   still counted as guided. This can only make the measured effect smaller.
+- `playlist-bulk-remove-tracks` (Keyword Search's bulk remove) logs
+  `partial` when every playlist failed and `success` when every playlist was
+  skipped, so it can count as a write when nothing was written. It is not one
+  of the panel's three jobs and it affects both arms.
 - A person with two SoundCloud accounts can be in both arms.
 - "Hide this" removes the panel for a browser; the account stays in the
   guided arm.

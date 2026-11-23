@@ -228,8 +228,10 @@ row). Everything ships at 0%.
   (`FLAG_<KEY>_PERCENT`, `_START`, `_END`, `FLAGS_KILL`,
   `EXPERIMENT_EXCLUDE_IDS`; see Environment Variables). No deploy, and no
   database read on the request path. **Every misread fails towards off**: a
-  bad percent is 0, a bad start is no start, a bad end closes enrolment, and a
-  `FLAGS_KILL` entry that names no flag kills them all. Each is reported in
+  bad percent is 0, a bad start is no start, a bad end closes enrolment
+  (impossible dates such as February 30th are refused, not rolled over), an
+  `EXPERIMENT_EXCLUDE_IDS` entry that is not an id stops every experiment
+  enrolling, and a `FLAGS_KILL` entry that names no flag kills them all. Each is reported in
   the boot log (`[flags] …`) and the admin console.
 - **Admins** are never enrolled in an experiment, and have a rollout flag at
   any percent including 0 (the internal stage). A kill beats both.
@@ -256,8 +258,11 @@ row). Everything ships at 0%.
 - `GET /api/admin/experiments` lists every flag with the configuration the
   process is running; `GET /api/admin/experiments/:key/readout` gives, per
   arm, enrolled / window complete / activated / rate and the guardrails. The
-  test between arms is `null` until enrolment has closed and every window has
-  (one look, pre-registered). The same numbers come from the `-- name:
+  test between arms is `null` until the readout is `final`: a valid END has
+  passed, END + 7 days has passed (an account first seen just before END can
+  be enrolled until then), and every window has closed. A run that ended any
+  other way (a kill, percent 0, settings gone) is `stopped` and never shows
+  a test. The same numbers come from the `-- name:
   readout` SQL in the experiment's document;
   `tests/routes/experiment-readout.integration.test.js` runs both on a real
   Postgres (`TT_TEST_DATABASE_URL`, `--runInBand` if the downloads
@@ -1041,7 +1046,7 @@ clone, and every bulk write.
 | `FLAG_<KEY>_PERCENT` | No | Rollout percent for a flag in `server/lib/flags.js`, a whole number 0–100 (`guided-first-run` → `FLAG_GUIDED_FIRST_RUN_PERCENT`). Unset means the flag's default, which is 0. Anything else (`50%`, `0.5`) is refused and read as 0. Read per request; saving it restarts the app, no deploy. **Not in Bicep, so `infra/deploy.sh` removes it** and the flag falls back to 0 |
 | `FLAG_<KEY>_START` / `FLAG_<KEY>_END` | No | An experiment's cohort: accounts whose first login (`users."createdAt"`) is in `[START, END)`. ISO-8601 **with a zone** (`2026-12-01T00:00:00Z`); a bare date is refused. An experiment limited to new users enrols nobody without a valid START. An END that does not parse closes enrolment rather than leaving it open |
 | `FLAGS_KILL` | No | The kill switch: `all`, or comma-separated flag keys. A killed flag is off for everyone, admins and already-enrolled accounts included. An entry that is not a flag key kills every flag, on purpose: a typo must stop more, not less |
-| `EXPERIMENT_EXCLUDE_IDS` | No | Comma-separated SoundCloud ids never enrolled in any experiment (the owner's other accounts, testers). Admins are excluded already |
+| `EXPERIMENT_EXCLUDE_IDS` | No | Comma-separated SoundCloud ids never enrolled in any experiment (the owner's other accounts, testers). Admins are excluded already. Numbers and commas only: one entry that is not an id (`900;901`, a username) stops every experiment enrolling until it is fixed, because dropping it would enrol the account it was meant to keep out |
 | `RETENTION_ENABLED` | No | Set to `false` to disable the daily retention purge. **Defaults to on** — a retention policy that is off by default is not a policy. Do not use this to preview a sweep: it schedules nothing, so it logs nothing, and the silence is indistinguishable from "nothing to delete". Use `RETENTION_DRY_RUN` |
 | `RETENTION_DRY_RUN` | No | Exactly `true` (case-insensitive, trimmed; `1` and `yes` are deliberately **not** accepted) makes each scheduled run count everything and write nothing — every step logs `would remove N`, the user sweeps still log `will remove N users`, and no delete, update or upsert is issued. Intended for the first deploy after a retention change: read the counts, satisfy yourself, then remove the variable. **Set it in the App Service configuration, not in Bicep** — `infra/main.bicep` declares `appSettings` as a complete list with no parameter for this flag, and ARM replaces the whole list, so any `infra/deploy.sh` run silently ends the dry run. Code deploys are safe: the GitHub workflow is a zip deploy and does not touch settings |
 | `RETENTION_INTERVAL_MS` | No | Sweep period (default 24h), **clamped to a 24h maximum in code** (`resolveIntervalMs`) and logged when a larger value is refused. First run is always 10 min after boot. Compliance-relevant, not a tuning knob: a longer period would eat the day of margin the 6-day disconnect window buys against the terms' 7-day deletion deadline, so it is enforced rather than documented. Lowering it is always allowed |

@@ -806,9 +806,10 @@ resolver. Admin labels for `batch-resolver` stay, for old rows.
   are inputs to the hash; changing any reassigns every account. The recorded
   exposure still wins for accounts already enrolled, but new ones would split
   differently and the arms would stop being comparable.
-- **A flag's percent, start and end fail closed.** `50%` is 0, a date with no
-  zone is no start, an unparseable end closes enrolment, and an unknown name
-  in `FLAGS_KILL` kills every flag. After changing a setting, read the
+- **A flag's settings fail closed.** `50%` is 0, a date with no zone is no
+  start, an unparseable or impossible end closes enrolment, one bad entry in
+  `EXPERIMENT_EXCLUDE_IDS` stops every experiment enrolling, and an unknown
+  name in `FLAGS_KILL` kills every flag. After changing a setting, read the
   Experiments tab or the `[flags]` boot line; do not assume it took.
 - **An exposure is only written from the dashboard.** `/api/auth/me` lists
   candidates and writes nothing. If another page ever needs an experiment's
