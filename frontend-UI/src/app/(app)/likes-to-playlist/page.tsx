@@ -30,6 +30,7 @@ import { invalidatePlaylistCaches, useLikesQuery, usePlaylistsQuery } from "@/li
 import { asArray } from "@/lib/api-shape";
 import { useListSearch } from "@/lib/list-search";
 import { useListSelection } from "@/lib/useListSelection";
+import posthog from "posthog-js";
 
 interface Track {
   id: number;
@@ -210,6 +211,10 @@ export default function LikesToPlaylistPage() {
         setOutcome(
           buildOutcome(data, addMode === "existing", selectedTracks.size, playlistName, targetPlaylist?.title),
         );
+        posthog.capture("liked_tracks_playlist_saved", {
+          destination: addMode,
+          track_count: selectedTracks.size,
+        });
         // Ready for the next run, as "Create Another" used to do.
         setSelectedTracks(new Set());
         setPlaylistName("");

@@ -52,6 +52,7 @@ import {
   useLikesQuery,
 } from "@/lib/queries";
 import { asArray } from "@/lib/api-shape";
+import posthog from "posthog-js";
 
 interface Playlist {
   id: number;
@@ -494,6 +495,13 @@ export default function PlaylistModifierPage() {
 
       setTransfer(null);
       setOutcome(transferOutcome);
+      if (!data.noop) {
+        posthog.capture("track_transferred", {
+          action: transfer.action,
+          source: isLikedTracksView ? "liked_tracks" : "playlist",
+          also_unlike_requested: isLikedTracksView && alsoUnlike,
+        });
+      }
       if (selectedPlaylist) {
         await invalidatePlaylistCaches(queryClient, selectedPlaylist.id);
         await Promise.all([selectedPlaylistQuery.refetch(), playlistsQuery.refetch()]);
@@ -550,6 +558,10 @@ export default function PlaylistModifierPage() {
         if (!selectionChanged()) {
           setOutcome(makeOutcome("success", "Playlist saved", "Playlist saved successfully."));
         }
+        posthog.capture("playlist_changes_saved", {
+          track_count: editedIds.length,
+          removed_track_count: removedIds.length,
+        });
         await invalidatePlaylistCaches(queryClient, savedId);
       } else {
         const body = await response.json().catch(() => null);

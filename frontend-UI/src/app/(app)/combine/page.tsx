@@ -27,6 +27,7 @@ import { PlaylistPicker } from "@/components/playlists/PlaylistPicker";
 import { PlaylistChooser } from "@/components/playlists/PlaylistChooser";
 import { invalidatePlaylistCaches, playlistsQueryOptions } from "@/lib/queries";
 import { asArray } from "@/lib/api-shape";
+import posthog from "posthog-js";
 
 interface Playlist {
   id: number;
@@ -230,6 +231,15 @@ export default function CombinePlaylistsPage() {
         const data: MergeResponse = await response.json();
         await invalidatePlaylistCaches(queryClient, targetPlaylist?.id ?? null);
         setOutcome(buildOutcome(data, mergeMode, newPlaylistTitle, targetPlaylist?.title));
+        posthog.capture("playlists_combined", {
+          merge_mode: mergeMode,
+          source_playlist_count: selectedPlaylists.length,
+          source_track_count: totalTracks,
+          delete_sources_requested: deleteAfterMerge,
+          result_playlist_count:
+            (data.playlists?.length ?? (data.playlist ? 1 : 0)) +
+            (data.overflowPlaylists?.length ?? 0),
+        });
         // Ready for the next merge. Sources may have just been deleted, so the
         // old selection must not survive into it.
         setSelectedPlaylists([]);

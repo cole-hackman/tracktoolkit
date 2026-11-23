@@ -1,6 +1,7 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
+import posthog from "posthog-js";
 import { registerSessionExpiredHandler } from "@/lib/api";
 
 interface User {
@@ -35,9 +36,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [apiUnreachable, setApiUnreachable] = useState(false);
+  const identifiedUserId = useRef<string | null>(null);
 
   /** Clear local auth state without redirecting (the api interceptor handles redirects) */
   const clearAuthState = useCallback(() => {
+    const persistedUserId = posthog.get_property("$user_id");
+    if (identifiedUserId.current || persistedUserId) {
+      posthog.reset();
+    }
+    identifiedUserId.current = null;
     setUser(null);
     setIsAuthenticated(false);
   }, []);
@@ -61,7 +68,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (response.ok) {
         const userData = await response.json();
-        setUser({
+        const nextUser = {
           id: userData.userId,
           username: userData.username,
           avatar_url: userData.avatarUrl || "",
@@ -69,12 +76,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           soundcloudId: userData.soundcloudId,
           canDownload: !!userData.canDownload,
           isAdmin: !!userData.isAdmin,
-        });
+        };
+        setUser(nextUser);
         setIsAuthenticated(true);
+
+        // The API's userId is the stable account key. Identify once when the
+        // OAuth session becomes known so events and captured errors inherit it.
+        if (
+          typeof nextUser.id === "string" &&
+          nextUser.id &&
+          identifiedUserId.current !== nextUser.id
+        ) {
+          const persistedUserId = posthog.get_property("$user_id");
+          const currentUserId = identifiedUserId.current || persistedUserId;
+          if (currentUserId && currentUserId !== nextUser.id) posthog.reset();
+          posthog.identify(nextUser.id, {
+            ...(typeof nextUser.username === "string" && nextUser.username
+              ? { username: nextUser.username }
+              : {}),
+            ...(typeof nextUser.display_name === "string" && nextUser.display_name
+              ? { name: nextUser.display_name }
+              : {}),
+          });
+          identifiedUserId.current = nextUser.id;
+        }
       } else {
-        // 401 or any other error — clear local state
-        setIsAuthenticated(false);
-        setUser(null);
+        // 401 or any other error — clear local state and any prior analytics identity.
+        clearAuthState();
 
         // If the server told us the session is invalid, clear the cookie
         // so we don't keep sending a stale token
@@ -107,8 +135,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (error) {
       console.error("Logout failed:", error);
     } finally {
-      setUser(null);
-      setIsAuthenticated(false);
+      clearAuthState();
     }
   };
 
