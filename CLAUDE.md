@@ -495,21 +495,29 @@ sorts on `duration`, `firstSeen` and `lastSeen`, and `format=csv` (the
 current filter set, up to 10,000 rows, no COUNT query). The CSV writer and
 the day-filling helpers (`periodDayCount`, `fillDays`) are shared by
 `/daily` and `/catalog/daily`. `tests/routes/admin-catalog.test.js` covers
-the re-resolve guards and the CSV contract.
+the re-resolve guards, the CSV contract and its formula guard.
 
 **`/feedback/*` and `/feedback-items*` are different tables.** `/feedback/*`
 is the retired SongSwipe beta survey (`BetaSignup`); `/feedback-items*` is the
 live in-app feedback form (`Feedback`). The path spelling is the only thing
 keeping them apart, so do not "tidy" one into the other.
 
-**`/feedback-items.csv` guards against formula injection.** `message` and
-`adminNote` are free text, and Excel / Sheets / LibreOffice execute a cell that
-opens with `=`, `+`, `-`, `@`, tab or CR — so a report reading
-`=HYPERLINK("http://evil...")` would fire when an admin opens the export. Cells
-starting with any of those get a leading apostrophe, and `\r` is in the
-quote-trigger class so a lone carriage return cannot split one report into two
-rows. The older `feedback/beta-emails` export does **not** have this guard yet
-(its fields are far less free-form) — that is a known follow-up.
+**Every CSV export guards against formula injection.** Track titles, artist
+names, feedback messages and admin notes are other people's text, and Excel /
+Sheets / LibreOffice execute a cell that opens with `=`, `+`, `-`, `@`, tab or
+CR — so a title reading `=HYPERLINK("http://evil...")` would fire when an admin
+opens the export. On the server every admin CSV (catalog tracks, playlists and
+artists, downloads tracks, `feedback/beta-emails`, `/feedback-items.csv`) goes
+through `sendCsv` → `csvCell` in `routes/admin.js`; do not add a CSV route with
+its own escape. A **string** starting with any of those gets a leading
+apostrophe, and `\r` is in the quote-trigger class so a lone carriage return
+cannot split one row into two. Numbers and bigints are never prefixed: they
+cannot carry a formula, and `'-1` would stop a negative count sorting as a
+number. In the browser the same rule is `csvEscape` in
+`frontend-UI/src/lib/csv.ts`, the one definition behind `downloadCsv`, the
+Export tool's `escapeCsvCell` (`lib/export.ts`) and the resolver's CSV
+(`ResolvedList.tsx`). Tests: `tests/routes/admin-catalog.test.js`,
+`tests/routes/admin-feedback.test.js`, `frontend-UI/e2e/export-csv.unit.spec.ts`.
 
 The `PATCH` writes `status` and `adminNote` and nothing else — no admin action
 can rewrite what a user said. An empty patch is refused rather than issued as a
