@@ -559,7 +559,8 @@ CSV export; title/artist from the catalog, else from the gate report), people
 (per-channel counts and an `extension` badge = any gate report from that
 account, ever) and a recent-events trail. `tests/routes/downloads-usage.integration.test.js`
 runs the SQL against a real Postgres when `TT_TEST_DATABASE_URL` points at a
-throwaway database; without it the suite skips.
+throwaway database on localhost with `test` in its name (`tests/setup-env.js`
+stops every run otherwise); without it the suite skips.
 
 **Feedback is a view, not a panel in Archive.** `views/FeedbackView.tsx` reads
 the four `/api/admin/feedback-items*` routes: status tabs (with counts from

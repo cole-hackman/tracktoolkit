@@ -5,7 +5,8 @@
  *
  * Skipped unless TT_TEST_DATABASE_URL points at a THROWAWAY database whose
  * schema is in sync (`DATABASE_URL=… npx prisma db push`). It deletes every row
- * in operation_logs, tracks and users, so never point it at anything real.
+ * in operation_logs, tracks and users. tests/setup-env.js stops the run unless
+ * the URL is on localhost and the database name contains "test".
  */
 import { jest } from '@jest/globals';
 import express from 'express';
