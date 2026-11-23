@@ -1050,7 +1050,10 @@ already holds on 127.0.0.1, and that process answers instead: a stray
 listeners on the machine (developer tools and a browser) that was 1 to 3
 failed tests in most runs, a different test each time.
 `tests/setup-loopback.js` (a Jest `setupFiles` entry) points supertest
-at `[::1]` when its server is bound to `::`. A test that opens its own
+at `[::1]` when its server is bound to `::` **and** `::1` exists on an
+interface. The second condition is not implied by the first: Linux with IPv6
+disabled by sysctl still binds `::` but has no `::1`, and without the check
+every request failed there with EADDRNOTAVAIL. A test that opens its own
 server binds it explicitly: `app.listen(0, '127.0.0.1', done)`.
 
 ---

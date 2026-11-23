@@ -13,21 +13,32 @@
  * different test each time.
  *
  * Over the IPv6 loopback the same wildcard socket is reached and an IPv4
- * listener on 127.0.0.1 is not in the way: 0 of 40,000. This applies only
- * when the server really is bound to `::`; anything else (an IPv4-only
- * machine, a server a test bound itself) keeps supertest's own address.
- * A process listening on `[::1]:<the same port>` would still shadow it.
+ * listener on 127.0.0.1 is not in the way: 0 of 40,000. A process listening
+ * on `[::1]:<the same port>` would still shadow it.
+ *
+ * Two conditions, and both are needed:
+ *   - the server really is bound to `::`. A server a test bound itself, or an
+ *     IPv4-only bind, keeps supertest's own address.
+ *   - `::1` exists on an interface. A `::` bind does not prove it: Linux with
+ *     IPv6 switched off by sysctl (`net.ipv6.conf.all.disable_ipv6=1`, or
+ *     `lo` alone) still binds `::`, has no `::1`, and every request would
+ *     fail with EADDRNOTAVAIL. There the stock 127.0.0.1 address is kept,
+ *     which is fine: the collision above is how macOS hands out ports.
  *
  * A test that opens its own server should bind it to 127.0.0.1:
  * `app.listen(0, '127.0.0.1', done)`. That cannot be shadowed at all, but it
  * binds asynchronously, which supertest's own `listen(0)` cannot wait for.
  */
+import os from 'node:os';
 import request from 'supertest';
 
 const { Test } = request;
 const PATCHED = Symbol.for('tracktoolkit.tests.loopbackServerAddress');
 
-if (!Test.prototype[PATCHED]) {
+const hasIpv6Loopback = Object.values(os.networkInterfaces())
+  .some((addresses) => (addresses || []).some((entry) => entry.address === '::1'));
+
+if (hasIpv6Loopback && !Test.prototype[PATCHED]) {
   const serverAddress = Test.prototype.serverAddress;
   Test.prototype.serverAddress = function loopbackServerAddress(app, path) {
     const url = serverAddress.call(this, app, path);
