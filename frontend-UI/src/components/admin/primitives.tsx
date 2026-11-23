@@ -451,9 +451,33 @@ export function Mini({ label, value, tone = "muted", className }: { label: strin
 
 /* ── Table shell ─────────────────────────────────────────────────────── */
 
-export function TableShell({ children, minWidth = 720, className }: { children: React.ReactNode; minWidth?: number; className?: string }) {
+/**
+ * `label` makes the scroll container a named, focusable region. Give one to a
+ * table with nothing focusable inside it: on a phone the table scrolls
+ * sideways, and a scrolling box a keyboard cannot reach is a WCAG 2.1.1
+ * failure (axe: scrollable-region-focusable). A table whose rows hold links
+ * or buttons is already reachable and does not need it.
+ */
+export function TableShell({
+  children,
+  minWidth = 720,
+  className,
+  label,
+}: {
+  children: React.ReactNode;
+  minWidth?: number;
+  className?: string;
+  label?: string;
+}) {
   return (
-    <div className={cn("-mx-4 overflow-x-auto sm:-mx-5", className)}>
+    <div
+      className={cn(
+        "-mx-4 overflow-x-auto sm:-mx-5",
+        label && "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/80",
+        className,
+      )}
+      {...(label ? { role: "region", "aria-label": label, tabIndex: 0 } : {})}
+    >
       <table className="w-full border-collapse text-[12px]" style={{ minWidth }}>
         {children}
       </table>
