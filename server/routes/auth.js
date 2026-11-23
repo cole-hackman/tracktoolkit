@@ -15,6 +15,7 @@ import { invalidateCachedAuth } from '../lib/auth-cache.js';
 import { requestCache } from '../lib/request-cache.js';
 import { dropSnapshots } from '../lib/snapshot-cache.js';
 import { dropInvalidationMarks } from '../lib/social-cache.js';
+import { cancelEngagementJob } from '../lib/growth-engine.js';
 
 const router = express.Router();
 
@@ -173,6 +174,7 @@ router.get('/callback', async (req, res) => {
         expiresAt
       }
     });
+    forgetRecentRotation(user.id); // a held unsaved pair must never overwrite this login's
 
     // Create session data
     const sessionData = {
@@ -295,6 +297,10 @@ router.delete('/account', authenticateUser, async (req, res) => {
       return res.status(400).json({ error: 'Confirmation required: send { "confirm": "DELETE" }' });
     }
     const { id } = req.user;
+    // Stop a running growth job before anything else: it holds the decrypted
+    // tokens in its closure and would keep following and liking for an account
+    // that no longer exists. tests/routes/growth-job-teardown.test.js.
+    cancelEngagementJob(id);
     // Hand the grant back before the row goes, so deleting an account also
     // drops the authorization on SoundCloud's side rather than leaving a live
     // grant pointing at data we no longer hold. Never throws.

@@ -22,6 +22,7 @@ import { invalidateCachedAuth } from './auth-cache.js';
 import { requestCache } from './request-cache.js';
 import { dropSnapshots } from './snapshot-cache.js';
 import { dropInvalidationMarks } from './social-cache.js';
+import { cancelEngagementJob } from './growth-engine.js';
 
 /**
  * Hand back the SoundCloud grant and destroy everything this process or the
@@ -35,6 +36,13 @@ import { dropInvalidationMarks } from './social-cache.js';
  */
 export async function disconnectUser(userId, { accessToken, reason } = {}) {
   if (!userId) throw new Error('disconnectUser requires a userId');
+
+  // A running growth engagement job holds the decrypted pair in its closure
+  // and checks only its own cancel flag before each follow or like, so
+  // destroying the stored tokens does not stop it. Flag it first, before any
+  // await, so no write starts once the teardown has. A write already in
+  // flight cannot be recalled. Covers the revocation path too.
+  cancelEngagementJob(userId);
 
   // Best-effort and non-throwing by construction (see signOut). Done first, so
   // the token is still readable from the caller when we use it.

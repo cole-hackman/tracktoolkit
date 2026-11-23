@@ -537,7 +537,7 @@ export class GrowthEngine {
 
       const target = job.targets[i];
       try {
-        await this.soundcloudClient.followUser(target.userId, accessToken, refreshToken);
+        await this.soundcloudClient.followUser(target.userId, accessToken, refreshToken, { shouldAbort: () => job.cancelRequested });
         job.followed++;
         await prisma.growthAction.create({
           data: {
@@ -555,6 +555,7 @@ export class GrowthEngine {
           },
         });
       } catch (err) {
+        if (err?.code === 'SC_CANCELLED') { job.status = 'cancelled'; break; } // cancelled mid-retry: not a failure
         logger.error(`[GrowthEngine] Batch follow failed for ${target.userId}:`, err?.message || err);
         job.errors.push({ targetId: target.userId, action: 'follow', error: 'Follow failed' });
       }
@@ -566,7 +567,7 @@ export class GrowthEngine {
           break;
         }
         try {
-          await this.soundcloudClient.likeTrack(target.likeTrackId, accessToken, refreshToken);
+          await this.soundcloudClient.likeTrack(target.likeTrackId, accessToken, refreshToken, { shouldAbort: () => job.cancelRequested });
           job.liked++;
           await prisma.growthAction.create({
             data: {
@@ -582,6 +583,7 @@ export class GrowthEngine {
             },
           });
         } catch (err) {
+          if (err?.code === 'SC_CANCELLED') { job.status = 'cancelled'; break; } // cancelled mid-retry: not a failure
           logger.error(`[GrowthEngine] Batch like failed for track ${target.likeTrackId}:`, err?.message || err);
           job.errors.push({ targetId: target.likeTrackId, action: 'like', error: 'Like failed' });
         }

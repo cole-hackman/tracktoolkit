@@ -594,6 +594,19 @@ as the refresh path. It runs in a `finally` immediately after the token
 delete, so no later failure in the teardown can leave the memo holding
 credentials whose row is already gone.
 
+**It must stop a running growth job.** An engagement job started by
+`POST /api/growth/engage` holds the decrypted pair in its closure and checks
+only its own cancel flag before each follow or like, so deleting the `Token`
+row does not stop it. `disconnectUser` (manual and revocation paths alike) and
+`DELETE /api/auth/account` both call `cancelEngagementJob` first, before any
+await. The job checks the flag before each follow and like, and passes it to
+`scRequest` as `shouldAbort`, which asks it again before re-sending after a
+401 refresh or a 429 Retry-After backoff. What is not covered: a request
+already on the wire when the cancel lands cannot be recalled, so at most that
+one write completes after the teardown.
+`tests/routes/growth-job-teardown.test.js` pins both routes, and
+`tests/growth-job-429-cancel.test.js` the backoff.
+
 **Revocation is detected, not merely handled — but only when the user comes
 back.** A user revoking the app from SoundCloud's own settings never tells this
 service, and nothing here asks: detection happens inside a token refresh, which
@@ -622,7 +635,8 @@ fan-out dashboard read — re-presents a token the first call consumed. Reading
 that as revocation deletes a live user's freshly rotated pair and starts the
 six-day account-deletion clock.
 
-Two things stop it. They are **not** equal partners:
+Three things stop it. They are **not** equal partners — the first is the
+correctness mechanism, the other two cover the cases it cannot see:
 
 - **`_resolveInvalidGrant` is the correctness mechanism.** It re-reads the
   stored pair before believing the error. If the stored refresh token is still
@@ -643,6 +657,35 @@ Two things stop it. They are **not** equal partners:
   like the auth memo. The recovery path deliberately does **not** write it: its
   database read and its return are separated by an await, so a write there
   could land after a disconnect had already forgotten it.
+- **A rotated pair that cannot be saved is held, not dropped.** The exchange
+  spends the old refresh token upstream *before* the save, so a failed
+  `token.update` (P2024 pool timeout, reset connection) left the row on a
+  spent token, and the next request was classified as revoked and torn down.
+  `_persistRefreshedTokens` now retries the save three times
+  (`PERSIST_RETRY_DELAYS_MS`, via `sleep` from `pacing.js`), never on P2025
+  (the row is gone: a disconnect or deletion won). If every attempt fails, the
+  new pair goes into `unsavedRotations` — userId → sha256 of each consumed
+  refresh token plus the plaintext pair, no TTL — and the error is rethrown.
+  A caller presenting a consumed token is served the held pair and the save is
+  tried again (`refreshTokensAndPersist`), and `_resolveInvalidGrant` never
+  tears such a token down. The entry is dropped on the first successful save
+  and by `forgetRecentRotation`, so disconnect and deletion clear it with the
+  memo. **It does not survive a restart**: a process that dies holding a pair
+  leaves the row on the spent token, and that user is torn down on their next
+  request exactly as before. The durable fix is a database-side guard (a
+  `rotatedAt` column or a compare-and-swap on `refresh`), the same
+  prerequisite as raising `numberOfWorkers`. Three more guards: the
+  re-exchange in `_resolveInvalidGrant` never re-presents a stored token the
+  held pair replaced (an older captured token would otherwise tear the user
+  down); a resume writes only over a row that still holds a token the pair
+  replaced, never over a later login's pair; and the OAuth callback calls
+  `forgetRecentRotation` after its upsert. A save or resume in flight is told about a forget
+  through a per-user generation (`persistWatches`, kept only while a save is
+  running): once a disconnect, deletion or login has landed mid-save, the pair
+  is never held, remembered or served, and a further retry writes only over a
+  row that still holds a token the pair replaced. All of this narrows a
+  cross-await race and cannot close it; the durable fix is still the
+  `rotatedAt` / compare-and-swap follow-up.
 
 **Every SoundCloud call must run inside a token context**, or the same teardown
 arrives by a different door. `authenticateUser` opens one with
