@@ -502,7 +502,7 @@ is the retired SongSwipe beta survey (`BetaSignup`); `/feedback-items*` is the
 live in-app feedback form (`Feedback`). The path spelling is the only thing
 keeping them apart, so do not "tidy" one into the other.
 
-**Every CSV export guards against formula injection.** Track titles, artist
+**Every CSV export guards the start of each cell against formula injection.** Track titles, artist
 names, feedback messages and admin notes are other people's text, and Excel /
 Sheets / LibreOffice execute a cell that opens with `=`, `+`, `-`, `@`, tab,
 CR or LF — so a title reading `=HYPERLINK("http://evil...")` would fire when an
@@ -522,8 +522,8 @@ definition behind `downloadCsv`, the Export tool's `escapeCsvCell`
 "Could read as a formula" is one pattern, `CSV_FORMULA_PREFIX_RE`, written
 out in both files and held identical by `tests/csv-guard-parity.test.js`. It
 matches a leading tab, CR or LF, and otherwise skips what a spreadsheet does
-not show or may trim (spaces of any width, control characters, zero-width and
-direction marks, a stray BOM) and then looks for `=`, `+`, `-`, `@` or their
+not show or may trim (spaces of any width, control characters, the common
+zero-width and direction marks, a stray BOM) and then looks for `=`, `+`, `-`, `@` or their
 full-width forms `＝ ＋ － ＠`. The reasons: OWASP's list names the line feed and
 the full-width forms ("may be interpreted as formulas in some locales");
 Google's TRIM help says "Google Sheets trims text input into cells by
@@ -534,7 +534,12 @@ known exploit. The value is never changed, only prefixed, and a trigger that
 is not the first visible character (`a=b`, `re-edit`, `x@y.z`,
 `Artist - Title`) is left alone. Not covered: OWASP notes Excel may drop the
 apostrophe when a CSV is saved and reopened, and suggests a tab prefix
-instead, which would put a tab in the data. Tests:
+instead, which would put a tab in the data. Nor is a reader that splits on
+semicolons: `a;=1+1` is one safe cell in a comma file, but split on `;` its
+middle starts with `=` (shown with a CSV parser; not tried in Excel with a
+semicolon list separator). Rarer invisible characters (U+061C, variation
+selectors, tag characters) and other compatibility forms of the operators are
+not matched either. Tests:
 `tests/routes/admin-catalog.test.js`,
 `tests/routes/admin-csv-adversarial.test.js`,
 `tests/routes/admin-feedback.test.js`,
