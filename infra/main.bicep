@@ -104,7 +104,22 @@ resource kv 'Microsoft.KeyVault/vaults@2023-07-01' = {
     enableRbacAuthorization: true
     enableSoftDelete: true
     softDeleteRetentionInDays: 30
+    // Irreversible: Azure never lets purge protection be turned off again, and
+    // the vault name stays taken for the 30 days above after a delete.
+    enablePurgeProtection: true
     publicNetworkAccess: 'Enabled'
+  }
+}
+
+// Removed on purpose only (az lock delete, Owner or User Access Administrator).
+// A locked resource also makes `az group delete` on the group fail, so the
+// group itself carries no lock.
+resource kvDeleteLock 'Microsoft.Authorization/locks@2020-05-01' = {
+  name: '${kvName}-no-delete'
+  scope: kv
+  properties: {
+    level: 'CanNotDelete'
+    notes: 'Holds the key that decrypts every stored SoundCloud token.'
   }
 }
 
@@ -144,6 +159,17 @@ resource pg 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
     highAvailability: { mode: 'Disabled' }
     network: { publicNetworkAccess: 'Enabled' }
     authConfig: { passwordAuth: 'Enabled', activeDirectoryAuth: 'Disabled' }
+  }
+}
+
+// Covers child resources too: databases and firewall rules cannot be deleted
+// through ARM while it exists (SQL DROP DATABASE is not affected).
+resource pgDeleteLock 'Microsoft.Authorization/locks@2020-05-01' = {
+  name: '${pgServerName}-no-delete'
+  scope: pg
+  properties: {
+    level: 'CanNotDelete'
+    notes: 'Production database. Server backups are deleted with the server.'
   }
 }
 

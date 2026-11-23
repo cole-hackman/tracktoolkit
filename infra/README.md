@@ -36,6 +36,15 @@ Optional environment: `TT_CLIENT_IP` (adds a Postgres firewall rule for your
 workstation), `TT_SECRET_*` (writes the matching Key Vault secret; see the
 header of `deploy.sh` for the full list).
 
+### Delete protection
+
+`main.bicep` puts a `CanNotDelete` lock on the Postgres server and on the Key
+Vault, and turns on vault purge protection. **Purge protection is irreversible
+once deployed.** The deployer needs Owner or User Access Administrator to create
+the locks. While the Postgres lock exists, deleting a database or a firewall
+rule (for example `operator-client-ip`) through ARM is refused; remove the lock
+first, then redeploy to restore it.
+
 ## Deploy the application
 
 `.github/workflows/azure-deploy.yml`. **It runs on every push to `main`** (PR
