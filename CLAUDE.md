@@ -432,17 +432,29 @@ it. `tests/routes/growth-limits.test.js` pins delete → re-login → 429.
 **What a restart forgets, exactly** (every deploy is one;
 `tests/growth-ledger-restart.test.js`). The rows are the durable half, so an
 account that was not deleted keeps its cap and its cooldown. Gone is what
-only the ledger knew: the budget of an account that deleted itself and logged
-in again (a fresh 50 after each restart inside the 24 hours), a follow whose
-row write failed, and the cooldown of a session in which every follow failed.
+only the ledger knew, three things:
+
+1. the budget of an account that deleted itself and logged in again. One
+   fresh 50 per restart, and each one needs its own delete-and-login first:
+   the follows made on the new row are rows again, so a second restart alone
+   gives nothing back;
+2. a follow SoundCloud accepted whose row write failed;
+3. the cooldown of a session in which every follow failed.
+
 No existing table can carry this: every per-user table cascades with the
 account by design (`tests/account-deletion-cascade.test.js`), and `Metric` is
-documented as not per-user. Two ways to close it, neither built: the HMAC
-table above (a migration, and a privacy decision); or, with no schema, refuse
-follows while the answer is unknowable: a `User` row younger than 24 hours
-on a process younger than 24 hours, until the earlier of the two is a day
-old. That second one costs a new user up to a day before their first follow
-whenever there was a deploy in the last day, which is a product decision.
+documented as not per-user. Two ways to close some of it, neither built:
+
+- The HMAC table above (a migration, and a privacy decision). It closes 1.
+  It closes 2 and 3 only if it is written at those moments too (when
+  SoundCloud accepts a follow, before the row write, and at session start),
+  and a write that fails in the same outage that lost the row is still lost.
+- With no schema, refuse follows while the answer is unknowable: a `User`
+  row younger than 24 hours on a process younger than 24 hours, until the
+  earlier of the two is a day old. It closes 1 only. 2 and 3 can happen on an
+  account of any age, where the rows are believed, and stay open. It costs a
+  new user up to a day before their first follow whenever there was a deploy
+  in the last day, which is a product decision.
 
 **Genre focus** (`genre` on `POST /growth/discover`, one of
 `GENRE_FOCUS_SLUGS` in `server/lib/genres.js`; the client list is
