@@ -1085,43 +1085,64 @@ string is silently ignored, which is how the feedback routes once sent
 (`tests/routes/feedback.test.js` now pins the bodies).
 
 **Per-item failure text that a page prints is a fixed phrase** picked from
-the error's status or code, never `err.message`:
-`scItemErrorText(err, 'Unlike failed')` in `lib/sc-errors.js` for bulk like,
-unlike, unfollow, repost removal, Sort Likes unlike and transfer-track;
-`batchResolveErrorText` for `/resolve/batch`; `mergeDeleteErrorText` for the
-merge's `deleteErrors` (`tests/routes/item-error-text.test.js`). No page reads
-that text to detect a rate limit: they use `rateLimited`, the item `status`
-and the HTTP status. How bad the raw text can be depends on the thrower.
-`scRequest` replaces a failed token refresh with "Token refresh failed", so a
-write through it carries a status line at worst. `resolveAny`, `paginate`,
-`getDownloadLink` and the stream redirect pass a refresh failure through as
-thrown, and a database error on the token save is then Prisma text. Of the
-per-item routes only `/resolve/batch` is behind one of those.
+the error's status or code, never `err.message`, which says whatever the
+thrower wrote: `scItemErrorText(err, 'Unlike failed')` in `lib/sc-errors.js`
+for bulk like, unlike, unfollow, repost removal, Sort Likes unlike and
+transfer-track; `batchResolveErrorText` for `/resolve/batch`;
+`mergeDeleteErrorText` for the merge's `deleteErrors`
+(`tests/routes/item-error-text.test.js`). No page reads that text to detect a
+rate limit: they use `rateLimited`, the item `status` and the HTTP status.
 
-Where the raw text goes instead:
+What is kept of the error instead:
 
-- **Server log, once per run, whenever any item failed**: `<what>: items
-  failed { failed, first }` for bulk like, unlike, unfollow, repost removal
-  and Sort Likes unlike, and `Batch resolve: links failed` for the batch.
-  Transfer-track and the merge's source deletes log each failure. These use
-  `safeErrorBrief` (message, code, status; URLs cut, no stack), so a pasted
-  link or a token is not in the line.
-- **Operation log `errorMessage`, only when every item failed**, and only for
-  bulk like, unlike, unfollow, repost removal and `/resolve/batch`. That is
+- **Server log: `logFailure(what, fields, { first: err })`** (`safe-error.js`)
+  writes one warn line and describes each error with `safeErrorBrief`. That is
+  an allowlist, not a redaction: the error's `name`, `code` and `status` when
+  they look like a name, a code and an HTTP status; its `message` only when it
+  is exactly one of the SoundCloud client's own fixed messages
+  (`API request failed: 403`, `Resolve error: 404`, `Token refresh failed`,
+  `fetch failed`, …); and the name and code of its `cause`. A message that is
+  not on the list is dropped whole, because it can quote an Authorization
+  header, a pasted secret link, an email or a Prisma query, and no pattern
+  list catches every shape of those. The cost is the free text: a database
+  error is `PrismaClientKnownRequestError` and `P1001`, not the sentence
+  naming the host, and a new client message appears only once it is added to
+  `OWN_MESSAGE`. `logFailure` cannot throw, and the per-run lines are written
+  last in their handler, so a log line never changes a response or skips the
+  operation log. The lines, one per run that had a failed item: `<what>: items failed
+  { failed, first }` for bulk like, unlike, unfollow, repost removal and Sort
+  Likes unlike; `Batch resolve: links failed { failed, total, first?,
+  firstPublic? }`. One per failure: transfer-track's two
+  `[playlist-transfer]` lines and `[merge] source delete failed`.
+  `tests/safe-error.test.js` pins the allowlist.
+- **Operation log `errorMessage`: the first failure's raw message, when no
+  item succeeded** (the route's label, such as "Like failed", if what was
+  thrown has no message), for bulk like, unlike, unfollow and repost removal.
+  For `/resolve/batch` it is the first failed link's: the message of its last
+  attempt, or the item's fixed text when nothing was thrown. That is
   unchanged from before. Sort Likes unlike, transfer-track and the merge's
   `deleteErrors` have never written one. The column is in
-  `GET /api/auth/export`, so a person can read the raw text of their own
-  all-failed runs there.
+  `GET /api/auth/export`, so a person can read the raw text of their own runs
+  there.
+
+`safeError` is still what every other log line uses, and it keeps the message.
+The logger's own redaction (`sanitizeString` in `logger.js`) is the only guard
+there. In a string it removes what follows `OAuth` or `Bearer`, the value
+after a secret-looking key (`token=`, `"access_token":"…"`, `password: …`)
+and a `code=` in a query string. An email, a link with no such key or a
+database host still pass.
 
 **A batch resolve can fail twice per link**: with the user's token, then
-without one. The item's phrase comes from the first failure when SoundCloud
-answered it (404, 401/403, 429, no answer), because that attempt could see
-the link. If the first failure was ours (a token refresh, the database, the
-network) the public attempt may add only what it can know: not found, rate
+without one. The item's phrase comes from the first failure when its status
+picks one (404, 401/403, 429, 502-504 or a timeout), because that attempt
+could see the link. When it picks none (no status at all, or a 400, 410 or
+500) the public attempt may add only what it can know: not found, rate
 limited, no answer. "Refused" without credentials is not reported as a
-finding; the item then says "Resolve failed" and no cause. Single `/resolve`
-already answered from its first failure
-(`tests/routes/resolve-two-attempts.test.js` pins both).
+finding; the item then says "Resolve failed" and no cause. A link the public
+retry resolved after a signed-in failure with no HTTP status is counted on its
+own line, `Batch resolve: public retry covered a failed signed-in attempt
+{ covered, total, first }`. Single `/resolve` already answered from its first
+failure (`tests/routes/resolve-two-attempts.test.js` pins both).
 
 ### Login Pre-warming
 
