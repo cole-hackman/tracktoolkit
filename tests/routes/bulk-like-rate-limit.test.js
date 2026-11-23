@@ -166,7 +166,9 @@ describe('one bulk-like at a time per user', () => {
   }, 30000);
 
   test('a client that disconnects stops the run instead of leaving it working unseen', async () => {
-    const server = app.listen(0);
+    // 127.0.0.1, not the wildcard default: see tests/setup-loopback.js.
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise((resolve) => server.once('listening', resolve));
     const { port } = server.address();
     let calls = 0;
     likeTrack.mockImplementation(async () => { calls += 1; await new Promise((r) => setTimeout(r, 50)); return {}; });

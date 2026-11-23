@@ -88,7 +88,7 @@ router.post('/growth/discover', authenticateUser, heavyOperationRateLimiter, val
  */
 router.get('/growth/limits', authenticateUser, async (req, res) => {
   try {
-    const budget = await getGrowthBudget(prisma, req.user.id);
+    const budget = await getGrowthBudget(prisma, req.user.id, req.user.soundcloudId);
     res.json(budget);
   } catch (error) {
     logger.error('Get growth limits error:', safeError(error));
@@ -105,7 +105,7 @@ router.post('/growth/engage', authenticateUser, heavyOperationRateLimiter, valid
   try {
     const { targets, likeTracks, sessionLabel, inspirationIds, inspirationNames } = req.body;
 
-    const budget = await getGrowthBudget(prisma, req.user.id);
+    const budget = await getGrowthBudget(prisma, req.user.id, req.user.soundcloudId);
     if (budget.remaining <= 0) {
       return res.status(429).json({
         error: `Daily follow limit reached (${budget.dailyCap} per 24h). Try again later.`,
@@ -129,6 +129,8 @@ router.post('/growth/engage', authenticateUser, heavyOperationRateLimiter, valid
     const job = startEngagementJob(growthEngine, {
       prisma,
       userId: req.user.id,
+      // Keys the follow ledger, which outlives the User row (see getGrowthBudget).
+      soundcloudId: req.user.soundcloudId,
       accessToken: req.accessToken,
       refreshToken: req.refreshToken,
       targets,

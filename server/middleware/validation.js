@@ -22,6 +22,63 @@ function validateSoundCloudUrl(value) {
 }
 
 /**
+ * An id that will be interpolated into a SoundCloud path (`/playlists/${id}`,
+ * `/users/${id}/followers`, ...) must be a whole positive safe integer and
+ * nothing else. Two traps this exists to close:
+ *
+ * - `parseInt` reads the leading digits and ignores the rest, so a check built
+ *   on it let `"2/../../me/followings/777?"` through and the raw string
+ *   reached the path. `.isInt()` matches the whole string; leading zeroes are
+ *   refused so one id has one spelling.
+ * - express-validator applies `.isInt()` element-wise to an array, so on a
+ *   scalar field `[1]` passes and then fails every `===`/`!==` comparison
+ *   downstream (the merge's "never delete the target" filter among them).
+ *   `.custom()` sees the whole value, so it leads.
+ *
+ * `.toInt()` hands the route a number, so every comparison after this is
+ * number-to-number.
+ */
+const ID_INT_OPTIONS = { min: 1, max: Number.MAX_SAFE_INTEGER, allow_leading_zeroes: false };
+
+/**
+ * The same checks applied to a chain the caller already built, for a field
+ * that is not a plain `body(field)`: a conditional `body(f).if(...)`, or a
+ * query parameter (`?playlistId=1&playlistId=2` arrives as an array too).
+ * `.optional()` is chain-wide, so callers may add it before or after.
+ */
+function wholeId(chain, message) {
+  return chain
+    .custom((value) => {
+      if (Array.isArray(value) || (typeof value !== 'number' && typeof value !== 'string')) {
+        throw new Error(message);
+      }
+      return true;
+    })
+    .bail()
+    .isInt(ID_INT_OPTIONS)
+    .withMessage(message)
+    .toInt();
+}
+
+function scalarIdField(field, message) {
+  return wholeId(body(field), message);
+}
+
+/**
+ * The same rule for one element of a large id array checked in a `.custom()`
+ * loop (`tracks`, `remove`, from-likes `trackIds`: up to 5,000 elements, too
+ * many for a `field.*` chain each). A JSON number or a digits-only string
+ * that is a whole positive safe integer; returns the number, or null.
+ * `parseInt` is what this replaces: it accepted `"12abc"` as 12.
+ */
+function wholeIdValue(value) {
+  let n = null;
+  if (typeof value === 'number') n = value;
+  else if (typeof value === 'string' && /^[1-9]\d*$/.test(value)) n = Number(value);
+  return Number.isSafeInteger(n) && n >= 1 ? n : null;
+}
+
+/**
  * Middleware to handle validation errors
  */
 export const handleValidationErrors = (req, res, next) => {
@@ -100,20 +157,13 @@ export const validateMergePlaylists = [
       if (value.length > 20) {
         throw new Error('Cannot merge more than 20 playlists at once');
       }
-      // Validate each ID is a positive integer
-      for (const id of value) {
-        const numId = typeof id === 'string' ? parseInt(id, 10) : id;
-        if (!Number.isInteger(numId) || numId < 1) {
-          throw new Error('All playlist IDs must be positive integers');
-        }
-      }
       return true;
     }),
-  body('targetPlaylistId')
-    .optional()
-    .isInt({ min: 1 })
-    .withMessage('targetPlaylistId must be a positive integer')
-    .toInt(),
+  // Each id reaches `/playlists/${id}` (and DELETE with deleteAfterMerge).
+  // scalarIdField, not a bare .isInt(): a nested `[[2], 3]` would otherwise
+  // pass element-wise one level down.
+  scalarIdField('sourcePlaylistIds.*', 'All playlist IDs must be positive integers'),
+  scalarIdField('targetPlaylistId', 'targetPlaylistId must be a positive integer').optional(),
   body('deleteAfterMerge')
     .optional()
     .isBoolean()
@@ -133,12 +183,12 @@ export const validateMergePlaylists = [
     return true;
   }),
   // Custom: targetPlaylistId must not appear in sourcePlaylistIds (Requirement 1.6)
+  // Both sides are numbers by now (the chains above ran .toInt()); Number()
+  // keeps the comparison honest even if a chain above is ever reordered.
   body('targetPlaylistId').custom((value, { req }) => {
     if (value && Array.isArray(req.body.sourcePlaylistIds)) {
-      const sourceIds = req.body.sourcePlaylistIds.map((id) =>
-        typeof id === 'string' ? parseInt(id, 10) : id
-      );
-      if (sourceIds.includes(value)) {
+      const sourceIds = req.body.sourcePlaylistIds.map(Number);
+      if (sourceIds.includes(Number(value))) {
         throw new Error('targetPlaylistId must not be one of the sourcePlaylistIds');
       }
     }
@@ -187,10 +237,9 @@ export const validateUpdatePlaylist = [
       if (value.length > 500) {
         throw new Error('Cannot have more than 500 tracks');
       }
-      // Validate each track ID is a positive integer
+      // Validate each track ID is a whole positive integer
       for (const trackId of value) {
-        const numId = typeof trackId === 'string' ? parseInt(trackId, 10) : trackId;
-        if (!Number.isInteger(numId) || numId < 1) {
+        if (wholeIdValue(trackId) === null) {
           throw new Error('All track IDs must be positive integers');
         }
       }
@@ -204,17 +253,17 @@ export const validateUpdatePlaylist = [
     .isArray({ max: 500 })
     .withMessage('remove must be an array of at most 500 track IDs')
     .custom((value, { req }) => {
-      const toId = (v) => (typeof v === 'string' ? parseInt(v, 10) : v);
       for (const trackId of value) {
-        const numId = toId(trackId);
-        if (!Number.isInteger(numId) || numId < 1) {
+        if (wholeIdValue(trackId) === null) {
           throw new Error('All remove IDs must be positive integers');
         }
       }
+      // `tracks` has its own check above; an element that fails it maps to
+      // null here and matches nothing.
       const keep = new Set(
-        (Array.isArray(req.body.tracks) ? req.body.tracks : []).map(toId),
+        (Array.isArray(req.body.tracks) ? req.body.tracks : []).map(wholeIdValue),
       );
-      if (value.some((trackId) => keep.has(toId(trackId)))) {
+      if (value.some((trackId) => keep.has(wholeIdValue(trackId)))) {
         throw new Error('A track cannot be in both tracks and remove');
       }
       return true;
@@ -235,25 +284,19 @@ export const validatePlaylistTrackTransfer = [
   body('action')
     .isIn(['move', 'duplicate'])
     .withMessage('action must be move or duplicate'),
-  body('trackId')
-    .isInt({ min: 1 })
-    .withMessage('trackId must be a positive integer')
-    .toInt(),
-  body('sourcePlaylistId')
-    .if(body('action').equals('move'))
-    .isInt({ min: 1 })
-    .withMessage('sourcePlaylistId is required for move action and must be a positive integer')
-    .toInt(),
-  body('sourcePlaylistId')
-    .if(body('action').not().equals('move'))
-    .optional()
-    .isInt({ min: 1 })
-    .withMessage('sourcePlaylistId must be a positive integer')
-    .toInt(),
-  body('targetPlaylistId')
-    .isInt({ min: 1 })
-    .withMessage('targetPlaylistId must be a positive integer')
-    .toInt(),
+  // All three ids are whole values: `sourcePlaylistId: [1]` would pass a bare
+  // .isInt() element-wise and then never `===` the target, slipping past
+  // moveTrackBetweenPlaylists' same-playlist guard.
+  scalarIdField('trackId', 'trackId must be a positive integer'),
+  wholeId(
+    body('sourcePlaylistId').if(body('action').equals('move')),
+    'sourcePlaylistId is required for move action and must be a positive integer',
+  ),
+  wholeId(
+    body('sourcePlaylistId').if(body('action').not().equals('move')),
+    'sourcePlaylistId must be a positive integer',
+  ).optional(),
+  scalarIdField('targetPlaylistId', 'targetPlaylistId must be a positive integer'),
   handleValidationErrors
 ];
 
@@ -271,20 +314,18 @@ export const validateCreateFromLikes = [
       if (value.length > 5000) {
         throw new Error('Cannot have more than 5000 tracks in one request');
       }
-      // Validate each track ID is a positive integer
+      // Validate each track ID is a whole positive integer
       for (const trackId of value) {
-        const numId = typeof trackId === 'string' ? parseInt(trackId, 10) : trackId;
-        if (!Number.isInteger(numId) || numId < 1) {
+        if (wholeIdValue(trackId) === null) {
           throw new Error('All track IDs must be positive integers');
         }
       }
       return true;
-    }),
-  body('targetPlaylistId')
-    .optional()
-    .isInt({ min: 1 })
-    .withMessage('targetPlaylistId must be a positive integer')
-    .toInt(),
+    })
+    // The route dedupes against the playlist's numeric ids and builds URNs
+    // from these, so it gets numbers: `"5"` is the 5 already in the playlist.
+    .customSanitizer((value) => (Array.isArray(value) ? value.map((id) => wholeIdValue(id) ?? id) : value)),
+  scalarIdField('targetPlaylistId', 'targetPlaylistId must be a positive integer').optional(),
   body('title')
     .optional()
     .trim()
@@ -383,15 +424,8 @@ export const validateCreateFromFollowedLikes = [
     .optional()
     .isArray({ min: 1, max: 5000 })
     .withMessage('trackIds must be an array with 1-5000 items'),
-  body('trackIds.*')
-    .optional()
-    .isInt({ min: 1 })
-    .withMessage('Each trackId must be a positive integer'),
-  body('targetPlaylistId')
-    .optional()
-    .isInt({ min: 1 })
-    .withMessage('targetPlaylistId must be a positive integer')
-    .toInt(),
+  scalarIdField('trackIds.*', 'Each trackId must be a positive integer').optional(),
+  scalarIdField('targetPlaylistId', 'targetPlaylistId must be a positive integer').optional(),
   body('title')
     .optional()
     .trim()
@@ -417,9 +451,7 @@ export const validateCloneFollowedPlaylists = [
   body('playlistIds')
     .isArray({ min: 1, max: 20 })
     .withMessage('playlistIds must be an array with 1-20 items'),
-  body('playlistIds.*')
-    .isInt({ min: 1 })
-    .withMessage('Each playlistId must be a positive integer'),
+  scalarIdField('playlistIds.*', 'Each playlistId must be a positive integer'),
   body('titlePrefix')
     .optional()
     .trim()
@@ -510,9 +542,7 @@ export const validateBulkUnlike = [
   body('trackIds')
     .isArray({ min: 1, max: 100 })
     .withMessage('trackIds must be an array with 1-100 items'),
-  body('trackIds.*')
-    .isInt({ min: 1 })
-    .withMessage('Each trackId must be a positive integer'),
+  scalarIdField('trackIds.*', 'Each trackId must be a positive integer'),
   handleValidationErrors
 ];
 
@@ -523,9 +553,7 @@ export const validateBulkLike = [
   body('trackIds')
     .isArray({ min: 1, max: 100 })
     .withMessage('trackIds must be an array with 1-100 items'),
-  body('trackIds.*')
-    .isInt({ min: 1 })
-    .withMessage('Each trackId must be a positive integer'),
+  scalarIdField('trackIds.*', 'Each trackId must be a positive integer'),
   handleValidationErrors
 ];
 
@@ -563,10 +591,7 @@ export const validateGateResults = [
   body('results')
     .isArray({ min: 1, max: GATE_RESULTS_MAX })
     .withMessage(`results must be an array with 1-${GATE_RESULTS_MAX} items`),
-  body('results.*.id')
-    .isInt({ min: 1, max: Number.MAX_SAFE_INTEGER, allow_leading_zeroes: false })
-    .withMessage('Each result needs a positive integer id')
-    .toInt(),
+  scalarIdField('results.*.id', 'Each result needs a positive integer id'),
   body('results.*.site')
     .isString()
     .bail()
@@ -617,9 +642,7 @@ export const validateBulkUnfollow = [
   body('userIds')
     .isArray({ min: 1, max: 100 })
     .withMessage('userIds must be an array with 1-100 items'),
-  body('userIds.*')
-    .isInt({ min: 1 })
-    .withMessage('Each userId must be a positive integer'),
+  scalarIdField('userIds.*', 'Each userId must be a positive integer'),
   handleValidationErrors
 ];
 
@@ -630,9 +653,9 @@ export const validateBulkUnrepost = [
   body('items')
     .isArray({ min: 1, max: 100 })
     .withMessage('items must be an array with 1-100 items'),
-  body('items.*.id')
-    .isInt({ min: 1 })
-    .withMessage('Each item id must be a positive integer'),
+  // Reaches `/reposts/{tracks,playlists}/${id}` (a DELETE): whole value, so
+  // `{ id: [5, 6] }` cannot pass element-wise.
+  scalarIdField('items.*.id', 'Each item id must be a positive integer'),
   body('items.*.resourceType')
     .isIn(['track', 'playlist'])
     .withMessage('Each item resourceType must be track or playlist'),
@@ -825,11 +848,9 @@ export const validatePlaylistTrackSearch = [
     // that match most of the library. Each term has to clear the floor.
     .custom((q) => parseKeywords(q).every((keyword) => keyword.length >= 2))
     .withMessage('each keyword must be at least 2 characters'),
-  query('playlistId')
-    .optional({ nullable: true, checkFalsy: true })
-    .isInt({ min: 1 })
-    .withMessage('playlistId must be a positive integer')
-    .toInt(),
+  // Reaches /playlists/${id}; a repeated query parameter arrives as an array.
+  wholeId(query('playlistId'), 'playlistId must be a positive integer')
+    .optional({ nullable: true, checkFalsy: true }),
   query('limit')
     .optional()
     .isInt({ min: 1, max: 50 })
@@ -852,17 +873,11 @@ export const validateBulkRemovePlaylistTracks = [
   body('items')
     .isArray({ min: 1, max: 20 })
     .withMessage('items must be an array with 1-20 entries'),
-  body('items.*.playlistId')
-    .isInt({ min: 1 })
-    .withMessage('Each playlistId must be a positive integer')
-    .toInt(),
+  scalarIdField('items.*.playlistId', 'Each playlistId must be a positive integer'),
   body('items.*.trackIds')
     .isArray({ min: 1, max: 500 })
     .withMessage('Each trackIds must be an array with 1-500 items'),
-  body('items.*.trackIds.*')
-    .isInt({ min: 1 })
-    .withMessage('Each trackId must be a positive integer')
-    .toInt(),
+  scalarIdField('items.*.trackIds.*', 'Each trackId must be a positive integer'),
   body('items').custom((items) => {
     const total = items.reduce(
       (sum, item) => sum + (Array.isArray(item?.trackIds) ? item.trackIds.length : 0),
@@ -888,17 +903,11 @@ export const validateBulkRemovePlaylistTracks = [
  * Bulk copy of tracks into one existing playlist.
  */
 export const validateBulkAddPlaylistTracks = [
-  body('targetPlaylistId')
-    .isInt({ min: 1 })
-    .withMessage('targetPlaylistId must be a positive integer')
-    .toInt(),
+  scalarIdField('targetPlaylistId', 'targetPlaylistId must be a positive integer'),
   body('trackIds')
     .isArray({ min: 1, max: 200 })
     .withMessage('trackIds must be an array with 1-200 items'),
-  body('trackIds.*')
-    .isInt({ min: 1 })
-    .withMessage('Each trackId must be a positive integer')
-    .toInt(),
+  scalarIdField('trackIds.*', 'Each trackId must be a positive integer'),
   handleValidationErrors
 ];
 
@@ -928,16 +937,9 @@ export const validateRebrandVote = [
 export const validateGrowthDiscover = [
   body('inspirationUserIds')
     .isArray({ min: 1, max: 5 })
-    .withMessage('inspirationUserIds must be an array of 1 to 5 items')
-    .custom((value) => {
-      for (const id of value) {
-        const numId = typeof id === 'string' ? parseInt(id, 10) : id;
-        if (!Number.isInteger(numId) || numId < 1) {
-          throw new Error('All inspiration user IDs must be positive integers');
-        }
-      }
-      return true;
-    }),
+    .withMessage('inspirationUserIds must be an array of 1 to 5 items'),
+  // Each id reaches `/users/${id}/followers` and friends; see ID_INT_OPTIONS.
+  scalarIdField('inspirationUserIds.*', 'All inspiration user IDs must be positive integers'),
   body('limit')
     .optional()
     .isInt({ min: 1, max: 100 })
@@ -976,15 +978,10 @@ export const validateGrowthEngageBatch = [
   body('targets')
     .isArray({ min: 1, max: 50 })
     .withMessage('targets must be an array of 1 to 50 items'),
-  body('targets.*.userId')
-    .isInt({ min: 1 })
-    .withMessage('Each target userId must be a positive integer')
-    .toInt(),
-  body('targets.*.likeTrackId')
-    .optional({ nullable: true })
-    .isInt({ min: 1 })
-    .withMessage('likeTrackId must be a positive integer')
-    .toInt(),
+  // Reach /me/followings/${id} and /likes/tracks/${id}: whole values.
+  scalarIdField('targets.*.userId', 'Each target userId must be a positive integer'),
+  scalarIdField('targets.*.likeTrackId', 'likeTrackId must be a positive integer')
+    .optional({ nullable: true }),
   body('targets.*.targetName')
     .optional({ nullable: true })
     .trim()
@@ -1194,9 +1191,7 @@ export const validateAdminReResolve = [
   body('trackIds')
     .isArray({ min: 1, max: 200 })
     .withMessage('trackIds must be an array with 1-200 items'),
-  body('trackIds.*')
-    .isInt({ min: 1 })
-    .withMessage('Each trackId must be a positive integer'),
+  scalarIdField('trackIds.*', 'Each trackId must be a positive integer'),
   handleValidationErrors
 ];
 
@@ -1273,10 +1268,7 @@ export const validateSetlistPlaylist = [
   body('tracks')
     .isArray({ min: 1, max: 500 })
     .withMessage('tracks must be an array with 1-500 items'),
-  body('tracks.*.id')
-    .isInt({ min: 1 })
-    .withMessage('Each track id must be a positive integer')
-    .toInt(),
+  scalarIdField('tracks.*.id', 'Each track id must be a positive integer'),
   body('tracks.*.label')
     .isString()
     .withMessage('Each track label must be a string')
@@ -1297,11 +1289,8 @@ export const validateSetlistPlaylist = [
 export const SORT_APPLY_MAX_TRACKS = 2000;
 
 export const validateSortApply = [
-  body('playlistId')
-    .optional({ nullable: true })
-    .isInt({ min: 1 })
-    .withMessage('playlistId must be a positive integer')
-    .toInt(),
+  scalarIdField('playlistId', 'playlistId must be a positive integer')
+    .optional({ nullable: true }),
   body('title')
     .optional({ nullable: true })
     .isString()
@@ -1328,10 +1317,7 @@ export const validateSortApply = [
   body('trackIds')
     .isArray({ min: 1, max: SORT_APPLY_MAX_TRACKS })
     .withMessage(`trackIds must be an array with 1-${SORT_APPLY_MAX_TRACKS} items`),
-  body('trackIds.*')
-    .isInt({ min: 1 })
-    .withMessage('Each trackId must be a positive integer')
-    .toInt(),
+  scalarIdField('trackIds.*', 'Each trackId must be a positive integer'),
   handleValidationErrors
 ];
 
@@ -1340,10 +1326,7 @@ export const validateSortUnlike = [
   body('trackIds')
     .isArray({ min: 1, max: 100 })
     .withMessage('trackIds must be an array with 1-100 items'),
-  body('trackIds.*')
-    .isInt({ min: 1 })
-    .withMessage('Each trackId must be a positive integer')
-    .toInt(),
+  scalarIdField('trackIds.*', 'Each trackId must be a positive integer'),
   handleValidationErrors
 ];
 

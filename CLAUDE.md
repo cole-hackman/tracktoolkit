@@ -410,6 +410,53 @@ All `/growth/*` routes are `authenticateUser`; the write-heavy ones also carry
 `heavyOperationRateLimiter`. Follow caps are enforced server-side (50/24h +
 30-minute session cooldown) regardless of what the client requests.
 
+**The caps follow the SoundCloud account, not the `User` row.**
+`GrowthAction` rows are keyed by `User.id` and cascade away with the account,
+and the next login makes a new `User.id`, so counting the table alone let
+"delete account, log in again" reset both limits. `getGrowthBudget(prisma,
+userId, soundcloudId)` also reads an in-memory ledger in `growth-engine.js`
+(`soundcloudId → timestamps`, pruned to 24 h on every read and write):
+`used24h` is the larger of the two counts and the cooldown runs from the later
+of the two last actions. A follow is recorded the moment SoundCloud accepts
+it, **before** the `growthAction.create`, so a follow whose row write fails
+still counts; a session start and a like start the cooldown only. Both routes
+(`/growth/limits`, `/growth/engage`) and `startEngagementJob` take
+`req.user.soundcloudId`. Two limits, both deliberate: the ledger **resets on
+restart** and is per-process (sound only because the app is pinned to one
+worker), and the durable alternative — a table keyed by an HMAC of the
+SoundCloud id, purged after 24 h — was skipped for privacy, because it would
+keep a per-account database record past account deletion. The ledger outlives
+deletion too, but only in memory, for at most a day, and only this check reads
+it. `tests/routes/growth-limits.test.js` pins delete → re-login → 429.
+
+**What a restart forgets, exactly** (every deploy is one;
+`tests/growth-ledger-restart.test.js`). The rows are the durable half, so an
+account that was not deleted keeps its cap and its cooldown. Gone is what
+only the ledger knew, three things:
+
+1. the budget of an account that deleted itself and logged in again. One
+   fresh 50 per restart, and each one needs its own delete-and-login first:
+   the follows made on the new row are rows again, so a second restart alone
+   gives nothing back;
+2. a follow SoundCloud accepted whose row write failed;
+3. the cooldown of a session in which every follow failed and no like landed
+   (a like writes a row, which keeps it).
+
+No existing table can carry this: every per-user table cascades with the
+account by design (`tests/account-deletion-cascade.test.js`), and `Metric` is
+documented as not per-user. Two ways to close some of it, neither built:
+
+- The HMAC table above (a migration, and a privacy decision). It closes 1.
+  It closes 2 and 3 only if it is written at those moments too (when
+  SoundCloud accepts a follow, before the row write, and at session start),
+  and a write that fails in the same outage that lost the row is still lost.
+- With no schema, refuse follows while the answer is unknowable: a `User`
+  row younger than 24 hours on a process younger than 24 hours, until the
+  earlier of the two is a day old. It closes 1 only. 2 and 3 can happen on an
+  account of any age, where the rows are believed, and stay open. It costs a
+  new user up to a day before their first follow whenever there was a deploy
+  in the last day, which is a product decision.
+
 **Genre focus** (`genre` on `POST /growth/discover`, one of
 `GENRE_FOCUS_SLUGS` in `server/lib/genres.js`; the client list is
 `frontend-UI/src/lib/genres.ts` and `tests/genre-list-parity.test.js` fails if
@@ -1008,6 +1055,20 @@ E2E_PORT=4211 npm run test:e2e          # or just use another port
 
 Two checkouts running the suite at once need different `E2E_PORT` values.
 
+**Jest, supertest and other local listeners.** supertest starts its server
+with `listen(0)` (no host, so the wildcard address) and connects to
+`127.0.0.1`. On macOS the kernel can give that bind a port another process
+already holds on 127.0.0.1, and that process answers instead: a stray
+`404 "not found"`, a `socket hang up`, a 200 that is not ours. With 25 such
+listeners on the machine (developer tools and a browser) that was 1 to 3
+failed tests in most runs, a different test each time.
+`tests/setup-loopback.js` (a Jest `setupFiles` entry) points supertest
+at `[::1]` when its server is bound to `::` **and** `::1` exists on an
+interface. The second condition is not implied by the first: Linux with IPv6
+disabled by sysctl still binds `::` but has no `::1`, and without the check
+every request failed there with EADDRNOTAVAIL. A test that opens its own
+server binds it explicitly: `app.listen(0, '127.0.0.1', done)`.
+
 ---
 
 ## Patterns & Conventions
@@ -1058,6 +1119,44 @@ Every SoundCloud call goes through `scRequest()` in `soundcloud-client.js`
 (401 refresh, 429 backoff). A loop that writes to SoundCloud paces with
 `sleep(SC_WRITE_PACING_MS)` from `server/lib/pacing.js` — don't hardcode a
 delay.
+
+**An id that goes into a SoundCloud path is validated as a whole positive
+integer, never with `parseInt`.** `parseInt("2/../../me/followings/777?")` is
+2, which is how a merge source id once reached `/playlists/${id}` (and its
+DELETE) raw. In `validation.js`, `scalarIdField()` (or `wholeId()` around a
+chain that is not a plain `body(field)` — a `.if()` branch or a `query()`)
+does it for `sourcePlaylistIds.*`, `inspirationUserIds.*`, the bulk-unrepost
+`items.*.id`, `targetPlaylistId` on merge, from-likes, followed-likes, bulk-add
+and transfer-track, transfer-track's `trackId` and both `sourcePlaylistId`
+branches, bulk-remove's `items.*.playlistId`, search-tracks' `?playlistId`,
+growth engage's `targets.*.userId`/`likeTrackId`, the setlist playlist's
+`tracks.*.id`, Sort Likes' `playlistId`, gate-results' `results.*.id`, and
+every id-array element (`trackIds.*` on bulk-like, bulk-unlike, bulk-add,
+followed-likes, Sort Likes apply/unlike and admin re-resolve; `userIds.*` on
+bulk-unfollow; `playlistIds.*` on clone-followed; bulk-remove's
+`items.*.trackIds.*` — `.isInt()` also passes a nested `[[5,6]]`, which became
+`DELETE /me/followings/5,6`): a whole-value `.custom()` first (express-validator
+applies `.isInt()` element-wise, so a bare `.isInt()` on a scalar field passes
+`[1]` — which then never `===` the target and got past the merge's "never
+delete the target" filter), then `.isInt({ min: 1, max: MAX_SAFE_INTEGER,
+allow_leading_zeroes: false }).toInt()`, so routes receive numbers. Behind
+that, `pathId()` in `soundcloud-client.js` guards `getPlaylistWithTracks`,
+`addTracksToPlaylist`, `deletePlaylist`, both branches of `deleteRepost`
+(`/reposts/playlists/${id}` and `/reposts/tracks/${id}`), `followUser`,
+`unfollowUser`, `likeTrack` and `unlikeTrack`: each throws
+`INVALID_PATH_ID` unless `Number(id)` is a positive safe integer and puts that
+number, not the caller's value, in the path
+(`tests/routes/playlist-id-validation.test.js`,
+`tests/soundcloud-client.test.js`). The read paths (`/users/${id}/...`,
+`/tracks/${id}/streams`) rely on their route validators alone. `PUT
+/playlists/:id`'s `tracks`/`remove` and from-likes' `trackIds` only go into
+the JSON body as `soundcloud:tracks:N` URNs, never into a path, and are up to
+5,000 elements, so they are checked in a `.custom()` loop with
+`wholeIdValue()` (a JSON number or a digits-only string that is a positive
+safe integer) rather than a `field.*` chain. from-likes also converts them to
+numbers: passed through as strings, `"5"` did not match the `5` already in
+the target and was appended again
+(`tests/routes/json-body-track-ids.test.js`).
 
 ### Error Sanitization
 

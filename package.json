@@ -58,7 +58,8 @@
     ],
     "verbose": false,
     "setupFiles": [
-      "<rootDir>/tests/setup-env.js"
+      "<rootDir>/tests/setup-env.js",
+      "<rootDir>/tests/setup-loopback.js"
     ]
   }
 }

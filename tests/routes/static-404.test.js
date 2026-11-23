@@ -63,7 +63,8 @@ beforeAll(async () => {
   app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
   await new Promise((resolve) => {
-    server = app.listen(0, resolve);
+    // 127.0.0.1, not the wildcard default: see tests/setup-loopback.js.
+    server = app.listen(0, '127.0.0.1', resolve);
   });
 });
 
