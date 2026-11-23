@@ -1125,9 +1125,8 @@ What is kept of the error instead:
   `GET /api/auth/export`, so a person can read the raw text of their own runs
   there.
 
-`safeError` is still what every other log line uses, and it keeps the message.
-The logger's own redaction (`sanitizeString` in `logger.js`) is the only guard
-there. In a string it removes what follows `OAuth` or `Bearer`, the value
+Other log lines use `safeError` or the raw message. The logger's own redaction
+(`sanitizeString` in `logger.js`) is the general guard there. In a string it removes what follows `OAuth` or `Bearer`, the value
 after a secret-looking key (`token=`, `"access_token":"…"`, `password: …`)
 and a `code=` in a query string. An email, a link with no such key or a
 database host still pass.
