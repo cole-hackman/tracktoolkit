@@ -30,6 +30,10 @@ import {
 import { asArray } from "@/lib/api-shape";
 import { useListSearch } from "@/lib/list-search";
 import { useListSelection } from "@/lib/useListSelection";
+import posthog from "posthog-js";
+
+// This dedicated logger sends only records purpose-written for PostHog Logs.
+const activityPlaylistLogger = posthog.logger;
 
 interface Track {
   id: number;
@@ -166,6 +170,14 @@ export default function ActivityToPlaylistPage() {
             title: "Playlist saved",
             text: "Playlist saved successfully.",
           });
+          activityPlaylistLogger.info("activity playlist saved", {
+            destination: "new",
+            track_count: trackIds.length,
+          });
+          posthog.capture("activity_playlist_saved", {
+            destination: "new",
+            track_count: trackIds.length,
+          });
           setSelected(new Set());
         } else {
           fail("Couldn't create the playlist", await readApiErrorMessage(response, "Failed to create playlist."));
@@ -186,6 +198,14 @@ export default function ActivityToPlaylistPage() {
               title: "Playlist saved",
               text: "Playlist saved successfully.",
             });
+            activityPlaylistLogger.info("activity playlist saved", {
+              destination: "existing",
+              track_count: trackIds.length,
+            });
+            posthog.capture("activity_playlist_saved", {
+              destination: "existing",
+              track_count: trackIds.length,
+            });
             setSelected(new Set());
             await invalidatePlaylistCaches(queryClient, selectedPlaylistId);
           } else {
@@ -203,6 +223,9 @@ export default function ActivityToPlaylistPage() {
       }
     } catch (error) {
       console.error("Save error:", error);
+      activityPlaylistLogger.error("activity playlist save failed", {
+        destination: mode,
+      });
       fail("Couldn't save the playlist", "An error occurred while saving the playlist.");
     } finally {
       setSaving(false);

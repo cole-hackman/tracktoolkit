@@ -8,6 +8,7 @@ import { SupportLink } from "@/components/SupportLink";
 import { apiFetchJson, isApiError } from "@/lib/api";
 import { NAV_LINKS, toolLabelForPath } from "@/lib/nav";
 import { cn } from "@/lib/utils";
+import posthog from "posthog-js";
 
 /* ── Shapes shared with the backend (server/routes/feedback.js) ── */
 
@@ -213,6 +214,10 @@ export function FeedbackForm() {
         }),
       });
       setResult(data ?? {});
+      posthog.capture("feedback_submitted", {
+        feedback_type: type,
+        source_page: page || "unspecified",
+      });
       announce("Feedback sent");
       void loadRecent();
     } catch (error) {

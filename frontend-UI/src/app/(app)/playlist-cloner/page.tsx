@@ -5,6 +5,7 @@ import { CopyPlus, ArrowRight, Music, Link as LinkIcon, Loader2, Link2, Heart } 
 import { useQueryClient } from "@tanstack/react-query";
 import { apiFetch, errorMessageFromBody } from "@/lib/api";
 import { invalidatePlaylistCaches } from "@/lib/queries";
+import posthog from "posthog-js";
 import {
   ActionBar,
   Button,
@@ -161,6 +162,13 @@ export default function PlaylistClonerPage() {
           ? { description: `Cloned into ${plural(created.length, "playlist")}.`, announcement: `Cloned into ${plural(created.length, "playlist")}. ${gap}` }
           : { description: `Cloned ${data.stats?.copiedTracks ?? data.stats?.totalTracks ?? 0} tracks into ${plural(created.length, "playlist")}.` },
       );
+      posthog.capture("playlist_cloned", {
+        playlist_count: created.length,
+        track_count: Number(
+          data.stats?.copiedTracks ?? data.stats?.totalTracks ?? 0,
+        ),
+        has_gap: gap !== null,
+      });
     } catch (err: unknown) {
       // The error result panel speaks this itself.
       setError(err instanceof Error ? err.message : "An unexpected error occurred");
@@ -214,6 +222,10 @@ export default function PlaylistClonerPage() {
       void invalidatePlaylistCaches(queryClient);
       setResultNote({
         description: `Cloned ${data.stats?.totalTracks ?? 0} liked tracks into ${created.length} playlist${created.length === 1 ? "" : "s"}.`,
+      });
+      posthog.capture("liked_tracks_cloned", {
+        playlist_count: created.length,
+        track_count: Number(data.stats?.totalTracks ?? 0),
       });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "An unexpected error occurred");
