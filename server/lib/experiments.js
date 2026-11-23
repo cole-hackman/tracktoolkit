@@ -276,13 +276,16 @@ export function serializeFlagConfig(config) {
  *
  *   not-started   nobody enrolled, and enrolment is not open
  *   enrolling     enrolment is open
- *   maturing      enrolment has closed; some enrolled accounts are still
- *                 inside their 7 days
- *   final         enrolment has closed and every window has
+ *   maturing      END has passed; END + 7 days has not, so accounts can
+ *                 still be inside their window (or still be enrolled)
+ *   final         END + 7 days has passed and every window has closed
+ *   stopped       accounts are enrolled but enrolment ended some other way:
+ *                 a kill, percent 0, or the settings going missing
  *
  * The comparison between the arms (`test`, and the two guardrail tests) is
- * only computed at `final`. Before that the counts are shown and the test is
- * null, because the pre-registered rule is one look, at the end.
+ * only computed at `final`. Before that, and for a stopped run, the counts
+ * are shown and the test is null: the pre-registered rule is one look, at the
+ * end of a run that went the distance.
  *
  * @returns {Promise<null | object>} null for an unknown key or a rollout flag
  */
@@ -347,10 +350,28 @@ export async function experimentReadout(key, { now = new Date(), env = process.e
     !config.endInvalid &&
     (!config.end || nowMs < config.end.getTime());
 
-  let status = 'final';
+  // Enrolment closed the way the pre-registration says it closes: a valid END
+  // has passed, with the flag still on. Anything else that stops enrolment
+  // (a kill, percent 0, settings removed by an infra deploy) is a stopped
+  // run, which the document says is reported as stopped and is not a result.
+  const closedByEnd =
+    !config.killed &&
+    config.percent > 0 &&
+    !!config.start &&
+    !config.endInvalid &&
+    !!config.end &&
+    nowMs >= config.end.getTime();
+  // An account first seen just before END can still be enrolled for 7 days
+  // after it, so "every enrolled window has closed" is not enough: the
+  // horizon itself must have passed.
+  const horizonPassed = closedByEnd && nowMs >= config.end.getTime() + ACTIVATION_WINDOW_DAYS * DAY_MS;
+
+  let status;
   if (enrolmentOpen) status = 'enrolling';
   else if (totalEnrolled === 0) status = 'not-started';
-  else if (totalComplete < totalEnrolled) status = 'maturing';
+  else if (!closedByEnd) status = 'stopped';
+  else if (!horizonPassed || totalComplete < totalEnrolled) status = 'maturing';
+  else status = 'final';
 
   // The sample-ratio check is on assignment, not on outcomes, so it is shown
   // from the first exposure. It uses the counters when every arm has one:

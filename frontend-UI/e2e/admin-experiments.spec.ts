@@ -201,6 +201,20 @@ test("a killed flag, a refused setting and a sample-ratio mismatch are each call
   await expect(main.getByText(/p = < 0\.0001/)).toBeVisible();
 });
 
+test("a run that did not end at its END is marked stopped, with no comparison", async ({ page }) => {
+  await open(page, {
+    flags: [{ ...EXPERIMENT_FLAG, percent: 0, percentSource: "default", start: null, end: null }],
+    readout: { ...ENROLLING_READOUT, status: "stopped", readyAt: null },
+  });
+  const main = page.getByRole("tabpanel");
+  await expect(main.getByText("Stopped", { exact: true })).toBeVisible();
+  await expect(main.getByText(/A stopped run is not a result/)).toBeVisible();
+  await expect(main.getByText(/Not shown for a stopped run/)).toBeVisible();
+  await expect(main.getByText(/two-sided p/)).toHaveCount(0);
+  // The counts are still shown, to be reported as they are.
+  await expect(arms(main).getByRole("row", { name: /^control/ }).getByRole("cell").nth(0)).toHaveText("400");
+});
+
 test("a readout that fails to load offers a retry", async ({ page }) => {
   await mockApi(page);
   await page.route((url) => url.pathname === "/api/auth/me", (route) =>

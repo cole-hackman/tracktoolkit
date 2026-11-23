@@ -49,6 +49,7 @@ const STATUS_META: Record<ExperimentStatus, { label: string; tone: Tone; meaning
   enrolling: { label: "Enrolling", tone: "info", meaning: "New accounts are being enrolled. These numbers are interim: no decision is made from them." },
   maturing: { label: "Maturing", tone: "warn", meaning: "Enrolment has closed. Some enrolled accounts are still inside their window, so the rates are not final." },
   final: { label: "Final", tone: "ok", meaning: "Enrolment has closed and every window has. This is the one look the pre-registration allows." },
+  stopped: { label: "Stopped", tone: "danger", meaning: "Accounts are enrolled, but enrolment ended by a kill, a percent of 0 or missing settings, not by its END. A stopped run is not a result." },
 };
 
 const GATE_META: Record<RolloutGate["status"], { label: string; tone: Tone }> = {
@@ -250,7 +251,9 @@ function Readout({ readout }: { readout: ExperimentReadout }) {
           <div className="min-w-0">
             <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Comparison</div>
             <p className="mt-1 font-mono text-[12px] leading-relaxed text-muted-foreground">
-              Withheld until the readout is final. The pre-registered rule is one look, after enrolment has closed and every window has.
+              {readout.status === "stopped"
+                ? "Not shown for a stopped run. If the settings were removed by mistake, restore them; if the run was stopped on purpose, report it as stopped."
+                : "Withheld until the readout is final. The pre-registered rule is one look, after enrolment has closed and every window has."}
             </p>
           </div>
         )}

@@ -291,22 +291,42 @@ describe('experimentReadout', () => {
     expect(readout.guardrailTests.bugFeedbackUsers.difference).toBeCloseTo(0.001, 12);
   });
 
-  test('a flag stopped by percent 0 or by the kill switch also reaches final', async () => {
+  test('a run that ended any way but its END is stopped, and never shows a comparison', async () => {
     queryRaw.mockResolvedValue([row('control'), row('guided')]);
-    for (const settings of [env({ FLAG_GUIDED_FIRST_RUN_PERCENT: '0' }), env({ FLAGS_KILL: 'all' })]) {
+    for (const settings of [
+      { ...closed, FLAG_GUIDED_FIRST_RUN_PERCENT: '0' }, // rolled back
+      { ...closed, FLAGS_KILL: 'all' }, // killed
+      {}, // the settings removed, as infra/deploy.sh does
+      { FLAG_GUIDED_FIRST_RUN_PERCENT: '100' }, // the start lost
+    ]) {
       const readout = await experimentReadout(KEY, { now: afterEverything, env: settings });
-      expect(readout.status).toBe('final');
-      expect(readout.test).not.toBeNull();
+      expect(readout.status).toBe('stopped');
+      expect(readout.test).toBeNull();
+      expect(readout.guardrailTests).toBeNull();
+      // The counts are still there to be reported.
+      expect(readout.variants[0].enrolled).toBe(100);
     }
   });
 
-  test('an END that does not parse reads as enrolment closed, not open-ended', async () => {
+  test('every enrolled window closing is not enough: END + 7 days must have passed', async () => {
+    // An account first seen just before END can be enrolled up to 7 days
+    // after it. Until then "all windows closed" can stop being true.
+    queryRaw.mockResolvedValue([row('control'), row('guided')]);
+    const dayBefore = await experimentReadout(KEY, { now: new Date('2026-12-21T23:59:59Z'), env: closed });
+    expect(dayBefore.status).toBe('maturing');
+    expect(dayBefore.test).toBeNull();
+    const onTheDay = await experimentReadout(KEY, { now: new Date('2026-12-22T00:00:00Z'), env: closed });
+    expect(onTheDay.status).toBe('final');
+    expect(onTheDay.test).not.toBeNull();
+  });
+
+  test('an END that does not parse reads as a stopped run, not an open-ended one', async () => {
     queryRaw.mockResolvedValue([row('control', { window_complete: 10 }), row('guided')]);
     const readout = await experimentReadout(KEY, {
       now: new Date('2026-12-10T00:00:00Z'),
       env: env({ FLAG_GUIDED_FIRST_RUN_END: 'next friday' }),
     });
-    expect(readout.status).toBe('maturing');
+    expect(readout.status).toBe('stopped');
     expect(readout.config.end).toBeNull();
     expect(readout.readyAt).toBeNull();
     expect(readout.config.problems.join(' ')).toMatch(/END is not an ISO-8601 time/);

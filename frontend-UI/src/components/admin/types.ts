@@ -579,7 +579,7 @@ export interface ProportionTest {
   ci95: [number, number];
 }
 
-export type ExperimentStatus = "not-started" | "enrolling" | "maturing" | "final";
+export type ExperimentStatus = "not-started" | "enrolling" | "maturing" | "final" | "stopped";
 
 export interface ExperimentReadout {
   key: string;
@@ -591,7 +591,7 @@ export interface ExperimentReadout {
   readyAt: string | null;
   variants: ExperimentArm[];
   srm: { basis: "enrolledEver" | "enrolled"; observed: number[]; expected: number[]; chi2: number; pValue: number } | null;
-  /** Null until `status` is "final": the pre-registered rule is one look. */
+  /** Null until `status` is "final": one look, and never for a stopped run. */
   test: ProportionTest | null;
   guardrailTests: { usersWithError: ProportionTest | null; bugFeedbackUsers: ProportionTest | null } | null;
 }
