@@ -1,9 +1,18 @@
-// Excel / Sheets / LibreOffice execute a cell that opens with =, +, -, @, tab
-// or CR. Titles, artist names and usernames are written by other SoundCloud
+// Excel / Sheets / LibreOffice execute a cell that opens with =, +, -, @, tab,
+// CR or LF. Titles, artist names and usernames are written by other SoundCloud
 // users, so a track called `=HYPERLINK("http://evil...")` would fire when the
 // export is opened. An apostrophe in front makes the cell literal text; the
 // spreadsheet does not show it.
-const DANGEROUS_CSV_PREFIX_RE = /^[=+\-@\t\r]/;
+//
+// "Opens with" is judged the way a spreadsheet might see the cell, not the way
+// the string starts: anything it does not show or may trim (spaces of any
+// width, control characters, zero-width and direction marks, a stray BOM) is
+// skipped first, and the full-width forms of = + - @ count, since they are
+// read as formulas in some locales. The value itself is never changed.
+//
+// Keep this pattern identical to CSV_FORMULA_PREFIX_RE in
+// server/routes/admin.js: tests/csv-guard-parity.test.js compares the two.
+const CSV_FORMULA_PREFIX_RE = /^[\t\r\n]|^[\s\u0000-\u001F\u007F-\u009F\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u206F]*[=+\-@\uFF1D\uFF0B\uFF0D\uFF20]/;
 
 /**
  * One CSV cell, always quoted (RFC 4180), with the formula guard above. The one
@@ -15,7 +24,7 @@ const DANGEROUS_CSV_PREFIX_RE = /^[=+\-@\t\r]/;
  */
 export function csvEscape(value: unknown) {
   const raw = value == null ? "" : String(value);
-  const safe = typeof value === "string" && DANGEROUS_CSV_PREFIX_RE.test(raw) ? `'${raw}` : raw;
+  const safe = typeof value === "string" && CSV_FORMULA_PREFIX_RE.test(raw) ? `'${raw}` : raw;
   return `"${safe.replaceAll('"', '""')}"`;
 }
 

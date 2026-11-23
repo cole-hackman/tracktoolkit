@@ -177,15 +177,25 @@ function fillDays(days, rowSets, build) {
 
 const CSV_MAX_ROWS = 10_000;
 
+// Keep this pattern identical to CSV_FORMULA_PREFIX_RE in
+// frontend-UI/src/lib/csv.ts: tests/csv-guard-parity.test.js compares the two.
+const CSV_FORMULA_PREFIX_RE = /^[\t\r\n]|^[\s\u0000-\u001F\u007F-\u009F\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u206F]*[=+\-@\uFF1D\uFF0B\uFF0D\uFF20]/;
+
 /**
  * One CSV cell: RFC 4180 quoting plus a spreadsheet formula guard.
  *
  * Titles, artist names, feedback messages and admin notes are free text that
  * somebody else wrote, and Excel / Sheets / LibreOffice execute a cell that
- * opens with =, +, -, @, tab or CR — so `=HYPERLINK("http://evil...")` in a
- * track title would fire when an admin opens the export. Prefixing an
+ * opens with =, +, -, @, tab, CR or LF — so `=HYPERLINK("http://evil...")` in
+ * a track title would fire when an admin opens the export. Prefixing an
  * apostrophe makes the cell literal text; the spreadsheet does not show it and
  * the raw CSV still reads plainly.
+ *
+ * "Opens with" is judged the way a spreadsheet might see the cell: anything it
+ * does not show or may trim (spaces of any width, control characters,
+ * zero-width and direction marks, a stray BOM) is skipped first, and the
+ * full-width forms of = + - @ count, since they are read as formulas in some
+ * locales. The value itself is never changed, only prefixed.
  *
  * Only strings are guarded. A JS number or bigint cannot carry a formula, and
  * guarding it would turn a legitimate negative count or duration into the text
@@ -194,7 +204,7 @@ const CSV_MAX_ROWS = 10_000;
 function csvCell(v) {
   if (v === null || v === undefined) return '';
   let str = v instanceof Date ? v.toISOString() : String(v);
-  if (typeof v === 'string' && /^[=+\-@\t\r]/.test(str)) str = `'${str}`;
+  if (typeof v === 'string' && CSV_FORMULA_PREFIX_RE.test(str)) str = `'${str}`;
   // \r is in the quote class: a lone CR is a row break to some parsers, so a
   // value containing one must stay inside its quoted field.
   return /[",\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;

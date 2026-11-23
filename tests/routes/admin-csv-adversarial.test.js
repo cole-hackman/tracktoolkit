@@ -88,17 +88,49 @@ describe('admin CSV formula guard: adversarial cells', () => {
     expect(await catalogTitleCell(title)).toBe(expected);
   });
 
-  // Not on the guarded list (OWASP's list is = + - @ tab CR). Recorded so a
-  // change in this behaviour is a deliberate decision, not an accident:
-  // Excel and LibreOffice import ` =1+1` as text; Sheets may trim on import.
+  // What a spreadsheet may not show, or may trim, in front of the character
+  // that makes a formula. OWASP's list names a leading line feed and the
+  // full-width forms; Google Sheets trims text put into a cell, and
+  // LibreOffice has a "Trim spaces" import option. The value is never changed,
+  // only prefixed.
   test.each([
-    ['leading space then =', ' =1+1', ' =1+1'],
-    ['full-width equals', '＝1+1', '＝1+1'],
-    ['BOM then =', '﻿=1+1', '﻿=1+1'],
-    ['apostrophe already present', '\'=1', '\'=1'],
-    ['= in the middle', 'a=b', 'a=b'],
-  ])('%s is passed through unprefixed (documented residual)', async (_label, title, expected) => {
+    ['leading space then =', ' =1+1', '\' =1+1'],
+    ['several spaces then +', '   +cmd', '\'   +cmd'],
+    ['no-break space then =', '\u00a0=1+1', '\'\u00a0=1+1'],
+    ['ideographic space then @', '\u3000@SUM(A1)', '\'\u3000@SUM(A1)'],
+    ['BOM then =', '\ufeff=1+1', '\'\ufeff=1+1'],
+    ['zero-width space then =', '\u200b=1+1', '\'\u200b=1+1'],
+    ['right-to-left override then =', '\u202e=1+1', '\'\u202e=1+1'],
+    ['NUL then =', '\u0000=1+1', '\'\u0000=1+1'],
+    ['full-width equals', '\uff1d1+1', '\'\uff1d1+1'],
+    ['full-width plus', '\uff0bcmd', '\'\uff0bcmd'],
+    ['full-width minus', '\uff0d2+3', '\'\uff0d2+3'],
+    ['full-width at', '\uff20SUM(A1)', '\'\uff20SUM(A1)'],
+    ['space then full-width equals', ' \uff1d1+1', '\' \uff1d1+1'],
+    ['leading line feed', '\nplain', '"\'\nplain"'],
+    ['line feed then =', '\n=1+1', '"\'\n=1+1"'],
+  ])('%s is prefixed, and otherwise unchanged', async (_label, title, expected) => {
     expect(await catalogTitleCell(title)).toBe(expected);
+  });
+
+  // Ordinary titles and names: a trigger character that is not the first
+  // thing a spreadsheet would see must leave the cell exactly as it was.
+  test.each([
+    ['= in the middle', 'a=b'],
+    ['a hyphenated word', 're-edit'],
+    ['an email address', 'x@y.z'],
+    ['a leading space and plain text', ' plain'],
+    ['a dash between words', 'Artist - Title'],
+    ['full-width digits', '\uff11\uff12\uff13'],
+    ['an em dash first', '\u2014 Intro'],
+    ['an en dash first', '\u2013 Intro'],
+    ['a minus sign (U+2212) first', '\u2212 Intro'],
+    ['a full-width space and plain text', '\u3000plain'],
+    ['only spaces', '   '],
+    ['an apostrophe already present', '\'=1'],
+    ['a hash first', '#1 hit'],
+  ])('%s is left alone', async (_label, title) => {
+    expect(await catalogTitleCell(title)).toBe(title);
   });
 
   test('a null or undefined title is an empty cell, not "null"', async () => {
