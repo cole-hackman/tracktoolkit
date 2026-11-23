@@ -6,8 +6,14 @@ import request from 'supertest';
 // contracts (guards, validation, CSV shape, the write's inputs), never the
 // SQL itself.
 const queryRaw = jest.fn();
+const betaFindMany = jest.fn();
 jest.unstable_mockModule('../../server/lib/prisma.js', () => ({
-  default: { $queryRaw: queryRaw, $executeRaw: jest.fn() },
+  default: {
+    $queryRaw: queryRaw,
+    $executeRaw: jest.fn(),
+    // Only the retired beta survey's CSV export reads a model delegate here.
+    betaSignup: { findMany: betaFindMany },
+  },
 }));
 
 const enrichTrackIds = jest.fn();
@@ -45,6 +51,7 @@ const ORIGINAL_ADMIN_IDS = process.env.ADMIN_IDS;
 beforeEach(() => {
   process.env.ADMIN_IDS = '111';
   queryRaw.mockReset();
+  betaFindMany.mockReset().mockResolvedValue([]);
   enrichTrackIds.mockReset();
   logOperation.mockClear();
 });
@@ -168,5 +175,88 @@ describe('catalog listings', () => {
     expect(daily.status).toBe(200);
     expect(daily.body.daily).toHaveLength(7);
     expect(daily.body.daily[0]).toEqual({ date: expect.any(String), touches: 0, distinctTracks: 0, playlistTouches: 0 });
+  });
+});
+
+// Every admin CSV goes through the one `sendCsv` writer, so every export gets
+// the same formula guard the feedback inbox export always had. Catalog titles
+// and gate-reported titles are written by SoundCloud uploaders and gate pages,
+// not by us, and Excel / Sheets / LibreOffice execute a cell opening with
+// =, +, -, @, tab or CR when an admin opens the file.
+describe('CSV formula guard', () => {
+  const trackRow = (overrides) => ({
+    id: 1n, title: 'Plain', artistName: 'Kaito', artistId: 9n, genre: null,
+    genreNormalized: null, durationMs: 240000, access: 'playable', resolveStatus: 'resolved',
+    permalinkUrl: 'https://soundcloud.com/k/n', touches: 3, users: 2,
+    last_touched: null, firstSeenAt: null, lastSeenAt: null,
+    ...overrides,
+  });
+
+  test('a catalog title that is a formula exports as literal text', async () => {
+    queryRaw.mockResolvedValueOnce([
+      trackRow({ title: '=HYPERLINK("http://evil.example.com","click")' }),
+    ]);
+    const res = await request(app).get('/api/admin/catalog/tracks?period=7d&format=csv');
+    expect(res.status).toBe(200);
+    // Apostrophe first, then quoted because the value holds quotes and a comma.
+    expect(res.text).toContain('"\'=HYPERLINK(""http://evil.example.com"",""click"")"');
+    expect(res.text).not.toContain(',=HYPERLINK');
+    expect(res.text).not.toContain(',"=HYPERLINK');
+  });
+
+  test('a downloads title that is a formula exports as literal text', async () => {
+    queryRaw.mockResolvedValueOnce([{
+      track_id: 42n, title: '+cmd', artist: '@artist', permalink_url: null,
+      downloads: 1, failures: 0, users: 1, channels: ['direct'], last_at: null,
+    }]);
+    const res = await request(app).get('/api/admin/downloads/tracks?period=7d&format=csv');
+    expect(res.status).toBe(200);
+    const lines = res.text.replace(/^\ufeff/, '').split('\n');
+    expect(lines[0]).toBe('trackId,title,artist,downloads,failures,users,channels,lastAt');
+    expect(lines[1]).toBe("42,'+cmd,'@artist,1,0,1,direct,");
+  });
+
+  test.each([
+    ['=', '=1+1'],
+    ['+', '+1'],
+    ['-', '-1+1'],
+    ['@', '@SUM(A1)'],
+    ['tab', '\t=1'],
+    ['CR', '\r=1'],
+  ])('a string starting with %s is prefixed', async (_label, title) => {
+    queryRaw.mockResolvedValueOnce([trackRow({ title })]);
+    const res = await request(app).get('/api/admin/catalog/tracks?period=7d&format=csv');
+    expect(res.text).toContain(`'${title}`);
+  });
+
+  test('a negative number is a number, not a formula, and is left alone', async () => {
+    queryRaw.mockResolvedValueOnce([trackRow({ durationMs: -1, touches: -5 })]);
+    const res = await request(app).get('/api/admin/catalog/tracks?period=7d&format=csv');
+    const row = res.text.replace(/^\ufeff/, '').split('\n')[1];
+    expect(row).toContain(',-1,');
+    expect(row).toContain(',-5,');
+    expect(row).not.toContain("'-");
+  });
+
+  test('ordinary values are untouched', async () => {
+    queryRaw.mockResolvedValueOnce([trackRow({ title: 'Night Drive' })]);
+    const res = await request(app).get('/api/admin/catalog/tracks?period=7d&format=csv');
+    expect(res.text).not.toContain("'");
+    expect(res.text).toContain(',Night Drive,');
+  });
+
+  test('the beta-emails export is guarded by the same writer', async () => {
+    betaFindMany.mockResolvedValueOnce([{
+      email: 'a@b.co', platform: '=cmd|"/c calc"!A1', interest: 'line\rbreak',
+      wantsCall: false, rekordboxUse: null, createdAt: new Date('2026-09-22T00:00:00Z'),
+    }]);
+    const res = await request(app).get('/api/admin/feedback/beta-emails');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-disposition']).toMatch(/beta-emails\.csv/);
+    const body = res.text.replace(/^\ufeff/, '');
+    expect(body.split('\n')[0]).toBe('email,platform,interest,wantsCall,rekordboxUse,createdAt');
+    expect(body).toContain('"\'=cmd|""/c calc""!A1"');
+    // A lone CR stays inside its quoted field instead of splitting the row.
+    expect(body).toContain('"line\rbreak"');
   });
 });

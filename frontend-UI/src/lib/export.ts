@@ -1,3 +1,5 @@
+import { csvEscape } from "./csv";
+
 export interface ExportUser {
   username?: string;
   display_name?: string;
@@ -60,8 +62,9 @@ export function formatTrackUrlLine(track: ExportTrack): string {
   return track.permalink_url?.trim() || "";
 }
 
+/** Kept for its callers; the quoting and the formula guard live in `csvEscape`. */
 export function escapeCsvCell(value: unknown): string {
-  return `"${String(value ?? "").replaceAll('"', '""')}"`;
+  return csvEscape(value);
 }
 
 export function tracksToCsv(tracks: ExportTrack[], extra?: { liked_at?: string }[]): string {

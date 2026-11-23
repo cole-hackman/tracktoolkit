@@ -495,21 +495,59 @@ sorts on `duration`, `firstSeen` and `lastSeen`, and `format=csv` (the
 current filter set, up to 10,000 rows, no COUNT query). The CSV writer and
 the day-filling helpers (`periodDayCount`, `fillDays`) are shared by
 `/daily` and `/catalog/daily`. `tests/routes/admin-catalog.test.js` covers
-the re-resolve guards and the CSV contract.
+the re-resolve guards, the CSV contract and its formula guard.
 
 **`/feedback/*` and `/feedback-items*` are different tables.** `/feedback/*`
 is the retired SongSwipe beta survey (`BetaSignup`); `/feedback-items*` is the
 live in-app feedback form (`Feedback`). The path spelling is the only thing
 keeping them apart, so do not "tidy" one into the other.
 
-**`/feedback-items.csv` guards against formula injection.** `message` and
-`adminNote` are free text, and Excel / Sheets / LibreOffice execute a cell that
-opens with `=`, `+`, `-`, `@`, tab or CR — so a report reading
-`=HYPERLINK("http://evil...")` would fire when an admin opens the export. Cells
-starting with any of those get a leading apostrophe, and `\r` is in the
-quote-trigger class so a lone carriage return cannot split one report into two
-rows. The older `feedback/beta-emails` export does **not** have this guard yet
-(its fields are far less free-form) — that is a known follow-up.
+**Every CSV export guards the start of each cell against formula injection.** Track titles, artist
+names, feedback messages and admin notes are other people's text, and Excel /
+Sheets / LibreOffice execute a cell that opens with `=`, `+`, `-`, `@`, tab,
+CR or LF — so a title reading `=HYPERLINK("http://evil...")` would fire when an
+admin opens the export. On the server every admin CSV (catalog tracks,
+playlists and artists, downloads tracks, `feedback/beta-emails`,
+`/feedback-items.csv`) goes through `sendCsv` → `csvCell` in
+`routes/admin.js`; do not add a CSV route with its own escape. A **string**
+that a spreadsheet could read as a formula gets a leading apostrophe, and
+`\r` is in the quote-trigger class so a lone carriage return cannot split one
+row into two. Numbers and bigints are never prefixed: they cannot carry a
+formula, and `'-1` would stop a negative count sorting as a number. In the
+browser the same rule is `csvEscape` in `frontend-UI/src/lib/csv.ts`, the one
+definition behind `downloadCsv`, the Export tool's `escapeCsvCell`
+(`lib/export.ts`) and the resolver's CSV (`resolvedRowsToCsv` in
+`lib/resolver/csv.ts`).
+
+"Could read as a formula" is one pattern, `CSV_FORMULA_PREFIX_RE`, written
+out in both files and held identical by `tests/csv-guard-parity.test.js`. It
+matches a leading tab, CR or LF, and otherwise skips what a spreadsheet does
+not show or may trim (spaces of any width, control characters, the common
+zero-width and direction marks, a stray BOM) and then looks for `=`, `+`, `-`, `@` or their
+full-width forms `＝ ＋ － ＠`. The reasons: OWASP's list names the line feed and
+the full-width forms ("may be interpreted as formulas in some locales");
+Google's TRIM help says "Google Sheets trims text input into cells by
+default"; LibreOffice's CSV import has a "Trim spaces" option. Whether Excel
+or a Sheets *import* evaluates ` =1+1` is not established by any
+documentation found, so the leading-space case is defence in depth, not a
+known exploit. The value is never changed, only prefixed, and a trigger that
+is not the first visible character (`a=b`, `re-edit`, `x@y.z`,
+`Artist - Title`) is left alone. Not covered: OWASP notes Excel may drop the
+apostrophe when a CSV is saved and reopened, and suggests a tab prefix
+instead, which would put a tab in the data. Nor is a reader that splits on
+semicolons: `a;=1+1` is one safe cell in a comma file, but split on `;` its
+middle starts with `=` (shown with a CSV parser; not tried in Excel with a
+semicolon list separator). Rarer invisible characters (U+061C, variation
+selectors, tag characters) and other compatibility forms of the operators are
+not matched either. Tests:
+`tests/routes/admin-catalog.test.js`,
+`tests/routes/admin-csv-adversarial.test.js`,
+`tests/routes/admin-feedback.test.js`,
+`frontend-UI/e2e/export-csv.unit.spec.ts`,
+`frontend-UI/e2e/export-csv-adversarial.unit.spec.ts`,
+`frontend-UI/e2e/resolver-csv.unit.spec.ts` and
+`frontend-UI/e2e/link-resolver-export.spec.ts` (clicks Export CSV and reads
+the saved file).
 
 The `PATCH` writes `status` and `adminNote` and nothing else — no admin action
 can rewrite what a user said. An empty patch is refused rather than issued as a

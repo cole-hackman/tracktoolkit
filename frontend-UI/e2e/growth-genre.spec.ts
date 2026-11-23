@@ -33,6 +33,11 @@ async function pickSeed(page: Page) {
 }
 
 test("genre focus select is labelled, described, and audits clean: /growth/", async ({ page }) => {
+  // Before the seed is ticked: ticking it enables "Scan Networks", which fades
+  // from 50% to full opacity over 150 ms, and an audit that lands inside the
+  // fade reads the blended colours as a contrast failure (see the same note
+  // in sort-likes.spec.ts).
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await mockApi(page);
   await pickSeed(page);
 

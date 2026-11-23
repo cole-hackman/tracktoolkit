@@ -195,10 +195,16 @@ test("both preview players mount; the waveform loads", async ({ page }) => {
 });
 
 test("no serious axe violations with destinations and marks; no horizontal overflow", async ({ page }) => {
+  // Before anything moves, not just before the audit. Marking the first track
+  // enables the commit button, which then fades from 50% to full opacity over
+  // 150 ms (Button: `transition-all duration-150`, `disabled:opacity-50`). axe
+  // read the blended colours mid-fade and reported a contrast failure (4.00:1
+  // or less; 5.45:1 once settled) in 79 of 80 runs with one worker. Asking
+  // for reduced motion after the keypress did not stop a fade already running.
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await open(page);
   await addDestinations(page);
   await pressOnPage(page, "2");
-  await page.emulateMedia({ reducedMotion: "reduce" });
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag22aa"]).analyze();
   const blocking = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
   expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
@@ -270,11 +276,13 @@ test("select mode: tick a range, mark them all with a button or a hotkey, undo t
 });
 
 test("select mode: no serious axe violations, no horizontal overflow", async ({ page }) => {
+  // Before anything moves, for the reason given on the audit above: ticking
+  // the first row enables the selection's buttons, and they fade in.
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await open(page);
   await addDestinations(page);
   await page.getByRole("button", { name: "Select tracks" }).click();
   await page.getByTestId("sort-list").getByText("Groove Machine").click();
-  await page.emulateMedia({ reducedMotion: "reduce" });
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag22aa"]).analyze();
   const blocking = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
   expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
