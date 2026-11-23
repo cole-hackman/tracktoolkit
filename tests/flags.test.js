@@ -220,6 +220,33 @@ describe('experiment eligibility', () => {
     expect(evaluateFlag(KEY, newUser(902), { env }).enabled).toBe(true);
   });
 
+  test.each(['900;901', '900 901', '"900"', 'cole', '900,,x', '9e2'])(
+    'an exclusion list that cannot be read (%p) enrols nobody, rather than dropping the entry',
+    (raw) => {
+      const env = running(100, { EXPERIMENT_EXCLUDE_IDS: raw });
+      // Not just the accounts named: an entry that was dropped is an account
+      // somebody meant to keep out.
+      for (const id of [900, 901, 902, 5555]) {
+        expect(evaluateFlag(KEY, newUser(id), { env }).reason).toBe('invalid-exclusions');
+      }
+      expect(readFlagConfig(KEY, { env }).problems.join(' ')).toMatch(/EXPERIMENT_EXCLUDE_IDS has an entry that is not a SoundCloud id/);
+      expect(flagsForUser(newUser(902), { env }).experiments).toEqual([]);
+    },
+  );
+
+  test('a readable exclusion list tolerates spaces and empty entries', () => {
+    const env = running(100, { EXPERIMENT_EXCLUDE_IDS: ' 900 ,, 901, ' });
+    expect(readFlagConfig(KEY, { env }).problems).toEqual([]);
+    expect(evaluateFlag(KEY, newUser(900), { env }).reason).toBe('excluded-id');
+    expect(evaluateFlag(KEY, newUser(902), { env }).enabled).toBe(true);
+  });
+
+  test('a bad exclusion list does not turn a rollout flag off', () => {
+    const env = { FLAG_NEW_THING_PERCENT: '100', EXPERIMENT_EXCLUDE_IDS: 'oops' };
+    expect(isFlagEnabled('new-thing', newUser(5), { env, flags: TEST_FLAGS })).toBe(true);
+    expect(readFlagConfig('new-thing', { env, flags: TEST_FLAGS }).problems).toEqual([]);
+  });
+
   test('only accounts first seen at or after the start are eligible', () => {
     const env = running(100);
     expect(evaluateFlag(KEY, newUser(1, '2026-11-30T23:59:59Z'), { env }).reason).toBe('before-start');
@@ -297,6 +324,23 @@ describe('settings fail towards off', () => {
       expect(evaluateFlag(KEY, newUser(1), { env }).enabled).toBe(false);
     },
   );
+
+  test.each(['2026-02-30T00:00:00Z', '2026-12-04T24:00:00Z', '2026-13-01T00:00:00Z', '2026-12-15T00:60:00Z', '2026-12-00T00:00:00Z', '2025-02-29T00:00:00Z'])(
+    'an end of %p is refused, not rolled over to the next real date',
+    (raw) => {
+      // `new Date` turns February 30th into March 2nd. As an END that would
+      // extend enrolment by two days with nothing to say so.
+      const env = running(100, { FLAG_GUIDED_FIRST_RUN_END: raw });
+      const config = readFlagConfig(KEY, { env });
+      expect(config).toMatchObject({ end: null, endInvalid: true });
+      expect(evaluateFlag(KEY, newUser(1), { env }).reason).toBe('invalid-end');
+    },
+  );
+
+  test('a leap day that exists is accepted', () => {
+    const config = readFlagConfig(KEY, { env: { FLAG_GUIDED_FIRST_RUN_START: '2028-02-29T12:30:00Z' } });
+    expect(config.start.toISOString()).toBe('2028-02-29T12:30:00.000Z');
+  });
 
   test('a start with an offset is the same instant as its UTC form', () => {
     const config = readFlagConfig(KEY, { env: { FLAG_GUIDED_FIRST_RUN_START: '2026-11-30T16:00:00-08:00' } });

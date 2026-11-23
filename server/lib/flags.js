@@ -49,9 +49,11 @@
  * `guided-first-run` → FLAG_GUIDED_FIRST_RUN_PERCENT.
  *
  * EVERY MISREAD FAILS TOWARDS OFF. A percent that is not a whole number from 0
- * to 100 is 0. A start that does not parse is no start. A FLAGS_KILL entry
- * that is not a known flag key kills every flag — a typo in the kill switch
- * must stop more than was meant, never less. Each is reported in `problems`,
+ * to 100 is 0. A start that does not parse is no start, and an end that does
+ * not parse closes enrolment. An EXPERIMENT_EXCLUDE_IDS entry that is not an
+ * id stops every experiment enrolling. A FLAGS_KILL entry that is not a known
+ * flag key kills every flag — a typo in the kill switch must stop more than
+ * was meant, never less. Each is reported in `problems`,
  * in the boot log and in the admin console, so a setting that was not honoured
  * is visible rather than silent.
  *
@@ -164,19 +166,43 @@ function parsePercent(raw) {
  * same string would mean a different instant on a laptop and on App Service,
  * and this instant decides who is in the experiment.
  */
-const ISO_WITH_ZONE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
+const ISO_WITH_ZONE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(?:Z|[+-](\d{2}):(\d{2}))$/;
 function parseInstant(raw) {
   const text = String(raw).trim();
-  if (!ISO_WITH_ZONE.test(text)) return null;
+  const match = ISO_WITH_ZONE.exec(text);
+  if (!match) return null;
+  // `new Date` rolls an impossible date over instead of refusing it:
+  // February 30th becomes March 2nd and 24:00 becomes the next day. A typo
+  // in END would then extend enrolment without a word, so the fields are
+  // checked against the calendar first.
+  const [year, month, day, hour, minute, second = 0, offsetHour = 0, offsetMinute = 0] = match.slice(1).map((part) => (part === undefined ? undefined : Number(part)));
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth) return null;
+  if (hour > 23 || minute > 59 || second > 59 || offsetHour > 14 || offsetMinute > 59) return null;
   const date = new Date(text);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-const parseIds = (value) =>
-  (value || '')
+/**
+ * EXPERIMENT_EXCLUDE_IDS, strictly. An entry that is not a plain positive
+ * integer (`999;123`, `"123"`, a username) is returned in `invalid` rather
+ * than dropped: dropping it would enrol exactly the account someone meant to
+ * keep out, and say nothing.
+ */
+function readExclusions(env) {
+  const tokens = String(env.EXPERIMENT_EXCLUDE_IDS ?? '')
     .split(',')
-    .map((s) => Number(s.trim()))
-    .filter((n) => Number.isSafeInteger(n) && n > 0);
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const ids = [];
+  const invalid = [];
+  for (const token of tokens) {
+    const id = Number(token);
+    if (/^\d+$/.test(token) && Number.isSafeInteger(id) && id > 0) ids.push(id);
+    else invalid.push(token);
+  }
+  return { ids, invalid };
+}
 
 /**
  * Which flags FLAGS_KILL turns off. An entry that names no flag kills them
@@ -254,6 +280,17 @@ export function readFlagConfig(key, { env = process.env, flags = FLAGS } = {}) {
     problems.push(`${flagEnvName(key, 'START')} is not set; nobody is eligible until it is`);
   }
 
+  // A list that cannot be read excludes nobody it was meant to, so an
+  // experiment enrols no one until it is fixed.
+  const exclusions = readExclusions(env);
+  const exclusionsInvalid = definition.kind === 'experiment' && exclusions.invalid.length > 0;
+  if (exclusionsInvalid) {
+    problems.push(
+      `EXPERIMENT_EXCLUDE_IDS has an entry that is not a SoundCloud id (${exclusions.invalid.join(', ')}); ` +
+      'nobody is enrolled until it is fixed',
+    );
+  }
+
   const kill = readKill(env, flags);
   if (kill.unknown.length) {
     problems.push(`FLAGS_KILL names no known flag (${kill.unknown.join(', ')}); every flag is off`);
@@ -270,6 +307,8 @@ export function readFlagConfig(key, { env = process.env, flags = FLAGS } = {}) {
     start,
     end,
     endInvalid: endSetting.invalid,
+    excludedIds: exclusions.ids,
+    exclusionsInvalid,
     variants: definition.variants ?? null,
     newUsersOnly: !!definition.newUsersOnly,
     guard: definition.guard ?? null,
@@ -321,7 +360,8 @@ export function evaluateFlag(key, user, { env = process.env, flags = FLAGS } = {
   // Experiment.
   if (config.percent <= 0) return off('rollout-0');
   if (isAdmin) return off('excluded-admin');
-  if (parseIds(env.EXPERIMENT_EXCLUDE_IDS).includes(soundcloudId)) return off('excluded-id');
+  if (config.exclusionsInvalid) return off('invalid-exclusions');
+  if (config.excludedIds.includes(soundcloudId)) return off('excluded-id');
 
   if (config.newUsersOnly) {
     if (!config.start) return off('no-start');
