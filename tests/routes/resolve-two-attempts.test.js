@@ -9,13 +9,13 @@ import request from 'supertest';
  *
  *   - the second attempt carries no credentials, so "refused" from it means
  *     only that the link needs some;
- *   - the first attempt can fail for reasons of ours. `resolveAny` passes a
- *     failed token refresh through as thrown, so a database error on the save
- *     arrives here as Prisma text. That says nothing about the link either.
+ *   - the first attempt can fail without saying anything about the link: a
+ *     failed token refresh, a database error on the token save, the network.
  *
- * So the phrase comes from the first failure when SoundCloud answered it, and
- * otherwise only from what the public attempt can actually know (not found,
- * rate limited, no answer). The raw errors go to the server log, once per run.
+ * So the phrase comes from the first failure when it has one, and otherwise
+ * only from what the public attempt can actually know (not found, rate
+ * limited, no answer). The server log gets one line per run that had a failed
+ * link, describing the first one's errors by name, code and status.
  */
 
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
@@ -134,6 +134,10 @@ describe('POST /api/resolve/batch: both attempts fail, with different errors', (
 });
 
 describe('POST /api/resolve/batch: the server log keeps what the response does not say', () => {
+  const TRACK = { kind: 'track', id: 5, title: 'T', sharing: 'public', user: { username: 'u' } };
+  const failedLines = () => warned.filter((args) => args[0] === '[WARN] Batch resolve: links failed');
+  const coveredLines = () => warned.filter((args) => args[0] === '[WARN] Batch resolve: public retry covered a failed signed-in attempt');
+
   test('a database error behind a failed link is logged once, by code, without its text, the link or a token', async () => {
     resolveAny.mockImplementation(async () => { throw dbDown(); });
     resolvePublic.mockImplementation(async () => { throw sc(401); });
@@ -141,27 +145,125 @@ describe('POST /api/resolve/batch: the server log keeps what the response does n
 
     await batch(urls);
 
-    // By code, not by its text: see safeErrorBrief.
-    const lines = logged().filter((line) => line.includes('P1001'));
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('Resolve error: 401');   // the public attempt's answer, beside it
+    expect(failedLines()).toHaveLength(1);
+    expect(failedLines()[0][1]).toEqual({
+      failed: '3',   // the logger prints numbers as text
+      total: '3',
+      first: { name: 'Error', code: 'P1001' },
+      firstPublic: { name: 'Error', message: 'Resolve error: 401' },   // the public attempt's answer, beside it
+    });
+    expect(coveredLines()).toEqual([]);
     for (const line of logged()) {
       expect(line).not.toMatch(/db\.internal|5432|ACCESS-TOKEN|REFRESH-TOKEN|soundcloud\.com\/artist/);
     }
   });
 
-  test('a database error is logged even when the public attempt then succeeds', async () => {
+  test('nothing the thrower wrote is in the line', async () => {
+    resolveAny.mockImplementation(async () => {
+      throw new TypeError('Headers.append: "OAuth 2-AB\0CDTOKEN" is an invalid header value.');
+    });
+    resolvePublic.mockImplementation(async () => { throw new Error('GET soundcloud.com/artist/track/s-SECRETLINK failed'); });
+
+    const res = await batch([freshUrl()]);
+
+    expect(res.status).toBe(200);
+    expect(failedLines()).toHaveLength(1);
+    expect(failedLines()[0][1]).toEqual({ failed: '1', total: '1', first: { name: 'TypeError' }, firstPublic: { name: 'Error' } });
+    for (const line of logged()) expect(line).not.toMatch(/2-AB|CDTOKEN|OAuth|s-SECRETLINK/);
+  });
+
+  test('a signed-in failure with no HTTP status that the public retry covered has its own line', async () => {
     resolveAny.mockImplementation(async () => { throw dbDown(); });
-    resolvePublic.mockResolvedValue({ kind: 'track', id: 5, title: 'T', sharing: 'public', user: { username: 'u' } });
+    resolvePublic.mockResolvedValue(TRACK);
+
+    const res = await batch([freshUrl(), freshUrl()]);
+
+    expect(res.body.results.map((r) => r.status)).toEqual(['ok', 'ok']);
+    expect(failedLines()).toEqual([]);
+    expect(coveredLines()).toHaveLength(1);
+    expect(coveredLines()[0][1]).toEqual({ covered: '2', total: '2', first: { name: 'Error', code: 'P1001' } });
+  });
+
+  test('several covered links: the count, and the first one\'s error', async () => {
+    const [a, b, c] = [freshUrl(), freshUrl(), freshUrl()];
+    resolveAny.mockImplementation(async (_at, _rt, url) => {
+      if (url === a) throw sc(401);            // covered, but ordinary
+      throw url === b ? dbDown() : refreshFailed();
+    });
+    resolvePublic.mockResolvedValue(TRACK);
+
+    await batch([a, b, c]);
+
+    expect(coveredLines()).toHaveLength(1);
+    expect(coveredLines()[0][1]).toEqual({ covered: '2', total: '3', first: { name: 'Error', code: 'P1001' } });
+  });
+
+  test('a signed-in failure, then a public answer that cannot be parsed: a failed link, described by what was thrown', async () => {
+    resolveAny.mockImplementation(async () => { throw dbDown(); });
+    resolvePublic.mockResolvedValue({ kind: 'something-else', id: 1 });
+
+    const res = await batch([freshUrl()]);
+
+    expect(res.body.results[0]).toMatchObject({ status: 'error', error: 'Could not parse resource' });
+    expect(failedLines()).toHaveLength(1);
+    expect(failedLines()[0][1]).toEqual({ failed: '1', total: '1', first: { name: 'Error', code: 'P1001' } });
+    expect(coveredLines()).toEqual([]);
+  });
+
+  test.each([400, 401, 403, 404, 410])('a %i that the public retry covered is ordinary and logs nothing', async (status) => {
+    resolveAny.mockImplementation(async () => { throw sc(status); });
+    resolvePublic.mockResolvedValue(TRACK);
 
     const res = await batch([freshUrl()]);
 
     expect(res.body.results[0].status).toBe('ok');
-    expect(logged().filter((line) => line.includes('P1001'))).toHaveLength(1);
-    expect(logged().join(' ')).not.toMatch(/db\.internal|5432/);
+    expect(warned).toEqual([]);
   });
 
-  test('an ordinary partial failure logs the first raw error once', async () => {
+  test('a failed link is never counted as covered, whatever its first error', async () => {
+    const [failed, covered] = [freshUrl(), freshUrl()];
+    resolveAny.mockImplementation(async () => { throw dbDown(); });
+    resolvePublic.mockImplementation(async (url) => {
+      if (url === failed) throw sc(404);
+      return TRACK;
+    });
+
+    await batch([failed, covered]);
+
+    expect(failedLines()).toHaveLength(1);
+    expect(failedLines()[0][1].failed).toBe('1');
+    expect(coveredLines()).toHaveLength(1);
+    expect(coveredLines()[0][1].covered).toBe('1');
+  });
+
+  test('a 404 and then a 500 on different links: the line carries the first failed link only', async () => {
+    const [missing, broken] = [freshUrl(), freshUrl()];
+    resolveAny.mockImplementation(async (_at, _rt, url) => { throw url === missing ? sc(404) : sc(500); });
+    resolvePublic.mockImplementation(async () => { throw sc(404); });
+
+    await batch([missing, broken]);
+
+    expect(failedLines()).toHaveLength(1);
+    expect(failedLines()[0][1]).toEqual({
+      failed: '2',
+      total: '2',
+      first: { name: 'Error', message: 'Resolve error: 404' },
+      firstPublic: { name: 'Error', message: 'Resolve error: 404' },
+    });
+    expect(coveredLines()).toEqual([]);
+  });
+
+  test('links whose resource cannot be parsed are failed links too: the line has the count and no error', async () => {
+    resolveAny.mockResolvedValue({ kind: 'something-else', id: 1 });
+
+    const res = await batch([freshUrl(), freshUrl()]);
+
+    expect(res.body.results.map((r) => r.error)).toEqual(['Could not parse resource', 'Could not parse resource']);
+    expect(failedLines()).toHaveLength(1);
+    expect(failedLines()[0][1]).toEqual({ failed: '2', total: '2' });
+  });
+
+  test('an ordinary partial failure logs the first error once', async () => {
     const [ok, missing, alsoMissing] = [freshUrl(), freshUrl(), freshUrl()];
     resolveAny.mockImplementation(async (_at, _rt, url) => {
       if (url === ok) return { kind: 'track', id: 6, title: 'T', sharing: 'public', user: { username: 'u' } };
@@ -171,7 +273,19 @@ describe('POST /api/resolve/batch: the server log keeps what the response does n
 
     await batch([ok, missing, alsoMissing]);
 
-    expect(logged().filter((line) => line.includes('Resolve error: 404'))).toHaveLength(1);
+    expect(failedLines()).toHaveLength(1);
+    expect(failedLines()[0][1]).toMatchObject({ failed: '2', total: '3' });
+  });
+
+  test('the operation log keeps the message of the last error of the first failed link, when no link resolved', async () => {
+    resolveAny.mockImplementation(async () => { throw sc(401); });
+    resolvePublic.mockImplementation(async () => { throw sc(404); });
+
+    await batch([freshUrl()]);
+
+    const op = logOperation.mock.calls.map((c) => c[0]).find((a) => a.action === 'batch-resolve');
+    expect(op.errorCode).toBe('ALL_ITEMS_FAILED');
+    expect(op.errorMessage).toBe('Resolve error: 404');
   });
 
   test('nothing is logged when every link resolves', async () => {
@@ -195,6 +309,134 @@ describe('POST /api/resolve/batch: the server log keeps what the response does n
     expect(res.status).toBe(200);
     expect(res.body.results.map((r) => r.status)).toEqual(['error', 'ok']);
     expect(res.body.results[0].error).toBe(UNKNOWN);
+  });
+});
+
+describe('POST /api/resolve/batch: only the exact status message picks a phrase', () => {
+  test.each([
+    ['text before it', 'upstream said Resolve error: 404'],
+    ['text after it', 'Resolve error: 404 for this link'],
+    ['a longer number', 'Resolve error: 4040'],
+    ['a line before it', 'x\nResolve error: 404'],
+    ['a line after it', 'Resolve error: 404\nx'],
+    ['another case', 'resolve error: 404'],
+  ])('%s: the item says only that it failed', async (_name, message) => {
+    resolveAny.mockImplementation(async () => { throw new Error(message); });
+    resolvePublic.mockImplementation(async () => { throw new Error(message); });
+    const url = freshUrl();
+
+    const res = await batch([url]);
+
+    expect(res.body.results).toEqual([{ url, status: 'error', error: UNKNOWN }]);
+  });
+});
+
+describe('POST /api/resolve/batch: a status on the error itself counts, whatever its message', () => {
+  const withStatus = (status) => Object.assign(new Error('upstream said no'), { status });
+
+  test('a 403 picks "refused"', async () => {
+    resolveAny.mockImplementation(async () => { throw withStatus(403); });
+    resolvePublic.mockImplementation(async () => { throw withStatus(404); });
+    const url = freshUrl();
+
+    const res = await batch([url]);
+
+    expect(res.body.results).toEqual([{ url, status: 'error', error: REFUSED }]);
+  });
+
+  test('a 401 that the public retry covered is ordinary and logs nothing', async () => {
+    resolveAny.mockImplementation(async () => { throw withStatus(401); });
+    resolvePublic.mockResolvedValue({ kind: 'track', id: 11, title: 'T', sharing: 'public', user: { username: 'u' } });
+
+    const res = await batch([freshUrl()]);
+
+    expect(res.body.results[0].status).toBe('ok');
+    expect(warned).toEqual([]);
+  });
+});
+
+describe('POST /api/resolve/batch: a thrown value cannot fail the run or skip its bookkeeping', () => {
+  const explode = () => { throw new Error('GETTER-TEXT'); };
+  const HOSTILE = [
+    ['an object with no prototype', () => Object.create(null)],
+    ['throwing getters', () => Object.defineProperties({}, {
+      name: { get: explode }, message: { get: explode }, code: { get: explode },
+      status: { get: explode }, cause: { get: explode }, stack: { get: explode },
+    })],
+    ['a throwing toString', () => ({ toString: explode, valueOf: explode, [Symbol.toPrimitive]: explode })],
+    ['a proxy that throws on every read', () => new Proxy({}, { get: explode, has: explode })],
+  ];
+  const TRACK = { kind: 'track', id: 9, title: 'T', sharing: 'public', user: { username: 'u' } };
+  let unhandled;
+  const onUnhandled = (reason) => { unhandled.push(reason); };
+  beforeEach(() => { unhandled = []; process.on('unhandledRejection', onUnhandled); });
+  afterEach(() => process.off('unhandledRejection', onUnhandled));
+  const settle = async () => { for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r)); };
+  const op = () => logOperation.mock.calls.map((c) => c[0]).find((a) => a.action === 'batch-resolve');
+
+  test.each(HOSTILE)('%s from both attempts: 200, one failed item, the operation logged', async (_name, make) => {
+    const [bad, good] = [freshUrl(), freshUrl()];
+    resolveAny.mockImplementation(async (_at, _rt, url) => { if (url === bad) throw make(); return TRACK; });
+    resolvePublic.mockImplementation(async () => { throw make(); });
+
+    const res = await batch([bad, good]);
+    await settle();
+
+    expect(res.status).toBe(200);
+    expect(res.body.results.map((r) => [r.status, r.error])).toEqual([['error', UNKNOWN], ['ok', undefined]]);
+    expect(op()).toMatchObject({ status: 'success', metadata: { total: 2, succeeded: 1, failed: 1 } });
+    expect(logged().join(' ')).not.toContain('GETTER-TEXT');
+    expect(unhandled).toEqual([]);
+  });
+
+  test.each(HOSTILE)('%s, every link: the operation log gets the fallback text', async (_name, make) => {
+    resolveAny.mockImplementation(async () => { throw make(); });
+    resolvePublic.mockImplementation(async () => { throw make(); });
+
+    const res = await batch([freshUrl()]);
+    await settle();
+
+    expect(res.status).toBe(200);
+    expect(op()).toMatchObject({ status: 'error', errorMessage: 'Resolve failed' });
+    expect(unhandled).toEqual([]);
+  });
+
+  test.each(HOSTILE)('%s, covered by the public retry: 200 and resolved', async (_name, make) => {
+    resolveAny.mockImplementation(async () => { throw make(); });
+    resolvePublic.mockResolvedValue(TRACK);
+
+    const res = await batch([freshUrl()]);
+    await settle();
+
+    expect(res.status).toBe(200);
+    expect(res.body.results[0].status).toBe('ok');
+    expect(op()).toMatchObject({ status: 'success' });
+    expect(unhandled).toEqual([]);
+  });
+
+  test('a console that throws changes nothing', async () => {
+    resolveAny.mockImplementation(async () => { throw sc(404); });
+    resolvePublic.mockImplementation(async () => { throw sc(404); });
+    console.warn.mockImplementation(() => { throw new Error('EPIPE'); });
+
+    const res = await batch([freshUrl()]);
+    await settle();
+
+    expect(res.status).toBe(200);
+    expect(op()).toMatchObject({ status: 'error', errorMessage: 'Resolve error: 404' });
+    expect(unhandled).toEqual([]);
+  });
+
+  test('bookkeeping that throws after the response is logged, and is not a second response', async () => {
+    resolveAny.mockResolvedValue(TRACK);
+    logOperation.mockImplementationOnce(() => { throw new Error('analytics down'); });
+
+    const res = await batch([freshUrl()]);
+    await settle();
+
+    expect(res.status).toBe(200);
+    expect(errored.filter((args) => args[0] === '[ERROR] Batch resolve error:')).toHaveLength(1);
+    expect(unhandled).toEqual([]);
   });
 });
 

@@ -133,8 +133,9 @@ function playlistDescriptionWithToolkit(operationDescription) {
 const OEMBED_TIMEOUT_MS = 4000;
 
 function shouldRetryPublicly(error) {
-  const message = String(error?.message || '');
-  if (error?.name === 'AbortError' || /abort/i.test(message)) return false;
+  // Read through the helpers that cannot throw: `error` is whatever was thrown.
+  const message = rawErrorMessage(error, '');
+  if (safeErrorBrief(error).name === 'AbortError' || /abort/i.test(message)) return false;
   if (/\b429\b/.test(message)) return false;
   if (/\b5\d\d\b/.test(message)) return false;
   return true;
@@ -1392,24 +1393,31 @@ function mergeDeleteErrorText(err) {
 }
 
 /**
- * What a failed resolve attempt says about the link, from SoundCloud's status
- * only. resolveAny/resolvePublic throw plain Errors ("Resolve error: 404")
- * with no status, so it is read off that exact message shape and nothing else
- * is taken from the text. Null when SoundCloud did not answer for the link at
- * all: a failed token refresh, a database error on the token save (resolveAny
- * passes both through as thrown), a network failure.
+ * The HTTP status a failed resolve attempt carries, or null. resolveAny and
+ * resolvePublic throw plain Errors ("Resolve error: 404") with no `status`,
+ * so it is read off that exact message and nothing else is taken from the
+ * text. Null means no status at all: a failed token refresh, a database
+ * error on the token save, the network, a body that is not JSON, or
+ * something that is not an error. Cannot throw.
+ */
+function resolveFailureStatus(err) {
+  const status = scErrorStatus(err);
+  if (Number.isInteger(status)) return status;
+  const fromMessage = /^Resolve (?:follow )?error: (\d{3})$/.exec(rawErrorMessage(err, ''));
+  return fromMessage ? Number(fromMessage[1]) : null;
+}
+
+/**
+ * The phrase a failed resolve attempt picks, or null when it picks none:
+ * there is no status, or the status has no phrase (400, 410, 500).
  *
  * @returns {'not_found'|'refused'|'rate_limited'|'upstream_unavailable'|null}
  */
 function resolveFailureKind(err) {
-  let status = err?.status;
-  if (status == null) {
-    const fromMessage = /^Resolve (?:follow )?error: (\d{3})$/.exec(String(err?.message));
-    if (fromMessage) status = Number(fromMessage[1]);
-  }
+  const status = resolveFailureStatus(err);
   if (status === 404) return 'not_found';
   if (status === 401 || status === 403) return 'refused';
-  return classifyScError({ status, code: err?.code });
+  return classifyScError(err) ?? classifyScError({ status });
 }
 
 const RESOLVE_FAILURE_TEXT = {
@@ -1423,12 +1431,12 @@ const RESOLVE_FAILURE_TEXT = {
  *
  * A link can fail twice: with the user's token (`firstErr`), then without one
  * (`publicErr`, when a public retry was made and failed too). The phrase comes
- * from the first failure whenever SoundCloud answered it, because that is the
- * attempt that could see the link. If the first failure was ours, nothing is
- * known about the link from it, and the public attempt may only add what it
- * can actually know: not found, rate limited, no answer. "Refused" without
- * credentials means only that the link needs some, so it is not repeated as
- * if it were a finding; the item then says no more than that it failed.
+ * from the first failure when it picks one (`resolveFailureKind`), because
+ * that is the attempt that could see the link. When it picks none, the public
+ * attempt may only add what it can actually know: not found, rate limited, no
+ * answer. "Refused" without credentials means only that the link needs some,
+ * so it is not repeated as if it were a finding; the item then says no more
+ * than that it failed.
  */
 function batchResolveErrorText(firstErr, publicErr = null) {
   let kind = resolveFailureKind(firstErr);
@@ -3734,9 +3742,10 @@ router.post('/resolve/batch', authenticateUser, heavyOperationRateLimiter, valid
         return { result: { url: rawUrl, status: 'ok', data: cachedData }, index, resource: cached.v1 };
       }
 
-      // What the attempt with the user's token threw, if it threw. Kept
-      // beside the outcome: it picks the phrase when the public retry fails
-      // too, and it is logged even when the retry succeeds.
+      // What the attempt with the user's token threw, if it threw. It picks
+      // the phrase when the public retry fails too, and the run's log lines
+      // describe it: as `failure.first` on a link that failed, as `covered`
+      // on one the public retry resolved.
       let authFailure = null;
       try {
         let resource;
@@ -3760,9 +3769,13 @@ router.post('/resolve/batch', authenticateUser, heavyOperationRateLimiter, valid
             setCachedResolve(url, { v1: normalizedV1, v2: normalizedV2 });
           }
           const payload = useV2 ? normalizedV2 : normalizedV1;
-          return { result: { url: rawUrl, status: 'ok', data: payload }, index, resource: normalizedV1, authFailure };
+          return { result: { url: rawUrl, status: 'ok', data: payload }, index, resource: normalizedV1, covered: authFailure };
         }
-        return { result: { url: rawUrl, status: 'error', error: 'Could not parse resource' }, index, authFailure };
+        return {
+          result: { url: rawUrl, status: 'error', error: 'Could not parse resource' },
+          index,
+          failure: authFailure ? { first: authFailure.error, public: null } : undefined,
+        };
       } catch (err) {
         // `err` is the public attempt's failure when one was made and it is
         // not the error just caught above; otherwise it is the only failure.
@@ -3773,9 +3786,8 @@ router.post('/resolve/batch', authenticateUser, heavyOperationRateLimiter, valid
           result: { url: rawUrl, status: 'error', error: batchResolveErrorText(firstErr, publicErr?.error) },
           index,
           // For the operation log, unchanged: the message of the last error.
-          rawError: err?.message || 'Resolve failed',
+          rawError: rawErrorMessage(err, 'Resolve failed'),
           failure: { first: firstErr, public: publicErr },
-          authFailure,
         };
       }
     });
@@ -3790,22 +3802,6 @@ router.post('/resolve/batch', authenticateUser, heavyOperationRateLimiter, valid
     }
 
     const failures = results.filter(r => r.status === 'error').length;
-
-    // One line per run for what the response does not say: the first failed
-    // link's raw errors, and the first failure of ours (a token refresh, the
-    // database, the network) even if the public retry then rescued the link.
-    // No link and no token is logged: see safeErrorBrief.
-    const firstFailed = settled.find((entry) => entry.failure);
-    const firstOurs = settled.find((entry) => entry.authFailure && !resolveFailureKind(entry.authFailure.error));
-    if (firstFailed || firstOurs) {
-      const line = { failed: failures, total: results.length };
-      if (firstFailed) {
-        line.first = safeErrorBrief(firstFailed.failure.first);
-        if (firstFailed.failure.public) line.firstPublic = safeErrorBrief(firstFailed.failure.public.error);
-      }
-      if (firstOurs && firstOurs !== firstFailed) line.firstOwn = safeErrorBrief(firstOurs.authFailure.error);
-      logger.warn('Batch resolve: links failed', line);
-    }
 
     const resolvedTrackIds = resolvedResources
       .filter(r => r?.type === 'track' && r.id != null)
@@ -3840,9 +3836,37 @@ router.post('/resolve/batch', authenticateUser, heavyOperationRateLimiter, valid
       errorMessage: failures > 0 && failures === results.length ? firstErrorMessage : undefined,
       metadata: { total: results.length, succeeded: results.length - failures, failed: failures },
     });
+
+    // Last, and unable to throw. Neither line carries a link or any text a
+    // thrower wrote (see safeErrorBrief).
+    if (failures > 0) {
+      // The first failed link on which something was thrown, with what each
+      // of its attempts threw. A link whose resource could not be parsed may
+      // have thrown nothing, so a run of only those has the counts alone.
+      const firstThrown = settled.find((entry) => entry.failure)?.failure;
+      const errors = {};
+      if (firstThrown) {
+        errors.first = firstThrown.first;
+        if (firstThrown.public) errors.firstPublic = firstThrown.public.error;
+      }
+      logFailure('Batch resolve: links failed', { failed: failures, total: results.length }, errors);
+    }
+    // Links that resolved, but only publicly, after the signed-in attempt
+    // failed with no HTTP status. A 401, 403 or 404 there is the ordinary
+    // reason for the retry; no status means a token refresh, the database or
+    // the network, which nothing else reports once the link has resolved.
+    const covered = settled.filter((entry) => entry.covered && resolveFailureStatus(entry.covered.error) === null);
+    if (covered.length > 0) {
+      logFailure(
+        'Batch resolve: public retry covered a failed signed-in attempt',
+        { covered: covered.length, total: results.length },
+        { first: covered[0].covered.error },
+      );
+    }
   } catch (error) {
     logger.error('Batch resolve error:', safeError(error));
-    res.status(500).json({ error: 'Batch resolve failed' });
+    // The response may be out already: the bookkeeping runs after it.
+    if (!res.headersSent) res.status(500).json({ error: 'Batch resolve failed' });
   }
 });
 
