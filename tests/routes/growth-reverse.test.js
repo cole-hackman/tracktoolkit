@@ -31,6 +31,7 @@ jest.unstable_mockModule('../../server/lib/analytics.js', () => ({
 
 const { soundcloudClient } = await import('../../server/lib/soundcloud-client.js');
 const { default: growthRoutes } = await import('../../server/routes/growth.js');
+const { heavyOperationRateLimiter } = await import('../../server/middleware/rateLimiter.js');
 
 const app = express();
 app.use(express.json());
@@ -63,4 +64,48 @@ test('reverses every selected action instead of failing after the first', async 
   expect(unfollow).toHaveBeenCalledWith('at', 'rt', 501);
   expect(unlike).toHaveBeenCalledWith('at', 'rt', 902);
   expect(update).toHaveBeenCalledTimes(2);
+});
+
+test.each([
+  ['an empty filter', { filter: {} }],
+  ['a filter with only unknown keys', { filter: { other: 'x' } }],
+  ['an empty session id', { filter: { sessionId: '' } }],
+  ['no ids', { actionIds: [] }],
+  ['more than 100 ids', { actionIds: Array.from({ length: 101 }, (_, i) => `ga-${i}`) }],
+])('refuses %s and reverses nothing', async (_label, body) => {
+  findMany.mockResolvedValue([{ id: 'ga-1', actionType: 'follow', targetId: 501 }]);
+  const unfollow = jest.spyOn(soundcloudClient, 'unfollowUser').mockResolvedValue({});
+
+  const res = await request(app).post('/api/growth/reverse').send(body);
+
+  expect(res.status).toBe(400);
+  expect(findMany).not.toHaveBeenCalled();
+  expect(unfollow).not.toHaveBeenCalled();
+});
+
+test('refuses a filter that matches more than 100 actions', async () => {
+  findMany.mockImplementation(async ({ take }) => Array.from(
+    { length: Math.min(take ?? 300, 300) },
+    (_, i) => ({ id: `ga-${i}`, actionType: 'other', targetId: i }),
+  ));
+
+  const res = await request(app).post('/api/growth/reverse').send({ filter: { actionType: 'follow' } });
+
+  expect(res.status).toBe(400);
+  expect(update).not.toHaveBeenCalled();
+}, 60000);
+
+test('a filter that names a field still works', async () => {
+  findMany.mockResolvedValue([{ id: 'ga-1', actionType: 'follow', targetId: 501 }]);
+  jest.spyOn(soundcloudClient, 'unfollowUser').mockResolvedValue({});
+
+  const res = await request(app).post('/api/growth/reverse').send({ filter: { followedBack: false } });
+
+  expect(res.status).toBe(200);
+  expect(res.body).toMatchObject({ reversed: 1, failed: 0 });
+});
+
+test('is behind the heavy-operation limiter', () => {
+  const layer = growthRoutes.stack.find((l) => l.route?.path === '/growth/reverse');
+  expect(layer.route.stack.map((l) => l.handle)).toContain(heavyOperationRateLimiter);
 });

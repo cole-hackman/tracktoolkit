@@ -17,6 +17,7 @@ import {
   validateGrowthCheckFollowbacks,
   validateGrowthEngageBatch,
   validateReverseGrowthActions,
+  GROWTH_REVERSE_MAX,
 } from '../middleware/validation.js';
 import {
   GrowthEngine,
@@ -415,7 +416,7 @@ router.post('/growth/check-followbacks', authenticateUser, heavyOperationRateLim
  * POST /api/growth/reverse
  * Unfollow and/or unlike targeted growth actions
  */
-router.post('/growth/reverse', authenticateUser, validateReverseGrowthActions, async (req, res) => {
+router.post('/growth/reverse', authenticateUser, heavyOperationRateLimiter, validateReverseGrowthActions, async (req, res) => {
   try {
     const { actionIds, filter } = req.body;
     let targets = [];
@@ -442,7 +443,13 @@ router.post('/growth/reverse', authenticateUser, validateReverseGrowthActions, a
 
       targets = await prisma.growthAction.findMany({
         where: whereClause,
+        take: GROWTH_REVERSE_MAX + 1,
       });
+      if (targets.length > GROWTH_REVERSE_MAX) {
+        return res.status(400).json({
+          error: `This filter matches more than ${GROWTH_REVERSE_MAX} actions. Narrow it or send actionIds.`,
+        });
+      }
     }
 
     logger.info(`[reverse] Initiating reversal of ${targets.length} growth actions`);
