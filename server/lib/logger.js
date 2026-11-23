@@ -4,22 +4,21 @@ import crypto from 'crypto';
  * Secure logging utility that sanitizes errors and prevents secret leakage
  */
 
-// Patterns that indicate potential secrets
+// Text that may hold a secret, as [pattern, replacement]. A replacement names
+// its capture groups and never reuses the match itself: the old replacer kept
+// "everything before the first = or :", which for "OAuth X" and "Bearer X"
+// (no = or :) was the whole match, credential included.
 const SECRET_PATTERNS = [
-  /client_secret[=:]\S+/gi,
-  /secret[=:]\S+/gi,
-  /token[=:]\S+/gi,
-  /key[=:]\S+/gi,
-  /password[=:]\S+/gi,
-  /api_key[=:]\S+/gi,
-  /access_token[=:]\S+/gi,
-  /refresh_token[=:]\S+/gi,
-  /encryption_key[=:]\S+/gi,
-  /session_secret[=:]\S+/gi,
-  /authorization[=:]\S+/gi,
-  /bearer\s+\S+/gi,
-  /oauth\s+\S+/gi,
-  /[?&](oauth_token|access_token|refresh_token|client_secret|token|code|key|secret|password)=[^&\s"']+/gi,
+  // "OAuth X", "Bearer X": the scheme stays, the credential goes.
+  [/\b(bearer|oauth)\s+\S+/gi, '$1 ***'],
+  // key=X, key: X, key = 'X', "key":"X". The value runs to the next
+  // whitespace, so a password holding a comma or a quote goes whole.
+  [
+    /(client_secret|session_secret|encryption_key|access_token|refresh_token|api_key|authorization|password|secret|token|key)["']?\s*[=:]\s*\S+/gi,
+    '$1=***',
+  ],
+  // ?code=X in a query string: names the list above does not have.
+  [/([?&](?:oauth_token|code))=[^&\s"']+/gi, '$1=***'],
 ];
 
 // Keys that should be redacted from objects
@@ -50,13 +49,10 @@ function sanitizeString(str) {
   if (typeof str !== 'string') return str;
   
   let sanitized = str;
-  SECRET_PATTERNS.forEach(pattern => {
-    sanitized = sanitized.replace(pattern, (match) => {
-      const prefix = match.split(/[=:]/)[0];
-      return `${prefix}=***`;
-    });
-  });
-  
+  for (const [pattern, replacement] of SECRET_PATTERNS) {
+    sanitized = sanitized.replace(pattern, replacement);
+  }
+
   return sanitized;
 }
 
