@@ -177,15 +177,37 @@ function fillDays(days, rowSets, build) {
 
 const CSV_MAX_ROWS = 10_000;
 
-/** Send rows as a CSV attachment (RFC 4180 quoting, BOM for Excel). */
+/**
+ * One CSV cell: RFC 4180 quoting plus a spreadsheet formula guard.
+ *
+ * Titles, artist names, feedback messages and admin notes are free text that
+ * somebody else wrote, and Excel / Sheets / LibreOffice execute a cell that
+ * opens with =, +, -, @, tab or CR — so `=HYPERLINK("http://evil...")` in a
+ * track title would fire when an admin opens the export. Prefixing an
+ * apostrophe makes the cell literal text; the spreadsheet does not show it and
+ * the raw CSV still reads plainly.
+ *
+ * Only strings are guarded. A JS number or bigint cannot carry a formula, and
+ * guarding it would turn a legitimate negative count or duration into the text
+ * `'-1`, which no longer sorts or sums as a number.
+ */
+function csvCell(v) {
+  if (v === null || v === undefined) return '';
+  let str = v instanceof Date ? v.toISOString() : String(v);
+  if (typeof v === 'string' && /^[=+\-@\t\r]/.test(str)) str = `'${str}`;
+  // \r is in the quote class: a lone CR is a row break to some parsers, so a
+  // value containing one must stay inside its quoted field.
+  return /[",\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+}
+
+/**
+ * Send rows as a CSV attachment (RFC 4180 quoting, formula guard, BOM for
+ * Excel). Every admin CSV export goes through here, so there is one escape and
+ * one guard, not one per route that drift apart.
+ */
 function sendCsv(res, filename, header, rows) {
-  const escape = (v) => {
-    if (v === null || v === undefined) return '';
-    const str = v instanceof Date ? v.toISOString() : String(v);
-    return /[",\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
-  };
-  const lines = [header.map(escape).join(',')];
-  for (const row of rows) lines.push(header.map(k => escape(row[k])).join(','));
+  const lines = [header.map(csvCell).join(',')];
+  for (const row of rows) lines.push(header.map(k => csvCell(row[k])).join(','));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   res.send(`\ufeff${lines.join('\n')}`);
@@ -1270,21 +1292,14 @@ router.get('/feedback/beta-emails', authenticateUser, adminAuth, async (req, res
       },
     });
 
-    const escape = (v) => {
-      const s = v === null || v === undefined ? '' : String(v);
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-    const header = ['email', 'platform', 'interest', 'wantsCall', 'rekordboxUse', 'createdAt'];
-    const lines = [header.join(',')];
-    for (const r of rows) {
-      lines.push([
-        r.email, r.platform, r.interest, r.wantsCall, r.rekordboxUse, r.createdAt.toISOString(),
-      ].map(escape).join(','));
-    }
-
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="beta-emails.csv"');
-    res.send(`﻿${lines.join('\n')}`);
+    // Through the shared writer, so the invite list gets the same formula
+    // guard as every other export — `platform` and `interest` are free text.
+    return sendCsv(
+      res,
+      'beta-emails.csv',
+      ['email', 'platform', 'interest', 'wantsCall', 'rekordboxUse', 'createdAt'],
+      rows,
+    );
   } catch (err) {
     logger.error('[admin/feedback/beta-emails] Error:', safeError(err));
     res.status(500).json({ error: 'Failed to export beta emails' });
@@ -1464,33 +1479,17 @@ router.get('/feedback-items.csv', authenticateUser, adminAuth, async (req, res) 
       },
     });
 
-    // Same shape as the beta-emails export, plus a formula guard: `message`
-    // and `adminNote` are free text, and Excel / Sheets / LibreOffice execute
-    // a cell that opens with =, +, -, @, tab or CR. Prefixing an apostrophe
-    // makes the cell literal text; the apostrophe is not shown by the
-    // spreadsheet and the raw CSV still reads plainly.
-    const escape = (v) => {
-      let s = v === null || v === undefined ? '' : String(v);
-      if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
-      // \r joins the class: a lone CR is a row break to some parsers, so a
-      // message containing one must stay inside its quoted field.
-      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-    const header = [
-      'id', 'createdAt', 'type', 'status', 'username', 'soundcloudId',
-      'page', 'email', 'message', 'adminNote',
-    ];
-    const lines = [header.join(',')];
-    for (const r of rows) {
-      lines.push([
-        r.id, r.createdAt.toISOString(), r.type, r.status, r.user?.username ?? '',
-        r.soundcloudId, r.page, r.email, r.message, r.adminNote,
-      ].map(escape).join(','));
-    }
-
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="feedback.csv"');
-    res.send(`﻿${lines.join('\n')}`);
+    // `message` and `adminNote` are free text; `sendCsv` applies the formula
+    // guard and the CR-aware quoting (see `csvCell`).
+    return sendCsv(
+      res,
+      'feedback.csv',
+      [
+        'id', 'createdAt', 'type', 'status', 'username', 'soundcloudId',
+        'page', 'email', 'message', 'adminNote',
+      ],
+      rows.map((r) => ({ ...r, username: r.user?.username ?? '' })),
+    );
   } catch (err) {
     logger.error('[admin/feedback-items.csv] Error:', safeError(err));
     res.status(500).json({ error: 'Failed to export feedback' });
