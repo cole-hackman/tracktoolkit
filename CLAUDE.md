@@ -538,8 +538,11 @@ instead, which would put a tab in the data. Tests:
 `tests/routes/admin-catalog.test.js`,
 `tests/routes/admin-csv-adversarial.test.js`,
 `tests/routes/admin-feedback.test.js`,
-`frontend-UI/e2e/export-csv.unit.spec.ts` and
-`frontend-UI/e2e/export-csv-adversarial.unit.spec.ts`.
+`frontend-UI/e2e/export-csv.unit.spec.ts`,
+`frontend-UI/e2e/export-csv-adversarial.unit.spec.ts`,
+`frontend-UI/e2e/resolver-csv.unit.spec.ts` and
+`frontend-UI/e2e/link-resolver-export.spec.ts` (clicks Export CSV and reads
+the saved file).
 
 The `PATCH` writes `status` and `adminNote` and nothing else — no admin action
 can rewrite what a user said. An empty patch is refused rather than issued as a
