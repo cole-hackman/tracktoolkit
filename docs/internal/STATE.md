@@ -165,7 +165,13 @@ Previously (still true): Droploud and Cobrand gates are merged and live
 4. Open calls for Cole: the three jobs on the panel and their wording; the
    guardrail rule (two-sided p < 0.10 on accounts, section 6); whether
    `partial` counts as a successful write; alpha 0.05 and power 0.80.
-5. Not built: an automatic halt for staged rollouts (no background error
+5. Recorded, not fixed: `mobile-nav.spec.ts:95` ("every tool in NAV is one
+   tab or one sheet away") failed in both full e2e runs here (m390 once;
+   m360 and m430 once). Under load (`mobile-nav` + `mobile` specs,
+   `--repeat-each=6`) it failed 2 of 18 on this branch and 1 of 18 on `main`
+   at `fa60b3a`, and passed 20 of 20 alone. It reads the tab bar's links
+   without waiting for them, so it is a race in the test, on `main` too.
+6. Not built: an automatic halt for staged rollouts (no background error
    monitor exists; the runbook's gate is manual), and logging for
    `PUT /api/playlists/:id`, whose writes the activation metric cannot see.
 
