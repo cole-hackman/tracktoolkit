@@ -19,15 +19,22 @@
  * working unseen.
  */
 import { sleep, SC_BULK_PACING_MS } from './pacing.js';
+import { rawErrorMessage } from './safe-error.js';
+import { scErrorStatus, scItemErrorText } from './sc-errors.js';
 
 /**
  * @param {object} opts
  * @param {Array<number>} opts.ids
  * @param {string} opts.idKey            result field name (`trackId`, `userId`)
  * @param {(id: number) => Promise<unknown>} opts.write
- * @param {string} opts.failLabel        error text when the error has no message
+ * @param {string} opts.failLabel        what failed, shown for an unclassified error
  * @param {() => boolean} [opts.isAborted]
  * @param {number} [opts.pacingMs]
+ * @returns `results[].error` is fixed text (scItemErrorText), safe to send.
+ *   `firstError` is what the first failed write threw (for the server log,
+ *   through `logFailure`) and `firstErrorMessage` its raw message (for the
+ *   operation log): never for a response. Both are undefined when no write
+ *   failed.
  */
 export async function runBulkDelete({
   ids,
@@ -40,6 +47,8 @@ export async function runBulkDelete({
   const results = [];
   let rateLimited = false;
   let aborted = false;
+  let firstError;
+  let anyFailed = false;
 
   for (let i = 0; i < ids.length; i += 1) {
     const id = ids[i];
@@ -52,11 +61,14 @@ export async function runBulkDelete({
       await write(id);
       results.push({ [idKey]: id, status: 'ok' });
     } catch (err) {
-      if (err?.status === 404) {
+      const status = scErrorStatus(err);
+      if (status === 404) {
         results.push({ [idKey]: id, status: 'ok', alreadyGone: true });
       } else {
-        results.push({ [idKey]: id, status: 'error', error: err?.message || failLabel });
-        if (err?.status === 429) {
+        if (!anyFailed) firstError = err;
+        anyFailed = true;
+        results.push({ [idKey]: id, status: 'error', error: scItemErrorText(err, failLabel) });
+        if (status === 429) {
           rateLimited = true;
           continue;
         }
@@ -65,7 +77,8 @@ export async function runBulkDelete({
     if (i < ids.length - 1) await sleep(pacingMs);
   }
 
-  return { results, rateLimited, aborted };
+  const firstErrorMessage = anyFailed ? rawErrorMessage(firstError, failLabel) : undefined;
+  return { results, rateLimited, aborted, firstError, firstErrorMessage };
 }
 
 /** Counts for logging and for the response's own summary. */

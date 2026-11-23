@@ -71,7 +71,7 @@ describe('bulk-like stops at SoundCloud\'s rate limit', () => {
     expect(res.body.rateLimited).toBe(true);
     expect(res.body.results).toEqual([
       { trackId: 1, status: 'ok' },
-      { trackId: 2, status: 'error', error: 'API request failed: 429' },
+      { trackId: 2, status: 'error', error: 'SoundCloud rate limit reached — try again later' },
       { trackId: 3, status: 'skipped' },
       { trackId: 4, status: 'skipped' },
     ]);

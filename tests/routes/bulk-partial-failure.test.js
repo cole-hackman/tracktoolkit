@@ -69,7 +69,8 @@ describe('bulk-like reports per-item outcomes instead of silently succeeding', (
     expect(res.status).toBe(200);
     expect(res.body.results).toEqual([
       { trackId: 1, status: 'ok' },
-      { trackId: 2, status: 'error', error: '403 Forbidden' },
+      // fixed text: the raw message ('403 Forbidden') is not sent
+      { trackId: 2, status: 'error', error: 'Like failed' },
       { trackId: 3, status: 'ok' },
     ]);
 

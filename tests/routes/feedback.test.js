@@ -5,9 +5,10 @@ import request from 'supertest';
 const findFirst = jest.fn().mockResolvedValue(null);
 const create = jest.fn().mockResolvedValue({ id: 'fb-1', createdAt: new Date('2026-09-22T00:00:00Z') });
 const findMany = jest.fn().mockResolvedValue([]);
+const rebrandFindUnique = jest.fn().mockResolvedValue(null);
 
 jest.unstable_mockModule('../../server/lib/prisma.js', () => ({
-  default: { feedback: { findFirst, create, findMany } },
+  default: { feedback: { findFirst, create, findMany }, rebrandVote: { findUnique: rebrandFindUnique } },
 }));
 jest.unstable_mockModule('../../server/middleware/auth.js', () => ({
   authenticateUser: function authenticateUser(req, res, next) {
@@ -350,5 +351,48 @@ describe('GET /api/feedback/mine is scoped to the session user', () => {
     expect(res.status).toBe(200);
     expect(res.body.items).toHaveLength(1);
     expect(res.body.items[0].id).toBe('fb-1');
+  });
+});
+
+describe('a 500 never carries internal error text', () => {
+  // What Prisma actually throws when the database is unreachable: the message
+  // names the host and port. safeError() keeps err.message for the log, so
+  // passing its result to res.json put this in front of the user.
+  const prismaDown = () => Object.assign(
+    new Error("Can't reach database server at `db.internal:5432`"),
+    { code: 'P1001' },
+  );
+  const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
+  beforeEach(() => { process.env.NODE_ENV = 'production'; });
+  afterEach(() => {
+    process.env.NODE_ENV = ORIGINAL_NODE_ENV;
+    rebrandFindUnique.mockReset().mockResolvedValue(null);
+  });
+
+  test('POST /api/feedback answers exactly the fixed message', async () => {
+    create.mockRejectedValueOnce(prismaDown());
+    const res = await request(app).post('/api/feedback').send(validBody);
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Failed to submit feedback' });
+    expect(JSON.stringify(res.body)).not.toMatch(/db\.internal|5432|P1001/);
+    // The detail still reaches the log.
+    expect(JSON.stringify(logError.mock.calls)).toMatch(/db\.internal:5432/);
+  });
+
+  test('GET /api/feedback/mine answers exactly the fixed message', async () => {
+    findMany.mockRejectedValueOnce(prismaDown());
+    const res = await request(app).get('/api/feedback/mine');
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Failed to load your feedback' });
+  });
+
+  test('GET /api/feedback/survey/status answers exactly the fixed message', async () => {
+    rebrandFindUnique.mockRejectedValueOnce(prismaDown());
+    const res = await request(app).get('/api/feedback/survey/status');
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Failed to load survey status' });
   });
 });

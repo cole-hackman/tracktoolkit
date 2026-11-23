@@ -9,7 +9,7 @@ import { logOperation, startOperationTimer, extractClientInfo, instrumentRead } 
 import { harvestTracks, harvestPlaylists } from '../lib/catalog.js';
 import { piggybackEnrichment } from '../lib/enrichment.js';
 import logger from '../lib/logger.js';
-import { classifyScError, scErrorResponse, tagPlaylistReadFailure } from '../lib/sc-errors.js';
+import { classifyScError, scErrorResponse, scErrorStatus, scItemErrorText, SC_ITEM_ERROR_TEXT, tagPlaylistReadFailure } from '../lib/sc-errors.js';
 import {
   sleep,
   SC_WRITE_PACING_MS,
@@ -20,7 +20,7 @@ import {
 } from '../lib/pacing.js';
 import { runBulkDelete, summarizeBulk, createUserRunLock } from '../lib/bulk-write.js';
 import { extractNumericId, normalizeResource, normalizeResourceV2, normalizeTrackForLibraryBrowser, normalizePlaylistForLibraryBrowser } from '../lib/normalize.js';
-import { getCachedResolve, setCachedResolve } from '../lib/resolve-cache.js';
+import { getCachedResolve, setCachedResolve, isShareableResolve } from '../lib/resolve-cache.js';
 import {
   CACHE_TTL,
   getCachedUserPayload,
@@ -32,7 +32,7 @@ import {
   invalidateUserCollections,
   invalidatePlaylistState,
 } from '../lib/social-cache.js';
-import { safeError } from '../lib/safe-error.js';
+import { safeError, safeErrorBrief, logFailure, rawErrorMessage } from '../lib/safe-error.js';
 import { GATE_ACTION_NAME, gateResultKey } from '../lib/gate-results.js';
 import { downloadTrackIdFromUrl, isAllowedDownloadRedirectTarget, isAllowedDownloadUrl } from '../lib/download-utils.js';
 import { cursorEndpoint, InvalidCursorError } from '../lib/sc-cursor.js';
@@ -133,8 +133,9 @@ function playlistDescriptionWithToolkit(operationDescription) {
 const OEMBED_TIMEOUT_MS = 4000;
 
 function shouldRetryPublicly(error) {
-  const message = String(error?.message || '');
-  if (error?.name === 'AbortError' || /abort/i.test(message)) return false;
+  // Read through the helpers that cannot throw: `error` is whatever was thrown.
+  const message = rawErrorMessage(error, '');
+  if (safeErrorBrief(error).name === 'AbortError' || /abort/i.test(message)) return false;
   if (/\b429\b/.test(message)) return false;
   if (/\b5\d\d\b/.test(message)) return false;
   return true;
@@ -1379,6 +1380,74 @@ router.get('/reposts/paged', authenticateUser, instrumentRead('reposts-paged'), 
 });
 
 /**
+ * User-facing text for one failed source delete after a merge. Fixed phrases
+ * only: never `err.message`, which says whatever the thrower wrote.
+ */
+function mergeDeleteErrorText(err) {
+  switch (classifyScError(err)) {
+    case 'not_found': return 'Playlist not found on SoundCloud';
+    case 'rate_limited': return 'SoundCloud rate limit reached — try again later';
+    case 'upstream_unavailable': return 'SoundCloud did not respond — try again later';
+    default: return 'Delete failed';
+  }
+}
+
+/**
+ * The HTTP status a failed resolve attempt carries, or null. resolveAny and
+ * resolvePublic throw plain Errors ("Resolve error: 404") with no `status`,
+ * so it is read off that exact message and nothing else is taken from the
+ * text. Null means no status at all: a failed token refresh, a database
+ * error on the token save, the network, a body that is not JSON, or
+ * something that is not an error. Cannot throw.
+ */
+function resolveFailureStatus(err) {
+  const status = scErrorStatus(err);
+  if (Number.isInteger(status)) return status;
+  const fromMessage = /^Resolve (?:follow )?error: (\d{3})$/.exec(rawErrorMessage(err, ''));
+  return fromMessage ? Number(fromMessage[1]) : null;
+}
+
+/**
+ * The phrase a failed resolve attempt picks, or null when it picks none:
+ * there is no status, or the status has no phrase (400, 410, 500).
+ *
+ * @returns {'not_found'|'refused'|'rate_limited'|'upstream_unavailable'|null}
+ */
+function resolveFailureKind(err) {
+  const status = resolveFailureStatus(err);
+  if (status === 404) return 'not_found';
+  if (status === 401 || status === 403) return 'refused';
+  return classifyScError(err) ?? classifyScError({ status });
+}
+
+const RESOLVE_FAILURE_TEXT = {
+  ...SC_ITEM_ERROR_TEXT,
+  not_found: 'Not found on SoundCloud, or private',
+  refused: 'SoundCloud refused this link. It may be private',
+};
+
+/**
+ * User-facing text for one failed URL in a batch resolve. Fixed phrases only.
+ *
+ * A link can fail twice: with the user's token (`firstErr`), then without one
+ * (`publicErr`, when a public retry was made and failed too). The phrase comes
+ * from the first failure when it picks one (`resolveFailureKind`), because
+ * that is the attempt that could see the link. When it picks none, the public
+ * attempt may only add what it can actually know: not found, rate limited, no
+ * answer. "Refused" without credentials means only that the link needs some,
+ * so it is not repeated as if it were a finding; the item then says no more
+ * than that it failed.
+ */
+function batchResolveErrorText(firstErr, publicErr = null) {
+  let kind = resolveFailureKind(firstErr);
+  if (!kind && publicErr) {
+    const publicKind = resolveFailureKind(publicErr);
+    if (publicKind !== 'refused') kind = publicKind;
+  }
+  return RESOLVE_FAILURE_TEXT[kind] ?? 'Resolve failed';
+}
+
+/**
  * POST /api/resolve
  * Resolve a SoundCloud URL
  */
@@ -1390,8 +1459,9 @@ async function handleResolve(req, res) {
     const cleaned = sanitizeUrl(rawUrl);
     if (!cleaned) return res.status(400).json({ error: 'Invalid SoundCloud URL' });
 
-    const cached = getCachedResolve(cleaned);
-    if (cached) {
+    const cachedEntry = getCachedResolve(cleaned);
+    if (cachedEntry) {
+      const cached = cachedEntry.v1;
       logOperation({
         userId: req.user.id,
         action: 'resolve',
@@ -1402,7 +1472,10 @@ async function handleResolve(req, res) {
       });
       if (!useV2) return res.json(cached);
       return res.json({
-        data: normalizeResourceV2(cached) || cached,
+        // The v2 payload stored at write time. Running normalizeResourceV2 on
+        // the v1 object here would fall through its heuristics and label every
+        // track and playlist `user` (v1 has `type`, not `kind`).
+        data: cachedEntry.v2 || cached,
         meta: {
           version: '2',
           source_url: cleaned,
@@ -1461,12 +1534,18 @@ async function handleResolve(req, res) {
       }
     } catch {}
 
-    setCachedResolve(cleaned, normalized);
+    const normalizedV2 = normalizeResourceV2(resource);
+    // The cache is shared by every user and keyed by URL alone, so only what
+    // anyone could resolve goes in. A private track or playlist resolved with
+    // this user's token must not be served to the next caller from memory.
+    if (isShareableResolve(resource)) {
+      setCachedResolve(cleaned, { v1: normalized, v2: normalizedV2 });
+    }
     if (!useV2) {
       res.json(normalized);
     } else {
       res.json({
-        data: normalizeResourceV2(resource),
+        data: normalizedV2,
         meta: {
           version: '2',
           source_url: cleaned,
@@ -1934,7 +2013,11 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
             await soundcloudClient.deletePlaylist(req.accessToken, req.refreshToken, id);
             deletedPlaylistIds.push(id);
           } catch (err) {
-            deleteErrors.push({ id, error: safeError(err).message || 'Delete failed' });
+            // The Combine page prints `error` verbatim, so it is a fixed phrase
+            // picked from the error class, whatever the thrown thing says. The
+            // log gets the error's name, code and status.
+            logFailure('[merge] source delete failed', { playlistId: id }, { error: err });
+            deleteErrors.push({ id, error: mergeDeleteErrorText(err) });
           }
         }
       }
@@ -3315,6 +3398,9 @@ router.post('/sort/unlike', authenticateUser, adminAuth, validateSortUnlike, sor
     const trackIds = [...new Set(req.body.trackIds)];
     const results = [];
     let rateLimited = false;
+    // Kept for the server log; each result carries fixed text only.
+    let firstError;
+    let anyFailed = false;
     for (let i = 0; i < trackIds.length; i++) {
       const trackId = trackIds[i];
       if (rateLimited || clientDisconnected) {
@@ -3325,8 +3411,10 @@ router.post('/sort/unlike', authenticateUser, adminAuth, validateSortUnlike, sor
         await soundcloudClient.unlikeTrack(req.accessToken, req.refreshToken, trackId);
         results.push({ trackId, status: 'ok' });
       } catch (err) {
-        results.push({ trackId, status: 'error', error: err.message || 'Unlike failed' });
-        if (err.status === 429) {
+        if (!anyFailed) firstError = err;
+        anyFailed = true;
+        results.push({ trackId, status: 'error', error: scItemErrorText(err, 'Unlike failed') });
+        if (scErrorStatus(err) === 429) {
           rateLimited = true;
           continue;
         }
@@ -3355,6 +3443,7 @@ router.post('/sort/unlike', authenticateUser, adminAuth, validateSortUnlike, sor
       harvestTracks(cachedLikes.collection.filter((t) => t && processed.has(t.id)));
     }
     invalidateUserCollections(userId, ['likes']);
+    if (anyFailed) logFailure('Sort unlike: items failed', { failed }, { first: firstError });
   } catch (error) {
     logger.error('Sort unlike error:', safeError(error));
     invalidateUserCollections(userId, ['likes']);
@@ -3644,18 +3733,26 @@ router.post('/resolve/batch', authenticateUser, heavyOperationRateLimiter, valid
         return { result: { url: rawUrl, status: 'error', error: 'Invalid SoundCloud URL' }, index };
       }
 
-      // Check cache first
+      // Check cache first. Entries are { v1, v2 }, both built from the raw
+      // resource when it was cached (see resolve-cache.js); v2 cannot be
+      // rebuilt from v1, which carries `type`, not `kind`.
       const cached = getCachedResolve(url);
       if (cached) {
-        const cachedData = useV2 ? (normalizeResourceV2(cached) || cached) : cached;
-        return { result: { url: rawUrl, status: 'ok', data: cachedData }, index, resource: cached };
+        const cachedData = useV2 ? (cached.v2 || cached.v1) : cached.v1;
+        return { result: { url: rawUrl, status: 'ok', data: cachedData }, index, resource: cached.v1 };
       }
 
+      // What the attempt with the user's token threw, if it threw. It picks
+      // the phrase when the public retry fails too, and the run's log lines
+      // describe it: as `failure.first` on a link that failed, as `covered`
+      // on one the public retry resolved.
+      let authFailure = null;
       try {
         let resource;
         try {
           resource = await soundcloudClient.resolveAny(req.accessToken, req.refreshToken, url);
         } catch (authErr) {
+          authFailure = { error: authErr };
           // Only retry publicly when a public resolve could plausibly succeed.
           // Retrying on a 429 or a timeout doubles the cost of exactly the
           // situation that produced the failure.
@@ -3666,24 +3763,46 @@ router.post('/resolve/batch', authenticateUser, heavyOperationRateLimiter, valid
         if (normalizedV1) {
           if (normalizedV1.type === 'track') harvestTracks([resource]);
           else if (normalizedV1.type === 'playlist') harvestPlaylists([resource]);
-          setCachedResolve(url, normalizedV1);
-          const payload = useV2 ? normalizeResourceV2(resource) : normalizedV1;
-          return { result: { url: rawUrl, status: 'ok', data: payload }, index, resource: normalizedV1 };
+          const normalizedV2 = normalizeResourceV2(resource);
+          // Shared, URL-keyed cache: public resources and user profiles only.
+          if (isShareableResolve(resource)) {
+            setCachedResolve(url, { v1: normalizedV1, v2: normalizedV2 });
+          }
+          const payload = useV2 ? normalizedV2 : normalizedV1;
+          return { result: { url: rawUrl, status: 'ok', data: payload }, index, resource: normalizedV1, covered: authFailure };
         }
-        return { result: { url: rawUrl, status: 'error', error: 'Could not parse resource' }, index };
+        return {
+          result: { url: rawUrl, status: 'error', error: 'Could not parse resource' },
+          index,
+          failure: authFailure ? { first: authFailure.error, public: null } : undefined,
+        };
       } catch (err) {
-        return { result: { url: rawUrl, status: 'error', error: err.message || 'Resolve failed' }, index };
+        // `err` is the public attempt's failure when one was made and it is
+        // not the error just caught above; otherwise it is the only failure.
+        const firstErr = authFailure ? authFailure.error : err;
+        const publicErr = authFailure && err !== authFailure.error ? { error: err } : null;
+        return {
+          // Fixed text, chosen from the first failure (see batchResolveErrorText).
+          result: { url: rawUrl, status: 'error', error: batchResolveErrorText(firstErr, publicErr?.error) },
+          index,
+          // For the operation log, unchanged: the message of the last error.
+          rawError: rawErrorMessage(err, 'Resolve failed'),
+          failure: { first: firstErr, public: publicErr },
+        };
       }
     });
 
     // mapWithConcurrency preserves input order, so results and the harvest list
     // come out in request order regardless of which resolve finished first.
+    let firstErrorMessage;
     for (const entry of settled) {
+      if (entry.result.status === 'error') firstErrorMessage ??= entry.rawError ?? entry.result.error;
       if (entry.resource) resolvedResources.push(entry.resource);
       results.push(useV2 ? { ...entry.result, index: entry.index } : entry.result);
     }
 
     const failures = results.filter(r => r.status === 'error').length;
+
     const resolvedTrackIds = resolvedResources
       .filter(r => r?.type === 'track' && r.id != null)
       .map(r => r.id);
@@ -3714,12 +3833,40 @@ router.post('/resolve/batch', authenticateUser, heavyOperationRateLimiter, valid
       trackIds: resolvedTrackIds,
       playlistIds: resolvedPlaylistIds,
       errorCode: failures > 0 && failures === results.length ? 'ALL_ITEMS_FAILED' : undefined,
-      errorMessage: failures > 0 && failures === results.length ? results.find(r => r.status === 'error')?.error : undefined,
+      errorMessage: failures > 0 && failures === results.length ? firstErrorMessage : undefined,
       metadata: { total: results.length, succeeded: results.length - failures, failed: failures },
     });
+
+    // Last, and unable to throw. Neither line carries a link or any text a
+    // thrower wrote (see safeErrorBrief).
+    if (failures > 0) {
+      // The first failed link on which something was thrown, with what each
+      // of its attempts threw. A link whose resource could not be parsed may
+      // have thrown nothing, so a run of only those has the counts alone.
+      const firstThrown = settled.find((entry) => entry.failure)?.failure;
+      const errors = {};
+      if (firstThrown) {
+        errors.first = firstThrown.first;
+        if (firstThrown.public) errors.firstPublic = firstThrown.public.error;
+      }
+      logFailure('Batch resolve: links failed', { failed: failures, total: results.length }, errors);
+    }
+    // Links that resolved, but only publicly, after the signed-in attempt
+    // failed with no HTTP status. A 401, 403 or 404 there is the ordinary
+    // reason for the retry; no status means a token refresh, the database or
+    // the network, which nothing else reports once the link has resolved.
+    const covered = settled.filter((entry) => entry.covered && resolveFailureStatus(entry.covered.error) === null);
+    if (covered.length > 0) {
+      logFailure(
+        'Batch resolve: public retry covered a failed signed-in attempt',
+        { covered: covered.length, total: results.length },
+        { first: covered[0].covered.error },
+      );
+    }
   } catch (error) {
     logger.error('Batch resolve error:', safeError(error));
-    res.status(500).json({ error: 'Batch resolve failed' });
+    // The response may be out already: the bookkeeping runs after it.
+    if (!res.headersSent) res.status(500).json({ error: 'Batch resolve failed' });
   }
 });
 
@@ -3792,7 +3939,7 @@ router.post('/likes/tracks/bulk-unlike', authenticateUser, heavyOperationRateLim
   const elapsed = startOperationTimer();
   try {
     const { trackIds } = req.body;
-    const { results, rateLimited, aborted } = await runBulkDelete({
+    const { results, rateLimited, aborted, firstError, firstErrorMessage } = await runBulkDelete({
       ids: trackIds,
       idKey: 'trackId',
       write: (trackId) => soundcloudClient.unlikeTrack(req.accessToken, req.refreshToken, trackId),
@@ -3814,7 +3961,7 @@ router.post('/likes/tracks/bulk-unlike', authenticateUser, heavyOperationRateLim
       clientInfo: extractClientInfo(req),
       trackIds: unlikedIds,
       errorCode: allFailed ? (rateLimited ? 'RATE_LIMITED' : 'ALL_ITEMS_FAILED') : undefined,
-      errorMessage: allFailed ? results.find(r => r.status === 'error')?.error : undefined,
+      errorMessage: allFailed ? firstErrorMessage : undefined,
       metadata: {
         total: results.length,
         succeeded,
@@ -3835,6 +3982,10 @@ router.post('/likes/tracks/bulk-unlike', authenticateUser, heavyOperationRateLim
     invalidateUserCollections(userId, ['likes']);
     // Cold-cache IDs still get names via enrichment (no-ops when already known)
     piggybackEnrichment(trackIds, req.accessToken, req.refreshToken);
+    // Last, and unable to throw. The response carries fixed text and the
+    // operation log a message only when no item succeeded, so this line is
+    // what a partly failed run leaves behind.
+    if (failed > 0) logFailure('Bulk unlike: items failed', { failed }, { first: firstError });
   } catch (error) {
     logger.error('Bulk unlike error:', safeError(error));
     logOperation({
@@ -3889,6 +4040,11 @@ router.post('/likes/tracks/bulk-like', authenticateUser, heavyOperationRateLimit
     const { trackIds } = req.body;
     const results = [];
     let rateLimited = false;
+    // What the first failed like threw, for the server log and (its message,
+    // when no item succeeded) the operation log. Each result carries fixed
+    // text (scItemErrorText).
+    let firstError;
+    let anyFailed = false;
 
     // Process sequentially to avoid SoundCloud rate limits.
     // NOTE: likeTrack is id-first (accessToken/refreshToken follow) — the
@@ -3902,8 +4058,10 @@ router.post('/likes/tracks/bulk-like', authenticateUser, heavyOperationRateLimit
         await soundcloudClient.likeTrack(trackId, req.accessToken, req.refreshToken);
         results.push({ trackId, status: 'ok' });
       } catch (err) {
-        results.push({ trackId, status: 'error', error: err.message || 'Like failed' });
-        if (err.status === 429) {
+        if (!anyFailed) firstError = err;
+        anyFailed = true;
+        results.push({ trackId, status: 'error', error: scItemErrorText(err, 'Like failed') });
+        if (scErrorStatus(err) === 429) {
           rateLimited = true;
           continue;
         }
@@ -3926,7 +4084,7 @@ router.post('/likes/tracks/bulk-like', authenticateUser, heavyOperationRateLimit
       clientInfo: extractClientInfo(req),
       trackIds: results.filter(r => r.status === 'ok').map(r => r.trackId),
       errorCode: allFailed ? (rateLimited ? 'RATE_LIMITED' : 'ALL_ITEMS_FAILED') : undefined,
-      errorMessage: allFailed ? results.find(r => r.status === 'error')?.error : undefined,
+      errorMessage: allFailed ? rawErrorMessage(firstError, 'Like failed') : undefined,
       metadata: {
         total: results.length,
         succeeded,
@@ -3943,6 +4101,7 @@ router.post('/likes/tracks/bulk-like', authenticateUser, heavyOperationRateLimit
     }
     invalidateUserCollections(userId, ['likes']);
     piggybackEnrichment(trackIds, req.accessToken, req.refreshToken);
+    if (failed > 0) logFailure('Bulk like: items failed', { failed }, { first: firstError });
   } catch (error) {
     logger.error('Bulk like error:', safeError(error));
     logOperation({
@@ -4010,7 +4169,7 @@ router.post('/followings/bulk-unfollow', authenticateUser, heavyOperationRateLim
   const elapsed = startOperationTimer();
   try {
     const { userIds } = req.body;
-    const { results, rateLimited, aborted } = await runBulkDelete({
+    const { results, rateLimited, aborted, firstError, firstErrorMessage } = await runBulkDelete({
       ids: userIds,
       idKey: 'userId',
       write: (userId) => soundcloudClient.unfollowUser(req.accessToken, req.refreshToken, userId),
@@ -4031,7 +4190,7 @@ router.post('/followings/bulk-unfollow', authenticateUser, heavyOperationRateLim
       clientInfo: extractClientInfo(req),
       targetUserIds: unfollowedIds,
       errorCode: allFailed ? (rateLimited ? 'RATE_LIMITED' : 'ALL_ITEMS_FAILED') : undefined,
-      errorMessage: allFailed ? results.find(r => r.status === 'error')?.error : undefined,
+      errorMessage: allFailed ? firstErrorMessage : undefined,
       metadata: {
         total: results.length,
         succeeded,
@@ -4043,6 +4202,7 @@ router.post('/followings/bulk-unfollow', authenticateUser, heavyOperationRateLim
       },
     });
     invalidateUserCollections(ownerId, ['followings']);
+    if (failed > 0) logFailure('Bulk unfollow: items failed', { failed }, { first: firstError });
   } catch (error) {
     logger.error('Bulk unfollow error:', safeError(error));
     logOperation({
@@ -4144,6 +4304,9 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
   try {
     const { items } = req.body;
     const results = [];
+    // What the first failed removal threw: see bulk-like.
+    let firstError;
+    let anyFailed = false;
 
     // Process sequentially to avoid SoundCloud rate limits
     for (const item of items) {
@@ -4151,7 +4314,9 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
         await soundcloudClient.deleteRepost(req.accessToken, req.refreshToken, item.id, item.resourceType);
         results.push({ id: item.id, resourceType: item.resourceType, status: 'ok' });
       } catch (err) {
-        results.push({ id: item.id, resourceType: item.resourceType, status: 'error', error: err.message || 'Remove failed' });
+        if (!anyFailed) firstError = err;
+        anyFailed = true;
+        results.push({ id: item.id, resourceType: item.resourceType, status: 'error', error: scItemErrorText(err, 'Remove failed') });
       }
       // Paced like the other bulk loops: an unpaced 100-item DELETE run was
       // the most 429-prone path in the app.
@@ -4169,7 +4334,7 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
       trackIds: results.filter(r => r.status === 'ok' && r.resourceType === 'track').map(r => r.id),
       playlistIds: results.filter(r => r.status === 'ok' && r.resourceType === 'playlist').map(r => r.id),
       errorCode: failed > 0 && succeeded === 0 ? 'ALL_ITEMS_FAILED' : undefined,
-      errorMessage: failed > 0 && succeeded === 0 ? results.find(r => r.status === 'error')?.error : undefined,
+      errorMessage: failed > 0 && succeeded === 0 ? rawErrorMessage(firstError, 'Remove failed') : undefined,
       metadata: { total: results.length, succeeded, failed },
     });
     const cachedReposts = requestCache.get('reposts', req.user.id, 'default');
@@ -4185,6 +4350,7 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
     }
     invalidateUserCollections(req.user.id, ['reposts']);
     piggybackEnrichment(items.filter(i => i.resourceType === 'track').map(i => i.id), req.accessToken, req.refreshToken);
+    if (failed > 0) logFailure('Repost removal: items failed', { failed }, { first: firstError });
   } catch (error) {
     logger.error('Bulk unrepost error:', safeError(error));
     logOperation({
@@ -4197,7 +4363,8 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
       errorCode: error.name || 'BULK_UNREPOST_FAILED',
       errorMessage: safeError(error).message,
     });
-    res.status(500).json({ error: 'Bulk unrepost failed' });
+    // The response may be out already: the bookkeeping runs after it.
+    if (!res.headersSent) res.status(500).json({ error: 'Bulk unrepost failed' });
   }
 });
 

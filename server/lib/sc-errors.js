@@ -1,19 +1,54 @@
+/** `value[key]`, or undefined when there is nothing to read or reading throws. */
+function field(value, key) {
+  if (value === null || value === undefined) return undefined;
+  try {
+    return value[key];
+  } catch {
+    return undefined;
+  }
+}
+
+/** A thrown value's `status`. Cannot throw, whatever was thrown. */
+export function scErrorStatus(err) {
+  return field(err, 'status');
+}
+
 /**
  * Classify an error thrown by the SoundCloud client so routes can answer with
  * something more useful than a generic 500. Pure: reads `status` and `code`
- * only, never the message.
+ * only, never the message. Cannot throw, whatever was thrown.
  *
  * @returns {'not_found'|'upstream_unavailable'|'rate_limited'|null}
  */
 export function classifyScError(err) {
   if (!err || typeof err !== 'object') return null;
-  if (err.code === 'SC_TIMEOUT') return 'upstream_unavailable';
-  const status = err.status;
+  if (field(err, 'code') === 'SC_TIMEOUT') return 'upstream_unavailable';
+  const status = field(err, 'status');
   if (status === 404) return 'not_found';
   if (status === 502 || status === 503 || status === 504) return 'upstream_unavailable';
   if (status === 429) return 'rate_limited';
   return null;
 }
+
+/**
+ * User-facing text for one failed item of a bulk run. Fixed phrases only,
+ * chosen from the error's status/code: never `err.message`, which says
+ * whatever the thrower wrote (a network error, or a database error on a token
+ * save, names hosts).
+ *
+ * @param {unknown} err
+ * @param {string} fallback - what failed, e.g. 'Unlike failed'
+ */
+export function scItemErrorText(err, fallback) {
+  return SC_ITEM_ERROR_TEXT[classifyScError(err)] ?? fallback;
+}
+
+/** The phrases, by `classifyScError` kind, for a caller that classifies itself. */
+export const SC_ITEM_ERROR_TEXT = Object.freeze({
+  not_found: 'Not found on SoundCloud',
+  rate_limited: 'SoundCloud rate limit reached — try again later',
+  upstream_unavailable: 'SoundCloud did not respond — try again later',
+});
 
 /**
  * Wrap a read so a failure names the playlist it was for. Only reads are

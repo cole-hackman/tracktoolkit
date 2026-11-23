@@ -98,6 +98,19 @@ the session lifetime is enforced **inside the signed payload** (`iat` +
 cookie's own `maxAge`. Token refresh happens on a 401 inside
 `soundcloud-client.js` — read Account lifecycle below before touching it.
 
+**The post-login redirect target is allowlisted.** `/login` remembers where
+the user came from in the short-lived `app_url` cookie (it exists for dev
+ports, and the privacy page lists it), and `/callback` redirects to
+`${app_url}/dashboard` or `${app_url}/login?error=…`. Origin, Referer and the
+cookie are all client-controlled, so every write and every read goes through
+`safeAppOrigin()`: the parsed origin survives only if it exactly equals
+`APP_URL` or an entry of `APP_URLS` (trimmed, trailing slash dropped, never a
+prefix match); anything else, including a forged cookie and the catch block,
+lands on `APP_URL`. `post_login_path` is re-checked on the callback with
+`safePostLoginPath`, which refuses `//`, `..` and any backslash (`/\evil`
+reads as `//evil` in a browser). `tests/routes/auth-callback.test.js` pins
+all four callback branches.
+
 ### Cookie Configuration
 
 The cookie is **host-only**: `createSessionCookieOptions()` in
@@ -950,7 +963,7 @@ clone, and every bulk write.
 | `SOUNDCLOUD_REDIRECT_URI` | Yes | Must match the SoundCloud app registration. Production: `https://tracktoolkit.com/api/auth/callback` |
 | `DATABASE_URL` | Yes | PostgreSQL connection string. Production reads it from Key Vault `tracktoolkit-kv/database-url` (Azure Flexible Server, `?sslmode=require&connection_limit=10&pool_timeout=30`) |
 | `APP_URL` | Yes | Canonical origin, and the target of the legacy-host redirects. Production: `https://tracktoolkit.com` |
-| `APP_URLS` | Yes | Comma-separated CORS allowlist. Production is the single origin `https://tracktoolkit.com` — the app is same-origin, so there is nothing else to allow |
+| `APP_URLS` | Yes | Comma-separated CORS allowlist, and (with `APP_URL`) the only origins the OAuth callback will redirect to (`safeAppOrigin` in `routes/auth.js`). Production is the single origin `https://tracktoolkit.com` — the app is same-origin, so there is nothing else to allow. A dev port that is not listed still signs in, but lands on `APP_URL` |
 | `SURVEY_ENABLED` | No | Kill switch for a **future** in-app survey. It no longer affects the rebrand name vote, which is closed in code (`REBRAND_VOTE_CONCLUDED`) and cannot be switched back on from the environment |
 | `SURVEY_CAMPAIGN_ID` | No | Campaign identifier for the (closed) vote, default `2026-rebrand-name-v1`. Only the admin read paths use it now; it no longer gates any prompt |
 | `GROWTH_AUTOCHECK` | No | Set to `false` to disable the daily growth follow-back scheduler |
@@ -1063,6 +1076,73 @@ delay.
 
 `server/middleware/rateLimiter.js` and the global error handler both strip patterns like `token=`, `secret=`, `password=`, `encryption_key=` from error messages and JSON responses before they reach the client.
 
+`safeError()` (`server/lib/safe-error.js`) is **for logs only**. It keeps
+`err.message` verbatim, and a Prisma message names the database host and
+port, so its result never goes into a response: a 500 answers a fixed
+`{ error: '<what failed>' }`. It takes one argument; a second "fallback"
+string is silently ignored, which is how the feedback routes once sent
+`safeError(error, 'Failed to …')` straight to the client
+(`tests/routes/feedback.test.js` now pins the bodies).
+
+**Per-item failure text that a page prints is a fixed phrase** picked from
+the error's status or code, never `err.message`, which says whatever the
+thrower wrote: `scItemErrorText(err, 'Unlike failed')` in `lib/sc-errors.js`
+for bulk like, unlike, unfollow, repost removal, Sort Likes unlike and
+transfer-track; `batchResolveErrorText` for `/resolve/batch`;
+`mergeDeleteErrorText` for the merge's `deleteErrors`
+(`tests/routes/item-error-text.test.js`). No page reads that text to detect a
+rate limit: they use `rateLimited`, the item `status` and the HTTP status.
+
+What is kept of the error instead:
+
+- **Server log: `logFailure(what, fields, { first: err })`** (`safe-error.js`)
+  writes one warn line and describes each error with `safeErrorBrief`. That is
+  an allowlist, not a redaction: the error's `name`, `code` and `status` when
+  they look like a name, a code and an HTTP status; its `message` only when it
+  is exactly one of the SoundCloud client's own fixed messages
+  (`API request failed: 403`, `Resolve error: 404`, `Token refresh failed`,
+  `fetch failed`, …); and the name and code of its `cause`. A message that is
+  not on the list is dropped whole, because it can quote an Authorization
+  header, a pasted secret link, an email or a Prisma query, and no pattern
+  list catches every shape of those. The cost is the free text: a database
+  error is `PrismaClientKnownRequestError` and `P1001`, not the sentence
+  naming the host, and a new client message appears only once it is added to
+  `OWN_MESSAGE`. `logFailure` cannot throw, and the per-run lines are written
+  last in their handler, so a log line never changes a response or skips the
+  operation log. The lines, one per run that had a failed item: `<what>: items failed
+  { failed, first }` for bulk like, unlike, unfollow, repost removal and Sort
+  Likes unlike; `Batch resolve: links failed { failed, total, first?,
+  firstPublic? }`. One per failure: transfer-track's two
+  `[playlist-transfer]` lines and `[merge] source delete failed`.
+  `tests/safe-error.test.js` pins the allowlist.
+- **Operation log `errorMessage`: the first failure's raw message, when no
+  item succeeded** (the route's label, such as "Like failed", if what was
+  thrown has no message), for bulk like, unlike, unfollow and repost removal.
+  For `/resolve/batch` it is the first failed link's: the message of its last
+  attempt, or the item's fixed text when nothing was thrown. That is
+  unchanged from before. Sort Likes unlike, transfer-track and the merge's
+  `deleteErrors` have never written one. The column is in
+  `GET /api/auth/export`, so a person can read the raw text of their own runs
+  there.
+
+Other log lines use `safeError` or the raw message. The logger's own redaction
+(`sanitizeString` in `logger.js`) is the general guard there. In a string it removes what follows `OAuth` or `Bearer`, the value
+after a secret-looking key (`token=`, `"access_token":"…"`, `password: …`)
+and a `code=` in a query string. An email, a link with no such key or a
+database host still pass.
+
+**A batch resolve can fail twice per link**: with the user's token, then
+without one. The item's phrase comes from the first failure when its status
+picks one (404, 401/403, 429, 502-504 or a timeout), because that attempt
+could see the link. When it picks none (no status at all, or a 400, 410 or
+500) the public attempt may add only what it can know: not found, rate
+limited, no answer. "Refused" without credentials is not reported as a
+finding; the item then says "Resolve failed" and no cause. A link the public
+retry resolved after a signed-in failure with no HTTP status is counted on its
+own line, `Batch resolve: public retry covered a failed signed-in attempt
+{ covered, total, first }`. Single `/resolve` already answered from its first
+failure (`tests/routes/resolve-two-attempts.test.js` pins both).
+
 ### Login Pre-warming
 
 Before the OAuth redirect, the frontend pings `/health` (with a 1.2s timeout) to
@@ -1092,7 +1172,7 @@ less — the timeout means it costs nothing either way, so it stays.
    left implied. Local dev uses `Lax` over HTTP with the `next.config.js`
    rewrites.
 
-6. **In-Memory URL Cache**: The `/api/resolve` cache is per-process and resets on restart. Not shared across multiple server instances. Cache TTL is 5 minutes. (The *library* cache — likes/playlists/followings/followers/reposts — is different: since the 2026-09 performance work it has a Postgres tier underneath that survives restarts. See `docs/performance-audit-2026-09.md`. Its invalidation marks are per-process, though: with more than one worker a second instance can republish a pre-mutation snapshot as `complete`, so the durable tier is only safe single-instance — which is why `infra/main.bicep` pins `capacity: 1` and `numberOfWorkers: 1`. See the header comment in `server/lib/social-cache.js`.)
+6. **In-Memory URL Cache**: The `/api/resolve` cache is per-process and resets on restart. Not shared across multiple server instances. Cache TTL is 5 minutes. It **is** shared across users and keyed by URL alone, so `/resolve` and `/resolve/batch` only write a result when the raw upstream resource is a `user` or has `sharing === 'public'` (`isShareableResolve` in `server/lib/resolve-cache.js`); a private track or playlist — or any shape without a `sharing` field — is never cached, so another user gets SoundCloud's answer for their own token. Entries are `{ v1, v2 }`, both built from the raw resource, because the v2 payload cannot be rebuilt from v1. `tests/routes/resolve-cache-privacy.test.js` pins both. (The *library* cache — likes/playlists/followings/followers/reposts — is different: since the 2026-09 performance work it has a Postgres tier underneath that survives restarts. See `docs/performance-audit-2026-09.md`. Its invalidation marks are per-process, though: with more than one worker a second instance can republish a pre-mutation snapshot as `complete`, so the durable tier is only safe single-instance — which is why `infra/main.bicep` pins `capacity: 1` and `numberOfWorkers: 1`. See the header comment in `server/lib/social-cache.js`.)
 
    **The single worker is now load-bearing for more than the cache.** The
    revocation classifier (`_resolveInvalidGrant` in

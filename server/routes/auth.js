@@ -18,13 +18,60 @@ import { dropInvalidationMarks } from '../lib/social-cache.js';
 
 const router = express.Router();
 
-/** Safe path for post-OAuth redirect (same-site frontend only). */
+/**
+ * Safe path for post-OAuth redirect (same-site frontend only). Backslashes are
+ * refused because browsers treat `\` as `/` in a URL, so `/\evil.example`
+ * reads as the protocol-relative `//evil.example` once it reaches a Location.
+ */
 function safePostLoginPath(raw) {
   if (typeof raw !== 'string') return '';
   const p = raw.trim();
-  if (!p.startsWith('/') || p.startsWith('//') || p.includes('..')) return '';
+  if (!p.startsWith('/') || p.startsWith('//') || p.includes('..') || p.includes('\\')) return '';
   if (p.length > 200) return '';
   return p;
+}
+
+function originOf(raw) {
+  try {
+    return new URL(String(raw).trim()).origin;
+  } catch {
+    return null;
+  }
+}
+
+/** APP_URL as a redirect base: no trailing slash, local preview port if unset. */
+function defaultAppOrigin() {
+  return (process.env.APP_URL || 'http://localhost:4173').trim().replace(/\/+$/, '');
+}
+
+/**
+ * The only origins a post-login redirect may target. The `app_url` cookie is
+ * filled from the request's Origin/Referer and read back on the callback, so
+ * without this an attacker could send a victim to /api/auth/login from their
+ * own page and have the OAuth round trip finish on their site (open redirect
+ * from our domain, with `?error=` text or the post-login path appended).
+ *
+ * Returns `new URL(raw).origin` only when it exactly equals APP_URL's origin
+ * or one entry of comma-separated APP_URLS (each trimmed, trailing slash
+ * dropped, compared as a parsed origin, never as a prefix). Anything else —
+ * a foreign origin, a look-alike host, a protocol-relative or unparseable
+ * value, a missing cookie — returns APP_URL. Read every time, not cached, so
+ * the allowlist follows the environment the process is running in.
+ */
+function safeAppOrigin(raw) {
+  const fallback = defaultAppOrigin();
+  if (typeof raw !== 'string' || !raw.trim()) return fallback;
+  const candidate = originOf(raw);
+  if (!candidate || candidate === 'null') return fallback;
+
+  const allowed = new Set(
+    [process.env.APP_URL || '', ...(process.env.APP_URLS || '').split(',')]
+      .map((entry) => entry.trim().replace(/\/+$/, ''))
+      .filter(Boolean)
+      .map(originOf)
+      .filter((o) => o && o !== 'null')
+  );
+  return allowed.has(candidate) ? candidate : fallback;
 }
 
 /**
@@ -45,15 +92,11 @@ router.get('/login', async (req, res) => {
     });
 
     // Remember app origin so callback can redirect to the right port (dev 5173 vs preview 4173)
-    // Determine app origin from Origin header, else Referer, else env default
-    let appOrigin = req.get('origin') || '';
-    if (!appOrigin) {
-      const ref = req.get('referer');
-      if (ref) {
-        try { appOrigin = new URL(ref).origin; } catch {}
-      }
-    }
-    if (!appOrigin) appOrigin = process.env.APP_URL || 'http://localhost:4173';
+    // Determine app origin from Origin header, else Referer, else env default.
+    // Both headers are attacker-controlled, so the value only survives if it is
+    // an allowlisted origin (safeAppOrigin); the callback re-checks it, because
+    // the cookie itself can be forged too.
+    const appOrigin = safeAppOrigin(req.get('origin') || req.get('referer') || '');
     res.cookie('app_url', appOrigin, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -97,8 +140,8 @@ router.get('/callback', async (req, res) => {
   try {
     const { code, error } = req.query;
     const codeVerifier = req.cookies.pkce_verifier;
-    const appUrlCookie = req.cookies.app_url;
-    const appUrl = appUrlCookie || process.env.APP_URL;
+    // Never trust the cookie as-is: it is client-held and can be forged.
+    const appUrl = safeAppOrigin(req.cookies.app_url);
     const postLoginPath = req.cookies.post_login_path;
 
     if (error) {
@@ -205,15 +248,14 @@ router.get('/callback', async (req, res) => {
     res.clearCookie('app_url');
     res.clearCookie('post_login_path');
 
-    const pathAfterLogin =
-      (typeof postLoginPath === 'string' && postLoginPath.startsWith('/') && !postLoginPath.startsWith('//')
-        ? postLoginPath
-        : '/dashboard');
+    // The cookie is client-held, so it goes through the same check /login
+    // applied when it set it.
+    const pathAfterLogin = safePostLoginPath(postLoginPath) || '/dashboard';
 
     res.redirect(`${appUrl}${pathAfterLogin}`);
   } catch (error) {
     logger.error('Callback error:', safeError(error));
-    const appUrl = req.cookies.app_url || process.env.APP_URL;
+    const appUrl = safeAppOrigin(req.cookies?.app_url);
     res.clearCookie('pkce_verifier');
     res.clearCookie('app_url');
     res.clearCookie('post_login_path');

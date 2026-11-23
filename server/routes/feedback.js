@@ -73,7 +73,7 @@ router.get('/survey/status', authenticateUser, async (req, res) => {
     });
   } catch (error) {
     logger.error('survey status error', safeError(error));
-    res.status(500).json(safeError(error, 'Failed to load survey status'));
+    res.status(500).json({ error: 'Failed to load survey status' });
   }
 });
 
@@ -135,7 +135,7 @@ router.post('/survey', authenticateUser, validateRebrandVote, async (req, res) =
     }
   } catch (error) {
     logger.error('survey submit error', safeError(error));
-    res.status(500).json(safeError(error, 'Failed to submit survey response'));
+    res.status(500).json({ error: 'Failed to submit survey response' });
   }
 });
 
@@ -242,7 +242,7 @@ router.post(
       return res.status(201).json({ id: created.id, createdAt: created.createdAt });
     } catch (error) {
       logger.error('feedback submit error', safeError(error));
-      return res.status(500).json(safeError(error, 'Failed to submit feedback'));
+      return res.status(500).json({ error: 'Failed to submit feedback' });
     }
   }
 );
@@ -265,7 +265,7 @@ router.get('/mine', authenticateUser, async (req, res) => {
     res.json({ items });
   } catch (error) {
     logger.error('feedback mine error', safeError(error));
-    res.status(500).json(safeError(error, 'Failed to load your feedback'));
+    res.status(500).json({ error: 'Failed to load your feedback' });
   }
 });
 

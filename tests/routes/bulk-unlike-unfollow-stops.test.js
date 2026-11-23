@@ -74,7 +74,7 @@ describe.each(ROUTES)('$name', ({ name, path, body, idKey, fn }) => {
     expect(res.body.rateLimited).toBe(true);
     expect(res.body.results).toEqual([
       { [idKey]: 1, status: 'ok' },
-      { [idKey]: 2, status: 'error', error: 'API request failed: 429' },
+      { [idKey]: 2, status: 'error', error: 'SoundCloud rate limit reached — try again later' },
       { [idKey]: 3, status: 'skipped' },
       { [idKey]: 4, status: 'skipped' },
     ]);
