@@ -65,3 +65,48 @@ describe('POST /api/growth/discover genre focus', () => {
     expect(discoverSuggestions).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /api/growth/discover inspirationUserIds', () => {
+  // The ids are interpolated into /users/${id}/followers and friends. A lax
+  // parseInt check let the leading digits vouch for the rest of the string.
+  test('a path-traversal id is refused with 400 before reaching the engine', async () => {
+    const res = await request(app)
+      .post('/api/growth/discover')
+      .send({ inspirationUserIds: ['2/../../me/followings/777?'] });
+
+    expect(res.status).toBe(400);
+    expect(discoverSuggestions).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['a leading-zero id', '02'],
+    ['zero', 0],
+    ['an array', [2]],
+    ['a decimal', '2.5'],
+  ])('%s is refused with 400', async (_name, bad) => {
+    const res = await request(app)
+      .post('/api/growth/discover')
+      .send({ inspirationUserIds: [bad] });
+
+    expect(res.status).toBe(400);
+    expect(discoverSuggestions).not.toHaveBeenCalled();
+  });
+
+  test('numeric strings still work and reach the engine as numbers', async () => {
+    const res = await request(app)
+      .post('/api/growth/discover')
+      .send({ inspirationUserIds: ['5', 6] });
+
+    expect(res.status).toBe(200);
+    expect(discoverSuggestions.mock.calls[0][0].inspirationUserIds).toEqual([5, 6]);
+  });
+
+  test('the 1-5 length limit is unchanged', async () => {
+    const empty = await request(app).post('/api/growth/discover').send({ inspirationUserIds: [] });
+    const six = await request(app).post('/api/growth/discover').send({ inspirationUserIds: [1, 2, 3, 4, 5, 6] });
+
+    expect(empty.status).toBe(400);
+    expect(six.status).toBe(400);
+    expect(discoverSuggestions).not.toHaveBeenCalled();
+  });
+});

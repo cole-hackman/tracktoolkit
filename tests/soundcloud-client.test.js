@@ -176,6 +176,72 @@ describe('soundcloud client behaviors', () => {
     });
   });
 
+  describe('user/track write helpers refuse anything but a positive safe integer', () => {
+    const ok = () => Promise.resolve(new Response('{}', { status: 200 }));
+    const calls = {
+      unfollowUser: [(id) => soundcloudClient.unfollowUser('a', 'r', id), '/me/followings/', /user id/i],
+      followUser: [(id) => soundcloudClient.followUser(id, 'a', 'r'), '/me/followings/', /user id/i],
+      unlikeTrack: [(id) => soundcloudClient.unlikeTrack('a', 'r', id), '/likes/tracks/', /track id/i],
+      likeTrack: [(id) => soundcloudClient.likeTrack(id, 'a', 'r'), '/likes/tracks/', /track id/i],
+    };
+
+    describe.each(Object.keys(calls))('%s', (name) => {
+      const [call, prefix, message] = calls[name];
+      test.each([
+        ['a traversal string', '5/../../playlists/777'],
+        ['a nested array', [5, 6]],
+        ['zero', 0],
+        ['undefined', undefined],
+      ])('%s throws without fetching', async (_label, bad) => {
+        await expect(call(bad)).rejects.toThrow(message);
+        expect(fetch).not.toHaveBeenCalled();
+      });
+
+      test('a numeric string is sent as its number', async () => {
+        fetch.mockReturnValueOnce(ok());
+        await call('5');
+        expect(fetch.mock.calls[0][0]).toBe(`https://api.soundcloud.com${prefix}5`);
+      });
+    });
+  });
+
+  // Defence in depth behind the validators: a playlist id is interpolated
+  // into the path, so anything that is not a positive safe integer must never
+  // become part of a URL — least of all a DELETE.
+  describe('playlist-path helpers refuse anything but a positive safe integer', () => {
+    const ok = () => Promise.resolve(new Response(JSON.stringify({ id: 2, tracks: [] }), { status: 200 }));
+    const calls = {
+      getPlaylistWithTracks: (id) => soundcloudClient.getPlaylistWithTracks('a', 'r', id),
+      addTracksToPlaylist: (id) => soundcloudClient.addTracksToPlaylist('a', 'r', id, [5]),
+      deletePlaylist: (id) => soundcloudClient.deletePlaylist('a', 'r', id),
+    };
+
+    describe.each(Object.keys(calls))('%s', (name) => {
+      test.each([
+        ['a traversal string', '2/../../me/followings/777?'],
+        ['a query-smuggling string', '2?secret_token=x'],
+        ['zero', 0],
+        ['a negative id', -2],
+        ['a decimal', 2.5],
+        ['an unsafe integer', 2 ** 53 + 2],
+        ['undefined', undefined],
+        ['null', null],
+        ['an empty string', ''],
+        ['an object', { id: 2 }],
+      ])('%s throws without fetching', async (_label, bad) => {
+        await expect(calls[name](bad)).rejects.toThrow(/playlist id/i);
+        expect(fetch).not.toHaveBeenCalled();
+      });
+
+      test('a numeric string is sent as its number', async () => {
+        fetch.mockReturnValueOnce(ok());
+        await calls[name]('2');
+        const [url] = fetch.mock.calls[0];
+        expect(url).toMatch(/^https:\/\/api\.soundcloud\.com\/playlists\/2(\?|$)/);
+      });
+    });
+  });
+
   test('fetches a followed user playlists page without embedded tracks', async () => {
     const payload = { collection: [{ id: 99, title: 'Set', track_count: 12 }], next_href: null };
     fetch.mockReturnValueOnce(Promise.resolve(new Response(JSON.stringify(payload), { status: 200 })));

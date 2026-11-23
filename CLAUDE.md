@@ -1078,6 +1078,39 @@ less — the timeout means it costs nothing either way, so it stays.
 
 2. **Rate Limiting (429)**: SoundCloud's limits are undocumented. The app uses 300–500ms delays between API calls and respects `Retry-After` headers. Large bulk operations (unlike 1000+ tracks) will be slow and may still occasionally 429.
 
+**An id that goes into a SoundCloud path is validated as a whole positive
+integer, never with `parseInt`.** `parseInt("2/../../me/followings/777?")` is
+2, which is how a merge source id once reached `/playlists/${id}` (and its
+DELETE) raw. In `validation.js`, `scalarIdField()` (or `wholeId()` around a
+chain that is not a plain `body(field)` — a `.if()` branch or a `query()`)
+does it for `sourcePlaylistIds.*`, `inspirationUserIds.*`, the bulk-unrepost
+`items.*.id`, `targetPlaylistId` on merge, from-likes, followed-likes, bulk-add
+and transfer-track, transfer-track's `trackId` and both `sourcePlaylistId`
+branches, bulk-remove's `items.*.playlistId`, search-tracks' `?playlistId`,
+growth engage's `targets.*.userId`/`likeTrackId`, the setlist playlist's
+`tracks.*.id`, Sort Likes' `playlistId`, gate-results' `results.*.id`, and
+every id-array element (`trackIds.*` on bulk-like, bulk-unlike, bulk-add,
+followed-likes, Sort Likes apply/unlike and admin re-resolve; `userIds.*` on
+bulk-unfollow; `playlistIds.*` on clone-followed; bulk-remove's
+`items.*.trackIds.*` — `.isInt()` also passes a nested `[[5,6]]`, which became
+`DELETE /me/followings/5,6`): a whole-value `.custom()` first (express-validator
+applies `.isInt()` element-wise, so a bare `.isInt()` on a scalar field passes
+`[1]` — which then never `===` the target and got past the merge's "never
+delete the target" filter), then `.isInt({ min: 1, max: MAX_SAFE_INTEGER,
+allow_leading_zeroes: false }).toInt()`, so routes receive numbers. Behind
+that, `pathId()` in `soundcloud-client.js` guards `getPlaylistWithTracks`,
+`addTracksToPlaylist`, `deletePlaylist`, both branches of `deleteRepost`
+(`/reposts/playlists/${id}` and `/reposts/tracks/${id}`), `followUser`,
+`unfollowUser`, `likeTrack` and `unlikeTrack`: each throws
+`INVALID_PATH_ID` unless `Number(id)` is a positive safe integer and puts that
+number, not the caller's value, in the path
+(`tests/routes/playlist-id-validation.test.js`,
+`tests/soundcloud-client.test.js`). The read paths (`/users/${id}/...`,
+`/tracks/${id}/streams`) rely on their route validators alone. `PUT
+/playlists/:id`'s `tracks`/`remove` and from-likes' `trackIds` still check
+with `parseInt`, but those ids only go into the JSON body as
+`soundcloud:tracks:N` URNs, never into a path.
+
 3. **Token Refresh Timing**: Tokens are only refreshed on-demand when a 401 occurs. There's no proactive refresh daemon. If a token expires mid-session, the next request triggers a refresh and retry — transparent to the user, but adds latency.
 
 4. **Reposts API Inconsistency**: SoundCloud's V2 reposts endpoint is unreliable (sometimes returns 0 even when the user has reposts). The multi-fallback chain mitigates this but adds latency and complexity.

@@ -264,6 +264,35 @@ export function clearRecentRotations() {
   recentRotations.clear();
 }
 
+/**
+ * A caller-supplied id interpolated into a SoundCloud path (`/playlists/${id}`,
+ * `/reposts/tracks/${id}`, ...) — several of them DELETEs. The route
+ * validators already insist on a whole positive integer; this is the second
+ * line, so a caller that forgets (or a validator that regresses — `parseInt`
+ * once let `"2/../../me/followings/777?"` through) cannot turn the id into a
+ * different endpoint. The NUMBER goes into the path, never the caller's value:
+ * `"2"` becomes `2`, and anything that is not a positive safe integer throws
+ * before a request is built. `kind` only names the id in the error.
+ */
+function pathId(value, kind) {
+  // Only numbers, strings and bigints (a Prisma BigInt column) are
+  // candidates: Number([2]) is 2 and Number(null) is 0, so letting other
+  // types through Number() would accept an array and depend on null failing
+  // the range check by luck.
+  const t = typeof value;
+  const n = (t === 'number' || t === 'bigint' || t === 'string') && value !== ''
+    ? Number(value)
+    : NaN;
+  if (!Number.isSafeInteger(n) || n < 1) {
+    const err = new TypeError(`Invalid ${kind} id: expected a positive integer`);
+    err.code = 'INVALID_PATH_ID';
+    throw err;
+  }
+  return n;
+}
+
+const playlistPathId = (playlistId) => pathId(playlistId, 'playlist');
+
 class SoundCloudClient {
   constructor() {
     this.baseUrl = 'https://api.soundcloud.com';
@@ -693,10 +722,11 @@ class SoundCloudClient {
    * write the list back must use it (see readPlaylistForRewrite).
    */
   async getPlaylistWithTracks(accessToken, refreshToken, playlistId, { allAccess = false, secretToken } = {}) {
+    const id = playlistPathId(playlistId);
     const access = allAccess ? '&access=playable,preview,blocked' : '';
     // A private playlist shared by link is readable only with its secret token.
     const secret = secretToken ? `&secret_token=${encodeURIComponent(secretToken)}` : '';
-    return this.scRequest(`/playlists/${playlistId}?show_tracks=true${access}${secret}`, accessToken, refreshToken);
+    return this.scRequest(`/playlists/${id}?show_tracks=true${access}${secret}`, accessToken, refreshToken);
   }
 
   /**
@@ -874,13 +904,14 @@ class SoundCloudClient {
    * Add tracks to a playlist
    */
   async addTracksToPlaylist(accessToken, refreshToken, playlistId, trackIds) {
+    const id = playlistPathId(playlistId);
     const payload = {
       playlist: {
         tracks: trackIds.map(id => ({ urn: `soundcloud:tracks:${id}` }))
       }
     };
 
-    return this.scRequest(`/playlists/${playlistId}`, accessToken, refreshToken, {
+    return this.scRequest(`/playlists/${id}`, accessToken, refreshToken, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json'
@@ -1045,7 +1076,7 @@ class SoundCloudClient {
    * Tokens come first here, but the inverse (likeTrack) takes the ID first.
    */
   async unlikeTrack(accessToken, refreshToken, trackId) {
-    return this.scRequest(`/likes/tracks/${trackId}`, accessToken, refreshToken, { method: 'DELETE' });
+    return this.scRequest(`/likes/tracks/${pathId(trackId, 'track')}`, accessToken, refreshToken, { method: 'DELETE' });
   }
 
   /**
@@ -1067,7 +1098,7 @@ class SoundCloudClient {
    * Tokens come first here, but the inverse (followUser) takes the ID first.
    */
   async unfollowUser(accessToken, refreshToken, userId) {
-    return this.scRequest(`/me/followings/${userId}`, accessToken, refreshToken, { method: 'DELETE' });
+    return this.scRequest(`/me/followings/${pathId(userId, 'user')}`, accessToken, refreshToken, { method: 'DELETE' });
   }
 
   /**
@@ -1142,9 +1173,10 @@ class SoundCloudClient {
    * Remove a repost. resourceType must be 'track' or 'playlist'.
    */
   async deleteRepost(accessToken, refreshToken, id, resourceType) {
+    // Both branches are DELETEs built from a caller's id; see pathId.
     const path = resourceType === 'playlist'
-      ? `/reposts/playlists/${id}`
-      : `/reposts/tracks/${id}`;
+      ? `/reposts/playlists/${playlistPathId(id)}`
+      : `/reposts/tracks/${pathId(id, 'track')}`;
     return this.scRequest(path, accessToken, refreshToken, { method: 'DELETE' });
   }
 
@@ -1152,7 +1184,8 @@ class SoundCloudClient {
    * Delete a playlist by its ID
    */
   async deletePlaylist(accessToken, refreshToken, playlistId) {
-    return this.scRequest(`/playlists/${playlistId}`, accessToken, refreshToken, { method: 'DELETE' });
+    const id = playlistPathId(playlistId);
+    return this.scRequest(`/playlists/${id}`, accessToken, refreshToken, { method: 'DELETE' });
   }
 
   /**
@@ -1231,14 +1264,14 @@ class SoundCloudClient {
    * Follow a user
    */
   async followUser(userId, accessToken, refreshToken) {
-    return this.scRequest(`/me/followings/${userId}`, accessToken, refreshToken, { method: 'PUT' });
+    return this.scRequest(`/me/followings/${pathId(userId, 'user')}`, accessToken, refreshToken, { method: 'PUT' });
   }
 
   /**
    * Like a track
    */
   async likeTrack(trackId, accessToken, refreshToken) {
-    return this.scRequest(`/likes/tracks/${trackId}`, accessToken, refreshToken, { method: 'POST' });
+    return this.scRequest(`/likes/tracks/${pathId(trackId, 'track')}`, accessToken, refreshToken, { method: 'POST' });
   }
 
   /**
