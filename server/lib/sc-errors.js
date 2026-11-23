@@ -17,9 +17,12 @@ export function classifyScError(err) {
 
 /**
  * User-facing text for one failed item of a bulk run. Fixed phrases only,
- * chosen from the error's status/code: never `err.message`, which can carry
- * database or upstream detail (a write's 401 path refreshes and persists
- * tokens, so a Prisma message naming the DB host can arrive here).
+ * chosen from the error's status/code: never `err.message`, which says
+ * whatever the thrower wrote. From `scRequest` that is a status line (it
+ * replaces a failed token refresh with "Token refresh failed"), but
+ * `resolveAny`, `paginate`, `getDownloadLink` and the stream redirect pass a
+ * refresh failure through as thrown, and a database error on the token save
+ * is Prisma text naming the host and port.
  *
  * @param {unknown} err
  * @param {string} fallback - what failed, e.g. 'Unlike failed'

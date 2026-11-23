@@ -1380,7 +1380,7 @@ router.get('/reposts/paged', authenticateUser, instrumentRead('reposts-paged'), 
 
 /**
  * User-facing text for one failed source delete after a merge. Fixed phrases
- * only: never `err.message`, which can carry upstream or database detail.
+ * only: never `err.message`, which says whatever the thrower wrote.
  */
 function mergeDeleteErrorText(err) {
   switch (classifyScError(err)) {
@@ -2006,9 +2006,8 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
             deletedPlaylistIds.push(id);
           } catch (err) {
             // The Combine page prints `error` verbatim, so it is a fixed phrase
-            // picked from the error class. The raw message stays in the log: a
-            // delete runs through scRequest, whose refresh path writes to the
-            // database, so it can be a Prisma message naming the DB host.
+            // picked from the error class, whatever the thrown thing says. The
+            // raw message stays in the log.
             logger.warn('[merge] source delete failed', { playlistId: id, ...safeError(err) });
             deleteErrors.push({ id, error: mergeDeleteErrorText(err) });
           }

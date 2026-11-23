@@ -1082,17 +1082,46 @@ port, so its result never goes into a response: a 500 answers a fixed
 `{ error: '<what failed>' }`. It takes one argument; a second "fallback"
 string is silently ignored, which is how the feedback routes once sent
 `safeError(error, 'Failed to …')` straight to the client
-(`tests/routes/feedback.test.js` now pins the bodies). Per-item failure text
-that a page prints is a fixed phrase picked by `classifyScError`, for the
-same reason: `scItemErrorText(err, 'Unlike failed')` in `lib/sc-errors.js`
-for bulk like, unlike, unfollow, repost removal, Sort Likes unlike and
-transfer-track; `batchResolveErrorText` for `/resolve/batch`;
-`mergeDeleteErrorText` for the merge's `deleteErrors`
-(`tests/routes/item-error-text.test.js`). No page reads that text to detect
-a rate limit: they use `rateLimited`, the item `status` and the HTTP status.
-The first failure's raw message still goes to the operation log's
-`errorMessage`, as before. That column is in `GET /api/auth/export`, so a
-person can read the raw text of their own failed operations there.
+(`tests/routes/feedback.test.js` now pins the bodies).
+
+**Per-item failure text that a page prints is a fixed phrase** picked from
+the error's status or code, never `err.message`:
+`scItemErrorText(err, 'Unlike failed')` in `lib/sc-errors.js` for bulk like,
+unlike, unfollow, repost removal, Sort Likes unlike and transfer-track;
+`batchResolveErrorText` for `/resolve/batch`; `mergeDeleteErrorText` for the
+merge's `deleteErrors` (`tests/routes/item-error-text.test.js`). No page reads
+that text to detect a rate limit: they use `rateLimited`, the item `status`
+and the HTTP status. How bad the raw text can be depends on the thrower.
+`scRequest` replaces a failed token refresh with "Token refresh failed", so a
+write through it carries a status line at worst. `resolveAny`, `paginate`,
+`getDownloadLink` and the stream redirect pass a refresh failure through as
+thrown, and a database error on the token save is then Prisma text. Of the
+per-item routes only `/resolve/batch` is behind one of those.
+
+Where the raw text goes instead:
+
+- **Server log, once per run, whenever any item failed**: `<what>: items
+  failed { failed, first }` for bulk like, unlike, unfollow, repost removal
+  and Sort Likes unlike, and `Batch resolve: links failed` for the batch.
+  Transfer-track and the merge's source deletes log each failure. These use
+  `safeErrorBrief` (message, code, status; URLs cut, no stack), so a pasted
+  link or a token is not in the line.
+- **Operation log `errorMessage`, only when every item failed**, and only for
+  bulk like, unlike, unfollow, repost removal and `/resolve/batch`. That is
+  unchanged from before. Sort Likes unlike, transfer-track and the merge's
+  `deleteErrors` have never written one. The column is in
+  `GET /api/auth/export`, so a person can read the raw text of their own
+  all-failed runs there.
+
+**A batch resolve can fail twice per link**: with the user's token, then
+without one. The item's phrase comes from the first failure when SoundCloud
+answered it (404, 401/403, 429, no answer), because that attempt could see
+the link. If the first failure was ours (a token refresh, the database, the
+network) the public attempt may add only what it can know: not found, rate
+limited, no answer. "Refused" without credentials is not reported as a
+finding; the item then says "Resolve failed" and no cause. Single `/resolve`
+already answered from its first failure
+(`tests/routes/resolve-two-attempts.test.js` pins both).
 
 ### Login Pre-warming
 

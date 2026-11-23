@@ -5,10 +5,11 @@ import request from 'supertest';
 /**
  * Merge with "delete the sources afterwards" reports each delete that failed as
  * `deleteErrors: [{ id, error }]`, and the Combine page prints `error` as-is.
- * It used to be `safeError(err).message` — the raw error text. A delete runs
- * through scRequest, whose 401 path refreshes and persists tokens, so a
- * database failure there surfaces as a Prisma message naming the DB host and
- * port. The per-item text is now a fixed phrase chosen from the error class.
+ * It used to be `safeError(err).message`: whatever the thrown thing said. From
+ * scRequest that is a status line today (a failed token refresh becomes "Token
+ * refresh failed"), but the page should not depend on every thrower staying
+ * that tidy, so the errors below stand for any text one might carry. The
+ * per-item text is now a fixed phrase chosen from the error class.
  */
 
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
