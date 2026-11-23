@@ -5,10 +5,10 @@ import NextLink from "next/link";
 import { Link2, ExternalLink, Music, Users, ListMusic, X, Download, RotateCcw, Copy } from "lucide-react";
 import { Button, ListSearch, Panel, Select, useAnnounce } from "@/components/ui";
 import { useListSearch } from "@/lib/list-search";
-import { csvEscape } from "@/lib/csv";
 import {
   formatCompactNumber,
   formatDuration,
+  resolvedRowsToCsv,
   type BatchResolveRow,
   type BatchResolveV2Response,
 } from "@/lib/resolver";
@@ -98,21 +98,7 @@ export function ResolvedList({
       URL.revokeObjectURL(href);
       return;
     }
-    const lines = [
-      "index,status,type,title,artist,url,permalink",
-      ...results.map((r) => {
-        const title = r.data?.type === "user" ? r.data?.username : r.data?.title;
-        const artist =
-          r.data?.type === "track" || r.data?.type === "playlist"
-            ? r.data.user?.username || r.data?.username || ""
-            : r.data?.username || "";
-        const cells = [r.index, r.status, r.data?.type || "", title || "", artist, r.url, r.data?.permalink_url || ""];
-        // Titles and usernames are other people's text: csvEscape adds the
-        // spreadsheet formula guard on top of the quoting.
-        return cells.map(csvEscape).join(",");
-      }),
-    ];
-    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const blob = new Blob([resolvedRowsToCsv(results)], { type: "text/csv;charset=utf-8;" });
     const href = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = href;
