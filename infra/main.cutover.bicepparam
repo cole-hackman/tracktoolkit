@@ -16,6 +16,7 @@ param soundcloudRedirectUri = 'https://tracktoolkit.com/api/auth/callback'
 // All five hostnames point here since the 2026-09-20 cutover; each has an
 // App Service managed certificate (bindManagedCertificates keeps them
 // attached on redeploy).
+param bindManagedCertificates = true
 param customHostnames = [
   'tracktoolkit.com'
   'www.tracktoolkit.com'
