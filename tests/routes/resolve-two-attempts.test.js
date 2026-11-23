@@ -134,18 +134,19 @@ describe('POST /api/resolve/batch: both attempts fail, with different errors', (
 });
 
 describe('POST /api/resolve/batch: the server log keeps what the response does not say', () => {
-  test('a database error behind a failed link is logged, once, without the link or a token', async () => {
+  test('a database error behind a failed link is logged once, by code, without its text, the link or a token', async () => {
     resolveAny.mockImplementation(async () => { throw dbDown(); });
     resolvePublic.mockImplementation(async () => { throw sc(401); });
     const urls = [freshUrl(), freshUrl(), freshUrl()];
 
     await batch(urls);
 
-    const lines = logged().filter((line) => line.includes('db.internal:5432'));
+    // By code, not by its text: see safeErrorBrief.
+    const lines = logged().filter((line) => line.includes('P1001'));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('Resolve error: 401');   // the public attempt's answer, beside it
     for (const line of logged()) {
-      expect(line).not.toMatch(/ACCESS-TOKEN|REFRESH-TOKEN|soundcloud\.com\/artist/);
+      expect(line).not.toMatch(/db\.internal|5432|ACCESS-TOKEN|REFRESH-TOKEN|soundcloud\.com\/artist/);
     }
   });
 
@@ -156,7 +157,8 @@ describe('POST /api/resolve/batch: the server log keeps what the response does n
     const res = await batch([freshUrl()]);
 
     expect(res.body.results[0].status).toBe('ok');
-    expect(logged().filter((line) => line.includes('db.internal:5432'))).toHaveLength(1);
+    expect(logged().filter((line) => line.includes('P1001'))).toHaveLength(1);
+    expect(logged().join(' ')).not.toMatch(/db\.internal|5432/);
   });
 
   test('an ordinary partial failure logs the first raw error once', async () => {
