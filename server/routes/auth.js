@@ -15,6 +15,7 @@ import { invalidateCachedAuth } from '../lib/auth-cache.js';
 import { requestCache } from '../lib/request-cache.js';
 import { dropSnapshots } from '../lib/snapshot-cache.js';
 import { dropInvalidationMarks } from '../lib/social-cache.js';
+import { flagsForUser } from '../lib/flags.js';
 
 const router = express.Router();
 
@@ -375,6 +376,7 @@ router.get('/export', authenticateUser, heavyOperationRateLimiter, async (req, r
       indexedLikes,
       indexedPlaylistTracks,
       librarySnapshots,
+      experimentExposures,
     ] = await Promise.all([
       prisma.token.findFirst({ where: { userId }, select: { expiresAt: true } }),
       prisma.operationLog.findMany(scope),
@@ -408,6 +410,8 @@ router.get('/export', authenticateUser, heavyOperationRateLimiter, async (req, r
       optional(prisma.indexed_likes),
       optional(prisma.indexed_playlist_tracks),
       optional(prisma.library_snapshots),
+      // Which arm of an experiment this account was assigned to, and when.
+      optional(prisma.experimentExposure),
     ]);
 
     const { id, soundcloudId, username, displayName, avatarUrl, createdAt, lastLoginAt } = req.user;
@@ -415,7 +419,8 @@ router.get('/export', authenticateUser, heavyOperationRateLimiter, async (req, r
     const payload = {
       // 2: added chatConversations (with their messages), indexedLikes,
       // indexedPlaylistTracks and librarySnapshots.
-      schemaVersion: 2,
+      // 3: added experimentExposures.
+      schemaVersion: 3,
       generatedAt: new Date().toISOString(),
       user: { id, soundcloudId, username, displayName, avatarUrl, createdAt, lastLoginAt },
       // Expiry only — see the invariant above.
@@ -432,6 +437,7 @@ router.get('/export', authenticateUser, heavyOperationRateLimiter, async (req, r
       indexedLikes,
       indexedPlaylistTracks,
       librarySnapshots,
+      experimentExposures,
     };
 
     const day = new Date().toISOString().slice(0, 10);
@@ -482,7 +488,12 @@ router.get('/me', async (req, res) => {
     // same helper backs requireCanDownload, so page and server agree.
     const { isAdmin, canDownload } = accessFor(sessionData.soundcloudId);
 
-    res.json({ ...sessionData, isAdmin, canDownload });
+    // Rollout flags this account has, and experiments whose exposure route is
+    // worth calling (lib/flags.js). A pure decision: no read, no write. Both
+    // lists are empty while every flag is at 0%, so the page asks nothing more.
+    const { flags, experiments } = flagsForUser(user);
+
+    res.json({ ...sessionData, isAdmin, canDownload, flags, experiments });
   } catch (error) {
     logger.error('Me error:', safeError(error));
     res.status(500).json({ error: 'Failed to get user info' });

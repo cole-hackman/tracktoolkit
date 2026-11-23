@@ -41,6 +41,8 @@ const indexedLikeFindMany = findMany([{ id: 'il-1', userId: 'user-a', trackId: 4
 const indexedPlaylistTrackFindMany =
   findMany([{ id: 'ipt-1', userId: 'user-a', playlistId: 7n, trackId: 42n }]);
 const librarySnapshotFindMany = findMany([{ id: 'ls-1', userId: 'user-a', status: 'synced' }]);
+const experimentExposureFindMany =
+  findMany([{ id: 'ee-1', userId: 'user-a', experimentKey: 'guided-first-run', variant: 'guided' }]);
 
 jest.unstable_mockModule('../../server/lib/prisma.js', () => ({
   default: {
@@ -57,6 +59,7 @@ jest.unstable_mockModule('../../server/lib/prisma.js', () => ({
     indexed_likes: { findMany: indexedLikeFindMany },
     indexed_playlist_tracks: { findMany: indexedPlaylistTrackFindMany },
     library_snapshots: { findMany: librarySnapshotFindMany },
+    experimentExposure: { findMany: experimentExposureFindMany },
   },
 }));
 jest.unstable_mockModule('../../server/lib/soundcloud-client.js', () => ({
@@ -136,6 +139,7 @@ const allQueries = [
   ['indexed_likes', indexedLikeFindMany],
   ['indexed_playlist_tracks', indexedPlaylistTrackFindMany],
   ['library_snapshots', librarySnapshotFindMany],
+  ['experimentExposure', experimentExposureFindMany],
 ];
 
 /**
@@ -323,14 +327,16 @@ describe('GET /api/auth/export — response shape', () => {
   test('carries every section plus its schema version', async () => {
     const res = await request(app).get('/api/auth/export');
 
-    // 2 since the four cross-branch tables were added; the number is the
-    // reader's only signal that the shape of the file changed.
-    expect(res.body.schemaVersion).toBe(2);
+    // 2 since the four cross-branch tables were added, 3 since
+    // experimentExposures was; the number is the reader's only signal that
+    // the shape of the file changed.
+    expect(res.body.schemaVersion).toBe(3);
     expect(typeof res.body.generatedAt).toBe('string');
     for (const key of [
       'user', 'token', 'operationLogs', 'growthActions', 'feedback', 'rebrandVotes',
       'surveyResponses', 'betaSignups', 'libraryCacheState', 'libraryCachePages',
       'chatConversations', 'indexedLikes', 'indexedPlaylistTracks', 'librarySnapshots',
+      'experimentExposures',
     ]) {
       expect(res.body).toHaveProperty(key);
     }

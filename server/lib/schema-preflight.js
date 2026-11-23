@@ -46,6 +46,7 @@ const TABLE_SOURCE = {
   library_cache_pages: 'docs/sql/2026-library-cache.sql',
   library_cache_states: 'docs/sql/2026-library-cache.sql',
   rebrand_votes: 'docs/sql/2026-rebrand-votes.sql',
+  experiment_exposures: 'docs/sql/2026-11-experiment-exposures.sql',
 };
 
 /**
