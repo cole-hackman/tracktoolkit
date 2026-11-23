@@ -584,9 +584,20 @@ class SoundCloudClient {
 
   /**
    * Make authenticated request to SoundCloud API with automatic token refresh
+   *
+   * `shouldAbort` (optional) is asked before every re-send this method makes on
+   * its own — after a 401 refresh and after each 429 backoff. A background
+   * write (the growth engagement job) passes its cancel flag, so a request
+   * waiting out a Retry-After is not sent again once the user has
+   * disconnected or deleted the account. The first send cannot be recalled.
    */
   async scRequest(endpoint, accessToken, refreshToken, options = {}) {
-    const { max429Retries = 3, retryAttempt = 0, ...fetchOptions } = options;
+    const { max429Retries = 3, retryAttempt = 0, shouldAbort = null, ...fetchOptions } = options;
+    const throwIfAborted = () => {
+      if (typeof shouldAbort === 'function' && shouldAbort()) {
+        throw Object.assign(new Error('SoundCloud request cancelled'), { code: 'SC_CANCELLED' });
+      }
+    };
     const url = `${this.baseUrl}${endpoint}`;
     // What log lines and error objects may say about this call: a private
     // playlist read carries `secret_token=s-…`, a credential, in the endpoint.
@@ -606,6 +617,7 @@ class SoundCloudClient {
       try {
         const newTokens = await this.refreshTokensAndPersist(refreshToken);
         const newAccessToken = newTokens.access_token;
+        throwIfAborted();
 
         // Retry the request with new token
         const retryResponse = await fetchWithTimeout(url, {
@@ -624,6 +636,9 @@ class SoundCloudClient {
 
         return parseScJson(retryResponse, { context: logEndpoint });
       } catch (refreshError) {
+        // A cancel (shouldAbort) is not a refresh failure: keep its code so
+        // the caller can tell it apart from a broken connection.
+        if (refreshError?.code === 'SC_CANCELLED') throw refreshError;
         // Don't expose refresh error details
         throw new Error(`Token refresh failed`);
       }
@@ -640,9 +655,11 @@ class SoundCloudClient {
       const delay = retryAfter ? parseInt(retryAfter) * 1000 : 1000;
       
       await new Promise(resolve => setTimeout(resolve, delay));
+      throwIfAborted();
       return this.scRequest(endpoint, accessToken, refreshToken, {
         ...fetchOptions,
         max429Retries,
+        shouldAbort,
         retryAttempt: retryAttempt + 1,
       });
     }
@@ -1230,15 +1247,15 @@ class SoundCloudClient {
   /**
    * Follow a user
    */
-  async followUser(userId, accessToken, refreshToken) {
-    return this.scRequest(`/me/followings/${userId}`, accessToken, refreshToken, { method: 'PUT' });
+  async followUser(userId, accessToken, refreshToken, { shouldAbort } = {}) {
+    return this.scRequest(`/me/followings/${userId}`, accessToken, refreshToken, { method: 'PUT', shouldAbort });
   }
 
   /**
    * Like a track
    */
-  async likeTrack(trackId, accessToken, refreshToken) {
-    return this.scRequest(`/likes/tracks/${trackId}`, accessToken, refreshToken, { method: 'POST' });
+  async likeTrack(trackId, accessToken, refreshToken, { shouldAbort } = {}) {
+    return this.scRequest(`/likes/tracks/${trackId}`, accessToken, refreshToken, { method: 'POST', shouldAbort });
   }
 
   /**

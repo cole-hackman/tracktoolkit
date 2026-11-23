@@ -594,6 +594,19 @@ as the refresh path. It runs in a `finally` immediately after the token
 delete, so no later failure in the teardown can leave the memo holding
 credentials whose row is already gone.
 
+**It must stop a running growth job.** An engagement job started by
+`POST /api/growth/engage` holds the decrypted pair in its closure and checks
+only its own cancel flag before each follow or like, so deleting the `Token`
+row does not stop it. `disconnectUser` (manual and revocation paths alike) and
+`DELETE /api/auth/account` both call `cancelEngagementJob` first, before any
+await. The job checks the flag before each follow and like, and passes it to
+`scRequest` as `shouldAbort`, which asks it again before re-sending after a
+401 refresh or a 429 Retry-After backoff. What is not covered: a request
+already on the wire when the cancel lands cannot be recalled, so at most that
+one write completes after the teardown.
+`tests/routes/growth-job-teardown.test.js` pins both routes, and
+`tests/growth-job-429-cancel.test.js` the backoff.
+
 **Revocation is detected, not merely handled — but only when the user comes
 back.** A user revoking the app from SoundCloud's own settings never tells this
 service, and nothing here asks: detection happens inside a token refresh, which
