@@ -1083,8 +1083,16 @@ port, so its result never goes into a response: a 500 answers a fixed
 string is silently ignored, which is how the feedback routes once sent
 `safeError(error, 'Failed to …')` straight to the client
 (`tests/routes/feedback.test.js` now pins the bodies). Per-item failure text
-that a page prints (the merge's `deleteErrors`) is a fixed phrase picked by
-`classifyScError`, for the same reason.
+that a page prints is a fixed phrase picked by `classifyScError`, for the
+same reason: `scItemErrorText(err, 'Unlike failed')` in `lib/sc-errors.js`
+for bulk like, unlike, unfollow, repost removal, Sort Likes unlike and
+transfer-track; `batchResolveErrorText` for `/resolve/batch`;
+`mergeDeleteErrorText` for the merge's `deleteErrors`
+(`tests/routes/item-error-text.test.js`). No page reads that text to detect
+a rate limit: they use `rateLimited`, the item `status` and the HTTP status.
+The first failure's raw message still goes to the operation log's
+`errorMessage`, as before. That column is in `GET /api/auth/export`, so a
+person can read the raw text of their own failed operations there.
 
 ### Login Pre-warming
 

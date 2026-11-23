@@ -177,13 +177,11 @@ describe('cache-hit readers tolerate an entry not in the { v1, v2 } shape', () =
   });
 });
 
-describe('residual leak outside this branch\'s scope', () => {
-  // /resolve/batch still returns each failed item's raw err.message. resolveAny
-  // refreshes and persists tokens on a 401, so a database failure there would
-  // surface its Prisma text (DB host:port) per item — the same class as C7.
-  // Marked test.failing: it passes while the leak exists and turns red once
-  // the route sends fixed text, at which point drop the `.failing`.
-  test.failing('/resolve/batch per-item errors do not carry raw internal error text', async () => {
+describe('/resolve/batch per-item errors', () => {
+  // resolveAny refreshes and persists tokens on a 401, so a database failure
+  // there reaches the per-item catch as Prisma text (DB host:port) — the same
+  // class as C7. The route sends fixed text; see item-error-text.test.js.
+  test('do not carry raw internal error text', async () => {
     const dbDown = new Error("Can't reach database server at `db.internal:5432`");
     resolveAny.mockRejectedValue(dbDown);
     resolvePublic.mockRejectedValue(dbDown);

@@ -5,6 +5,8 @@
 
 import logger from './logger.js';
 import { sleep, SC_WRITE_PACING_MS } from './pacing.js';
+import { safeError } from './safe-error.js';
+import { scItemErrorText } from './sc-errors.js';
 
 export const MAX_PLAYLIST_TRACKS = 500;
 
@@ -233,9 +235,11 @@ export async function moveTrackBetweenPlaylists(deps) {
   try {
     await client.addTracksToPlaylist(accessToken, refreshToken, targetPlaylistId, nextTargetIds);
   } catch (err) {
+    // The response gets fixed text; the raw message stays in the log.
+    logger.warn('[playlist-transfer] target update failed', { targetPlaylistId, error: safeError(err) });
     return {
       ok: false,
-      error: err?.message || 'Failed to update target playlist',
+      error: scItemErrorText(err, 'Failed to update target playlist'),
       stage: 'target_update',
     };
   }
@@ -245,6 +249,7 @@ export async function moveTrackBetweenPlaylists(deps) {
   try {
     await client.addTracksToPlaylist(accessToken, refreshToken, sourcePlaylistId, nextSourceIds);
   } catch (err) {
+    logger.warn('[playlist-transfer] source update failed after target update', { sourcePlaylistId, targetPlaylistId, error: safeError(err) });
     return {
       ok: false,
       partial: true,
@@ -255,7 +260,7 @@ export async function moveTrackBetweenPlaylists(deps) {
       targetPlaylistId,
       sourceTitle: source.title ?? null,
       targetTitle: target.title ?? null,
-      error: err?.message || 'Failed to remove track from source playlist',
+      error: scItemErrorText(err, 'Failed to remove track from source playlist'),
       message:
         'The track was added to the target playlist, but it could not be removed from the source playlist. Remove it manually from the source playlist or try again.',
     };

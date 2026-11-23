@@ -9,7 +9,7 @@ import { logOperation, startOperationTimer, extractClientInfo, instrumentRead } 
 import { harvestTracks, harvestPlaylists } from '../lib/catalog.js';
 import { piggybackEnrichment } from '../lib/enrichment.js';
 import logger from '../lib/logger.js';
-import { classifyScError, scErrorResponse, tagPlaylistReadFailure } from '../lib/sc-errors.js';
+import { classifyScError, scErrorResponse, scItemErrorText, tagPlaylistReadFailure } from '../lib/sc-errors.js';
 import {
   sleep,
   SC_WRITE_PACING_MS,
@@ -1389,6 +1389,23 @@ function mergeDeleteErrorText(err) {
     case 'upstream_unavailable': return 'SoundCloud did not respond — try again later';
     default: return 'Delete failed';
   }
+}
+
+/**
+ * User-facing text for one failed URL in a batch resolve. Fixed phrases only.
+ * resolveAny/resolvePublic throw plain Errors ("Resolve error: 404") with no
+ * status, so it is read off that exact message shape and nothing else is
+ * taken from the text.
+ */
+function batchResolveErrorText(err) {
+  let status = err?.status;
+  if (status == null) {
+    const fromMessage = /^Resolve (?:follow )?error: (\d{3})$/.exec(String(err?.message));
+    if (fromMessage) status = Number(fromMessage[1]);
+  }
+  if (status === 404) return 'Not found on SoundCloud, or private';
+  if (status === 401 || status === 403) return 'SoundCloud refused this link. It may be private';
+  return scItemErrorText({ status, code: err?.code }, 'Resolve failed');
 }
 
 /**
@@ -3343,6 +3360,8 @@ router.post('/sort/unlike', authenticateUser, adminAuth, validateSortUnlike, sor
     const trackIds = [...new Set(req.body.trackIds)];
     const results = [];
     let rateLimited = false;
+    // Kept for the server log; each result carries fixed text only.
+    let firstError;
     for (let i = 0; i < trackIds.length; i++) {
       const trackId = trackIds[i];
       if (rateLimited || clientDisconnected) {
@@ -3353,7 +3372,8 @@ router.post('/sort/unlike', authenticateUser, adminAuth, validateSortUnlike, sor
         await soundcloudClient.unlikeTrack(req.accessToken, req.refreshToken, trackId);
         results.push({ trackId, status: 'ok' });
       } catch (err) {
-        results.push({ trackId, status: 'error', error: err.message || 'Unlike failed' });
+        firstError ??= err;
+        results.push({ trackId, status: 'error', error: scItemErrorText(err, 'Unlike failed') });
         if (err.status === 429) {
           rateLimited = true;
           continue;
@@ -3365,6 +3385,7 @@ router.post('/sort/unlike', authenticateUser, adminAuth, validateSortUnlike, sor
     const removed = results.filter((r) => r.status === 'ok').map((r) => r.trackId);
     if (!clientDisconnected) res.json({ results, rateLimited });
     const failed = results.filter((r) => r.status === 'error').length;
+    if (firstError) logger.warn('Sort unlike: items failed', { failed, first: safeError(firstError) });
     logOperation({
       userId,
       action: 'sort-likes-unlike',
@@ -3706,13 +3727,20 @@ router.post('/resolve/batch', authenticateUser, heavyOperationRateLimiter, valid
         }
         return { result: { url: rawUrl, status: 'error', error: 'Could not parse resource' }, index };
       } catch (err) {
-        return { result: { url: rawUrl, status: 'error', error: err.message || 'Resolve failed' }, index };
+        // `rawError` is for the operation log; the result carries fixed text.
+        return {
+          result: { url: rawUrl, status: 'error', error: batchResolveErrorText(err) },
+          index,
+          rawError: err.message || 'Resolve failed',
+        };
       }
     });
 
     // mapWithConcurrency preserves input order, so results and the harvest list
     // come out in request order regardless of which resolve finished first.
+    let firstErrorMessage;
     for (const entry of settled) {
+      if (entry.result.status === 'error') firstErrorMessage ??= entry.rawError ?? entry.result.error;
       if (entry.resource) resolvedResources.push(entry.resource);
       results.push(useV2 ? { ...entry.result, index: entry.index } : entry.result);
     }
@@ -3748,7 +3776,7 @@ router.post('/resolve/batch', authenticateUser, heavyOperationRateLimiter, valid
       trackIds: resolvedTrackIds,
       playlistIds: resolvedPlaylistIds,
       errorCode: failures > 0 && failures === results.length ? 'ALL_ITEMS_FAILED' : undefined,
-      errorMessage: failures > 0 && failures === results.length ? results.find(r => r.status === 'error')?.error : undefined,
+      errorMessage: failures > 0 && failures === results.length ? firstErrorMessage : undefined,
       metadata: { total: results.length, succeeded: results.length - failures, failed: failures },
     });
   } catch (error) {
@@ -3826,7 +3854,7 @@ router.post('/likes/tracks/bulk-unlike', authenticateUser, heavyOperationRateLim
   const elapsed = startOperationTimer();
   try {
     const { trackIds } = req.body;
-    const { results, rateLimited, aborted } = await runBulkDelete({
+    const { results, rateLimited, aborted, firstErrorMessage } = await runBulkDelete({
       ids: trackIds,
       idKey: 'trackId',
       write: (trackId) => soundcloudClient.unlikeTrack(req.accessToken, req.refreshToken, trackId),
@@ -3848,7 +3876,7 @@ router.post('/likes/tracks/bulk-unlike', authenticateUser, heavyOperationRateLim
       clientInfo: extractClientInfo(req),
       trackIds: unlikedIds,
       errorCode: allFailed ? (rateLimited ? 'RATE_LIMITED' : 'ALL_ITEMS_FAILED') : undefined,
-      errorMessage: allFailed ? results.find(r => r.status === 'error')?.error : undefined,
+      errorMessage: allFailed ? firstErrorMessage : undefined,
       metadata: {
         total: results.length,
         succeeded,
@@ -3923,6 +3951,9 @@ router.post('/likes/tracks/bulk-like', authenticateUser, heavyOperationRateLimit
     const { trackIds } = req.body;
     const results = [];
     let rateLimited = false;
+    // Raw text of the first failure, for the operation log only. Each result
+    // carries fixed text (scItemErrorText).
+    let firstErrorMessage;
 
     // Process sequentially to avoid SoundCloud rate limits.
     // NOTE: likeTrack is id-first (accessToken/refreshToken follow) — the
@@ -3936,7 +3967,8 @@ router.post('/likes/tracks/bulk-like', authenticateUser, heavyOperationRateLimit
         await soundcloudClient.likeTrack(trackId, req.accessToken, req.refreshToken);
         results.push({ trackId, status: 'ok' });
       } catch (err) {
-        results.push({ trackId, status: 'error', error: err.message || 'Like failed' });
+        firstErrorMessage ??= err.message || 'Like failed';
+        results.push({ trackId, status: 'error', error: scItemErrorText(err, 'Like failed') });
         if (err.status === 429) {
           rateLimited = true;
           continue;
@@ -3960,7 +3992,7 @@ router.post('/likes/tracks/bulk-like', authenticateUser, heavyOperationRateLimit
       clientInfo: extractClientInfo(req),
       trackIds: results.filter(r => r.status === 'ok').map(r => r.trackId),
       errorCode: allFailed ? (rateLimited ? 'RATE_LIMITED' : 'ALL_ITEMS_FAILED') : undefined,
-      errorMessage: allFailed ? results.find(r => r.status === 'error')?.error : undefined,
+      errorMessage: allFailed ? firstErrorMessage : undefined,
       metadata: {
         total: results.length,
         succeeded,
@@ -4044,7 +4076,7 @@ router.post('/followings/bulk-unfollow', authenticateUser, heavyOperationRateLim
   const elapsed = startOperationTimer();
   try {
     const { userIds } = req.body;
-    const { results, rateLimited, aborted } = await runBulkDelete({
+    const { results, rateLimited, aborted, firstErrorMessage } = await runBulkDelete({
       ids: userIds,
       idKey: 'userId',
       write: (userId) => soundcloudClient.unfollowUser(req.accessToken, req.refreshToken, userId),
@@ -4065,7 +4097,7 @@ router.post('/followings/bulk-unfollow', authenticateUser, heavyOperationRateLim
       clientInfo: extractClientInfo(req),
       targetUserIds: unfollowedIds,
       errorCode: allFailed ? (rateLimited ? 'RATE_LIMITED' : 'ALL_ITEMS_FAILED') : undefined,
-      errorMessage: allFailed ? results.find(r => r.status === 'error')?.error : undefined,
+      errorMessage: allFailed ? firstErrorMessage : undefined,
       metadata: {
         total: results.length,
         succeeded,
@@ -4178,6 +4210,8 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
   try {
     const { items } = req.body;
     const results = [];
+    // Raw text of the first failure, for the operation log only.
+    let firstErrorMessage;
 
     // Process sequentially to avoid SoundCloud rate limits
     for (const item of items) {
@@ -4185,7 +4219,8 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
         await soundcloudClient.deleteRepost(req.accessToken, req.refreshToken, item.id, item.resourceType);
         results.push({ id: item.id, resourceType: item.resourceType, status: 'ok' });
       } catch (err) {
-        results.push({ id: item.id, resourceType: item.resourceType, status: 'error', error: err.message || 'Remove failed' });
+        firstErrorMessage ??= err.message || 'Remove failed';
+        results.push({ id: item.id, resourceType: item.resourceType, status: 'error', error: scItemErrorText(err, 'Remove failed') });
       }
       // Paced like the other bulk loops: an unpaced 100-item DELETE run was
       // the most 429-prone path in the app.
@@ -4203,7 +4238,7 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
       trackIds: results.filter(r => r.status === 'ok' && r.resourceType === 'track').map(r => r.id),
       playlistIds: results.filter(r => r.status === 'ok' && r.resourceType === 'playlist').map(r => r.id),
       errorCode: failed > 0 && succeeded === 0 ? 'ALL_ITEMS_FAILED' : undefined,
-      errorMessage: failed > 0 && succeeded === 0 ? results.find(r => r.status === 'error')?.error : undefined,
+      errorMessage: failed > 0 && succeeded === 0 ? firstErrorMessage : undefined,
       metadata: { total: results.length, succeeded, failed },
     });
     const cachedReposts = requestCache.get('reposts', req.user.id, 'default');

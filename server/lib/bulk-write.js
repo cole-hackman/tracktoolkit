@@ -19,15 +19,19 @@
  * working unseen.
  */
 import { sleep, SC_BULK_PACING_MS } from './pacing.js';
+import { scItemErrorText } from './sc-errors.js';
 
 /**
  * @param {object} opts
  * @param {Array<number>} opts.ids
  * @param {string} opts.idKey            result field name (`trackId`, `userId`)
  * @param {(id: number) => Promise<unknown>} opts.write
- * @param {string} opts.failLabel        error text when the error has no message
+ * @param {string} opts.failLabel        what failed, shown for an unclassified error
  * @param {() => boolean} [opts.isAborted]
  * @param {number} [opts.pacingMs]
+ * @returns `results[].error` is fixed text (scItemErrorText), safe to send.
+ *   `firstErrorMessage` is the first failure's raw message: for the
+ *   operation log only, never for a response.
  */
 export async function runBulkDelete({
   ids,
@@ -40,6 +44,7 @@ export async function runBulkDelete({
   const results = [];
   let rateLimited = false;
   let aborted = false;
+  let firstErrorMessage;
 
   for (let i = 0; i < ids.length; i += 1) {
     const id = ids[i];
@@ -55,7 +60,8 @@ export async function runBulkDelete({
       if (err?.status === 404) {
         results.push({ [idKey]: id, status: 'ok', alreadyGone: true });
       } else {
-        results.push({ [idKey]: id, status: 'error', error: err?.message || failLabel });
+        firstErrorMessage ??= err?.message || failLabel;
+        results.push({ [idKey]: id, status: 'error', error: scItemErrorText(err, failLabel) });
         if (err?.status === 429) {
           rateLimited = true;
           continue;
@@ -65,7 +71,7 @@ export async function runBulkDelete({
     if (i < ids.length - 1) await sleep(pacingMs);
   }
 
-  return { results, rateLimited, aborted };
+  return { results, rateLimited, aborted, firstErrorMessage };
 }
 
 /** Counts for logging and for the response's own summary. */

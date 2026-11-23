@@ -16,6 +16,24 @@ export function classifyScError(err) {
 }
 
 /**
+ * User-facing text for one failed item of a bulk run. Fixed phrases only,
+ * chosen from the error's status/code: never `err.message`, which can carry
+ * database or upstream detail (a write's 401 path refreshes and persists
+ * tokens, so a Prisma message naming the DB host can arrive here).
+ *
+ * @param {unknown} err
+ * @param {string} fallback - what failed, e.g. 'Unlike failed'
+ */
+export function scItemErrorText(err, fallback) {
+  switch (classifyScError(err)) {
+    case 'not_found': return 'Not found on SoundCloud';
+    case 'rate_limited': return 'SoundCloud rate limit reached — try again later';
+    case 'upstream_unavailable': return 'SoundCloud did not respond — try again later';
+    default: return fallback;
+  }
+}
+
+/**
  * Wrap a read so a failure names the playlist it was for. Only reads are
  * tagged, which is what lets a catch tell "this playlist is gone" (a tagged
  * 404) from a 404 on a write (untagged).
