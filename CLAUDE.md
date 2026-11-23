@@ -1027,6 +1027,17 @@ E2E_PORT=4211 npm run test:e2e          # or just use another port
 
 Two checkouts running the suite at once need different `E2E_PORT` values.
 
+**Jest, supertest and other local listeners.** supertest starts its server
+with `listen(0)` (no host, so the wildcard address) and connects to
+`127.0.0.1`. On macOS the kernel can give that bind a port another process
+already holds on 127.0.0.1, and that process answers instead: a stray
+`404 "not found"`, a `socket hang up`, a 200 that is not ours. With 25 such
+listeners on the machine (developer tools and a browser) that was 1 to 3
+failed tests in most runs, a different test each time.
+`tests/setup-loopback.js` (a Jest `setupFiles` entry) points supertest
+at `[::1]` when its server is bound to `::`. A test that opens its own
+server binds it explicitly: `app.listen(0, '127.0.0.1', done)`.
+
 ---
 
 ## Patterns & Conventions
