@@ -30,8 +30,9 @@ import { scItemErrorText } from './sc-errors.js';
  * @param {() => boolean} [opts.isAborted]
  * @param {number} [opts.pacingMs]
  * @returns `results[].error` is fixed text (scItemErrorText), safe to send.
- *   `firstErrorMessage` is the first failure's raw message: for the
- *   operation log only, never for a response.
+ *   `firstError` is what the first failed write threw, and
+ *   `firstErrorMessage` its raw message: for the server log and the
+ *   operation log, never for a response.
  */
 export async function runBulkDelete({
   ids,
@@ -44,6 +45,7 @@ export async function runBulkDelete({
   const results = [];
   let rateLimited = false;
   let aborted = false;
+  let firstError;
   let firstErrorMessage;
 
   for (let i = 0; i < ids.length; i += 1) {
@@ -60,6 +62,7 @@ export async function runBulkDelete({
       if (err?.status === 404) {
         results.push({ [idKey]: id, status: 'ok', alreadyGone: true });
       } else {
+        if (firstErrorMessage === undefined) firstError = err;
         firstErrorMessage ??= err?.message || failLabel;
         results.push({ [idKey]: id, status: 'error', error: scItemErrorText(err, failLabel) });
         if (err?.status === 429) {
@@ -71,7 +74,7 @@ export async function runBulkDelete({
     if (i < ids.length - 1) await sleep(pacingMs);
   }
 
-  return { results, rateLimited, aborted, firstErrorMessage };
+  return { results, rateLimited, aborted, firstError, firstErrorMessage };
 }
 
 /** Counts for logging and for the response's own summary. */

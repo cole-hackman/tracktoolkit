@@ -19,3 +19,19 @@ export function safeError(err) {
     ...(process.env.NODE_ENV !== 'production' && err.stack && { stack: err.stack })
   };
 }
+
+/**
+ * `safeError` for a once-per-run summary line ("3 items failed, the first
+ * was ..."): message, code and status only. No stack, and anything shaped like
+ * a URL is cut from the message, because a pasted link can carry a secret
+ * token and a network error may quote the address it could not reach.
+ * FOR LOGS ONLY, like `safeError`.
+ */
+export function safeErrorBrief(err) {
+  const { message, code, status } = safeError(err);
+  return {
+    message: String(message).replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '[url]'),
+    ...(code && { code }),
+    ...(status && { status }),
+  };
+}

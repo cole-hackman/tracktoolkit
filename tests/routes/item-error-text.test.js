@@ -3,12 +3,17 @@ import express from 'express';
 import request from 'supertest';
 
 /**
- * Per-item errors in bulk responses used to be `err.message`. Every one of
- * these writes runs through scRequest, whose 401 path refreshes and persists
- * tokens, so a database failure there reaches the catch as a Prisma message
- * naming the database host and port, and a network failure names the upstream
- * URL. The client gets a fixed phrase chosen from the error's status/code; the
- * raw text stays in the server log and in the operation log's errorMessage.
+ * Per-item errors in bulk responses used to be `err.message`: whatever the
+ * thrown thing said went to the page. For the writes here that is normally a
+ * status line, because scRequest replaces a failed token refresh with "Token
+ * refresh failed". It is not a guarantee: `resolveAny` (behind
+ * `/resolve/batch`) passes a refresh failure through as thrown, so a database
+ * error on the token save arrives as Prisma text naming the host and port.
+ * The errors below stand for any text a thrower might carry.
+ *
+ * The client gets a fixed phrase chosen from the error's status/code. The raw
+ * text of the first failure goes to the server log, once per run, and to the
+ * operation log's errorMessage only when every item failed (as before).
  */
 
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
@@ -59,8 +64,8 @@ jest.unstable_mockModule('../../server/lib/enrichment.js', () => ({
 jest.unstable_mockModule('../../server/middleware/auth.js', () => ({
   authenticateUser: (req, res, next) => {
     req.user = { id: 'user-a', soundcloudId: 111 };
-    req.accessToken = 'at';
-    req.refreshToken = 'rt';
+    req.accessToken = 'ACCESS-TOKEN-VALUE';
+    req.refreshToken = 'REFRESH-TOKEN-VALUE';
     next();
   },
 }));
@@ -103,13 +108,18 @@ const failInOrder = (fn, errors) => {
 
 const logged = (action) => logOperation.mock.calls.map((c) => c[0]).find((a) => a.action === action);
 
+let warned;
+/** Every console.warn line of the test, flattened to text. */
+const warnings = () => warned.map((args) => args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
+
 beforeEach(() => {
   logOperation.mockClear();
   for (const fn of [unlikeTrack, unfollowUser, likeTrack, deleteRepost, resolveAny, resolvePublic, getPlaylistWithTracks, addTracksToPlaylist]) {
     fn.mockReset();
   }
+  warned = [];
   jest.spyOn(console, 'error').mockImplementation(() => {});
-  jest.spyOn(console, 'warn').mockImplementation(() => {});
+  jest.spyOn(console, 'warn').mockImplementation((...args) => { warned.push(args); });
 });
 afterEach(() => jest.restoreAllMocks());
 
@@ -310,5 +320,54 @@ describe('POST /api/playlists/transfer-track (move)', () => {
     });
     expect(res.body.message).toMatch(/could not be removed from the source playlist/);
     expect(JSON.stringify(res.body)).not.toMatch(LEAK);
+  });
+});
+
+describe('a partial failure leaves its first raw error in the server log', () => {
+  // The operation log records a message only when every item failed, and the
+  // response now carries fixed text, so without this line a run in which some
+  // items failed would leave the reason nowhere.
+  const RUNS = [
+    { name: 'bulk-unlike', fn: unlikeTrack, send: () => request(app).post('/api/likes/tracks/bulk-unlike').send({ trackIds: [1, 2, 3] }) },
+    { name: 'bulk-unfollow', fn: unfollowUser, send: () => request(app).post('/api/followings/bulk-unfollow').send({ userIds: [1, 2, 3] }) },
+    { name: 'bulk-like', fn: likeTrack, send: () => request(app).post('/api/likes/tracks/bulk-like').send({ trackIds: [1, 2, 3] }) },
+    {
+      name: 'bulk-remove-reposts',
+      fn: deleteRepost,
+      send: () => request(app).post('/api/reposts/bulk-remove').send({ items: [1, 2, 3].map((id) => ({ id, resourceType: 'track' })) }),
+    },
+  ];
+
+  test.each(RUNS)('$name: one line, with the first error and the count, and no token', async ({ name, fn, send }) => {
+    failInOrder(fn, [null, () => scError(403), () => scError(500)]);
+
+    const res = await send();
+
+    expect(res.status).toBe(200);
+    expect(res.body.results.map((r) => r.status)).toEqual(['ok', 'error', 'error']);
+    // Not every item failed, so the operation log has no message.
+    expect(logged(name).errorMessage).toBeUndefined();
+    const lines = warnings().filter((line) => line.includes('API request failed'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('API request failed: 403');
+    expect(lines[0]).toMatch(/"failed":"?2"?[,}]/);   // the logger prints numbers as text
+    expect(lines[0]).not.toMatch(/ACCESS-TOKEN|REFRESH-TOKEN/);
+  });
+
+  test.each(RUNS)('$name: nothing is logged when every item succeeds', async ({ fn, send }) => {
+    failInOrder(fn, []);
+
+    await send();
+
+    expect(warnings().filter((line) => /: items failed/.test(line))).toEqual([]);
+  });
+
+  test.each(RUNS)('$name: a thrown non-error is one failed item, not a 500', async ({ fn, send }) => {
+    failInOrder(fn, [() => null]);
+
+    const res = await send();
+
+    expect(res.status).toBe(200);
+    expect(res.body.results.map((r) => r.status)).toEqual(['error', 'ok', 'ok']);
   });
 });

@@ -32,7 +32,7 @@ import {
   invalidateUserCollections,
   invalidatePlaylistState,
 } from '../lib/social-cache.js';
-import { safeError } from '../lib/safe-error.js';
+import { safeError, safeErrorBrief } from '../lib/safe-error.js';
 import { GATE_ACTION_NAME, gateResultKey } from '../lib/gate-results.js';
 import { downloadTrackIdFromUrl, isAllowedDownloadRedirectTarget, isAllowedDownloadUrl } from '../lib/download-utils.js';
 import { cursorEndpoint, InvalidCursorError } from '../lib/sc-cursor.js';
@@ -3362,6 +3362,7 @@ router.post('/sort/unlike', authenticateUser, adminAuth, validateSortUnlike, sor
     let rateLimited = false;
     // Kept for the server log; each result carries fixed text only.
     let firstError;
+    let anyFailed = false;
     for (let i = 0; i < trackIds.length; i++) {
       const trackId = trackIds[i];
       if (rateLimited || clientDisconnected) {
@@ -3372,9 +3373,10 @@ router.post('/sort/unlike', authenticateUser, adminAuth, validateSortUnlike, sor
         await soundcloudClient.unlikeTrack(req.accessToken, req.refreshToken, trackId);
         results.push({ trackId, status: 'ok' });
       } catch (err) {
-        firstError ??= err;
+        if (!anyFailed) firstError = err;
+        anyFailed = true;
         results.push({ trackId, status: 'error', error: scItemErrorText(err, 'Unlike failed') });
-        if (err.status === 429) {
+        if (err?.status === 429) {
           rateLimited = true;
           continue;
         }
@@ -3385,7 +3387,7 @@ router.post('/sort/unlike', authenticateUser, adminAuth, validateSortUnlike, sor
     const removed = results.filter((r) => r.status === 'ok').map((r) => r.trackId);
     if (!clientDisconnected) res.json({ results, rateLimited });
     const failed = results.filter((r) => r.status === 'error').length;
-    if (firstError) logger.warn('Sort unlike: items failed', { failed, first: safeError(firstError) });
+    if (anyFailed) logger.warn('Sort unlike: items failed', { failed, first: safeErrorBrief(firstError) });
     logOperation({
       userId,
       action: 'sort-likes-unlike',
@@ -3854,7 +3856,7 @@ router.post('/likes/tracks/bulk-unlike', authenticateUser, heavyOperationRateLim
   const elapsed = startOperationTimer();
   try {
     const { trackIds } = req.body;
-    const { results, rateLimited, aborted, firstErrorMessage } = await runBulkDelete({
+    const { results, rateLimited, aborted, firstError, firstErrorMessage } = await runBulkDelete({
       ids: trackIds,
       idKey: 'trackId',
       write: (trackId) => soundcloudClient.unlikeTrack(req.accessToken, req.refreshToken, trackId),
@@ -3864,6 +3866,10 @@ router.post('/likes/tracks/bulk-unlike', authenticateUser, heavyOperationRateLim
 
     if (!clientDisconnected) res.json({ results, rateLimited });
     const { succeeded, failed, skipped, alreadyGone } = summarizeBulk(results);
+    // The response carries fixed text and the operation log a message only
+    // when every item failed, so this line is where a partial failure's
+    // reason is kept.
+    if (failed > 0) logger.warn('Bulk unlike: items failed', { failed, first: safeErrorBrief(firstError) });
     const allFailed = failed > 0 && succeeded === 0;
     const unlikedIds = results.filter(r => r.status === 'ok' && !r.alreadyGone).map(r => r.trackId);
     logOperation({
@@ -3951,8 +3957,10 @@ router.post('/likes/tracks/bulk-like', authenticateUser, heavyOperationRateLimit
     const { trackIds } = req.body;
     const results = [];
     let rateLimited = false;
-    // Raw text of the first failure, for the operation log only. Each result
-    // carries fixed text (scItemErrorText).
+    // What the first failed like threw, for the server log and (its message,
+    // when every item failed) the operation log. Each result carries fixed
+    // text (scItemErrorText).
+    let firstError;
     let firstErrorMessage;
 
     // Process sequentially to avoid SoundCloud rate limits.
@@ -3967,9 +3975,10 @@ router.post('/likes/tracks/bulk-like', authenticateUser, heavyOperationRateLimit
         await soundcloudClient.likeTrack(trackId, req.accessToken, req.refreshToken);
         results.push({ trackId, status: 'ok' });
       } catch (err) {
-        firstErrorMessage ??= err.message || 'Like failed';
+        if (firstErrorMessage === undefined) firstError = err;
+        firstErrorMessage ??= err?.message || 'Like failed';
         results.push({ trackId, status: 'error', error: scItemErrorText(err, 'Like failed') });
-        if (err.status === 429) {
+        if (err?.status === 429) {
           rateLimited = true;
           continue;
         }
@@ -3981,6 +3990,7 @@ router.post('/likes/tracks/bulk-like', authenticateUser, heavyOperationRateLimit
     const succeeded = results.filter(r => r.status === 'ok').length;
     const skipped = results.filter(r => r.status === 'skipped').length;
     const failed = results.length - succeeded - skipped;
+    if (failed > 0) logger.warn('Bulk like: items failed', { failed, first: safeErrorBrief(firstError) });
     const allFailed = failed > 0 && succeeded === 0;
     logOperation({
       userId,
@@ -4076,7 +4086,7 @@ router.post('/followings/bulk-unfollow', authenticateUser, heavyOperationRateLim
   const elapsed = startOperationTimer();
   try {
     const { userIds } = req.body;
-    const { results, rateLimited, aborted, firstErrorMessage } = await runBulkDelete({
+    const { results, rateLimited, aborted, firstError, firstErrorMessage } = await runBulkDelete({
       ids: userIds,
       idKey: 'userId',
       write: (userId) => soundcloudClient.unfollowUser(req.accessToken, req.refreshToken, userId),
@@ -4086,6 +4096,7 @@ router.post('/followings/bulk-unfollow', authenticateUser, heavyOperationRateLim
 
     if (!clientDisconnected) res.json({ results, rateLimited });
     const { succeeded, failed, skipped, alreadyGone } = summarizeBulk(results);
+    if (failed > 0) logger.warn('Bulk unfollow: items failed', { failed, first: safeErrorBrief(firstError) });
     const allFailed = failed > 0 && succeeded === 0;
     const unfollowedIds = results.filter(r => r.status === 'ok' && !r.alreadyGone).map(r => r.userId);
     logOperation({
@@ -4210,7 +4221,8 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
   try {
     const { items } = req.body;
     const results = [];
-    // Raw text of the first failure, for the operation log only.
+    // What the first failed removal threw: see bulk-like.
+    let firstError;
     let firstErrorMessage;
 
     // Process sequentially to avoid SoundCloud rate limits
@@ -4219,7 +4231,8 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
         await soundcloudClient.deleteRepost(req.accessToken, req.refreshToken, item.id, item.resourceType);
         results.push({ id: item.id, resourceType: item.resourceType, status: 'ok' });
       } catch (err) {
-        firstErrorMessage ??= err.message || 'Remove failed';
+        if (firstErrorMessage === undefined) firstError = err;
+        firstErrorMessage ??= err?.message || 'Remove failed';
         results.push({ id: item.id, resourceType: item.resourceType, status: 'error', error: scItemErrorText(err, 'Remove failed') });
       }
       // Paced like the other bulk loops: an unpaced 100-item DELETE run was
@@ -4230,6 +4243,7 @@ router.post('/reposts/bulk-remove', authenticateUser, heavyOperationRateLimiter,
     res.json({ results });
     const succeeded = results.filter(r => r.status === 'ok').length;
     const failed = results.length - succeeded;
+    if (failed > 0) logger.warn('Repost removal: items failed', { failed, first: safeErrorBrief(firstError) });
     logOperation({
       userId: req.user.id,
       action: 'bulk-remove-reposts',
