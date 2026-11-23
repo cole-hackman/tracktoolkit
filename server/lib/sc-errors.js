@@ -25,13 +25,15 @@ export function classifyScError(err) {
  * @param {string} fallback - what failed, e.g. 'Unlike failed'
  */
 export function scItemErrorText(err, fallback) {
-  switch (classifyScError(err)) {
-    case 'not_found': return 'Not found on SoundCloud';
-    case 'rate_limited': return 'SoundCloud rate limit reached — try again later';
-    case 'upstream_unavailable': return 'SoundCloud did not respond — try again later';
-    default: return fallback;
-  }
+  return SC_ITEM_ERROR_TEXT[classifyScError(err)] ?? fallback;
 }
+
+/** The phrases, by `classifyScError` kind, for a caller that classifies itself. */
+export const SC_ITEM_ERROR_TEXT = Object.freeze({
+  not_found: 'Not found on SoundCloud',
+  rate_limited: 'SoundCloud rate limit reached — try again later',
+  upstream_unavailable: 'SoundCloud did not respond — try again later',
+});
 
 /**
  * Wrap a read so a failure names the playlist it was for. Only reads are

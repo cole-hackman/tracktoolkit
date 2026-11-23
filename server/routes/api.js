@@ -9,7 +9,7 @@ import { logOperation, startOperationTimer, extractClientInfo, instrumentRead } 
 import { harvestTracks, harvestPlaylists } from '../lib/catalog.js';
 import { piggybackEnrichment } from '../lib/enrichment.js';
 import logger from '../lib/logger.js';
-import { classifyScError, scErrorResponse, scItemErrorText, tagPlaylistReadFailure } from '../lib/sc-errors.js';
+import { classifyScError, scErrorResponse, scItemErrorText, SC_ITEM_ERROR_TEXT, tagPlaylistReadFailure } from '../lib/sc-errors.js';
 import {
   sleep,
   SC_WRITE_PACING_MS,
@@ -1392,20 +1392,51 @@ function mergeDeleteErrorText(err) {
 }
 
 /**
- * User-facing text for one failed URL in a batch resolve. Fixed phrases only.
- * resolveAny/resolvePublic throw plain Errors ("Resolve error: 404") with no
- * status, so it is read off that exact message shape and nothing else is
- * taken from the text.
+ * What a failed resolve attempt says about the link, from SoundCloud's status
+ * only. resolveAny/resolvePublic throw plain Errors ("Resolve error: 404")
+ * with no status, so it is read off that exact message shape and nothing else
+ * is taken from the text. Null when SoundCloud did not answer for the link at
+ * all: a failed token refresh, a database error on the token save (resolveAny
+ * passes both through as thrown), a network failure.
+ *
+ * @returns {'not_found'|'refused'|'rate_limited'|'upstream_unavailable'|null}
  */
-function batchResolveErrorText(err) {
+function resolveFailureKind(err) {
   let status = err?.status;
   if (status == null) {
     const fromMessage = /^Resolve (?:follow )?error: (\d{3})$/.exec(String(err?.message));
     if (fromMessage) status = Number(fromMessage[1]);
   }
-  if (status === 404) return 'Not found on SoundCloud, or private';
-  if (status === 401 || status === 403) return 'SoundCloud refused this link. It may be private';
-  return scItemErrorText({ status, code: err?.code }, 'Resolve failed');
+  if (status === 404) return 'not_found';
+  if (status === 401 || status === 403) return 'refused';
+  return classifyScError({ status, code: err?.code });
+}
+
+const RESOLVE_FAILURE_TEXT = {
+  ...SC_ITEM_ERROR_TEXT,
+  not_found: 'Not found on SoundCloud, or private',
+  refused: 'SoundCloud refused this link. It may be private',
+};
+
+/**
+ * User-facing text for one failed URL in a batch resolve. Fixed phrases only.
+ *
+ * A link can fail twice: with the user's token (`firstErr`), then without one
+ * (`publicErr`, when a public retry was made and failed too). The phrase comes
+ * from the first failure whenever SoundCloud answered it, because that is the
+ * attempt that could see the link. If the first failure was ours, nothing is
+ * known about the link from it, and the public attempt may only add what it
+ * can actually know: not found, rate limited, no answer. "Refused" without
+ * credentials means only that the link needs some, so it is not repeated as
+ * if it were a finding; the item then says no more than that it failed.
+ */
+function batchResolveErrorText(firstErr, publicErr = null) {
+  let kind = resolveFailureKind(firstErr);
+  if (!kind && publicErr) {
+    const publicKind = resolveFailureKind(publicErr);
+    if (publicKind !== 'refused') kind = publicKind;
+  }
+  return RESOLVE_FAILURE_TEXT[kind] ?? 'Resolve failed';
 }
 
 /**
@@ -3704,11 +3735,16 @@ router.post('/resolve/batch', authenticateUser, heavyOperationRateLimiter, valid
         return { result: { url: rawUrl, status: 'ok', data: cachedData }, index, resource: cached.v1 };
       }
 
+      // What the attempt with the user's token threw, if it threw. Kept
+      // beside the outcome: it picks the phrase when the public retry fails
+      // too, and it is logged even when the retry succeeds.
+      let authFailure = null;
       try {
         let resource;
         try {
           resource = await soundcloudClient.resolveAny(req.accessToken, req.refreshToken, url);
         } catch (authErr) {
+          authFailure = { error: authErr };
           // Only retry publicly when a public resolve could plausibly succeed.
           // Retrying on a 429 or a timeout doubles the cost of exactly the
           // situation that produced the failure.
@@ -3725,15 +3761,22 @@ router.post('/resolve/batch', authenticateUser, heavyOperationRateLimiter, valid
             setCachedResolve(url, { v1: normalizedV1, v2: normalizedV2 });
           }
           const payload = useV2 ? normalizedV2 : normalizedV1;
-          return { result: { url: rawUrl, status: 'ok', data: payload }, index, resource: normalizedV1 };
+          return { result: { url: rawUrl, status: 'ok', data: payload }, index, resource: normalizedV1, authFailure };
         }
-        return { result: { url: rawUrl, status: 'error', error: 'Could not parse resource' }, index };
+        return { result: { url: rawUrl, status: 'error', error: 'Could not parse resource' }, index, authFailure };
       } catch (err) {
-        // `rawError` is for the operation log; the result carries fixed text.
+        // `err` is the public attempt's failure when one was made and it is
+        // not the error just caught above; otherwise it is the only failure.
+        const firstErr = authFailure ? authFailure.error : err;
+        const publicErr = authFailure && err !== authFailure.error ? { error: err } : null;
         return {
-          result: { url: rawUrl, status: 'error', error: batchResolveErrorText(err) },
+          // Fixed text, chosen from the first failure (see batchResolveErrorText).
+          result: { url: rawUrl, status: 'error', error: batchResolveErrorText(firstErr, publicErr?.error) },
           index,
-          rawError: err.message || 'Resolve failed',
+          // For the operation log, unchanged: the message of the last error.
+          rawError: err?.message || 'Resolve failed',
+          failure: { first: firstErr, public: publicErr },
+          authFailure,
         };
       }
     });
@@ -3748,6 +3791,23 @@ router.post('/resolve/batch', authenticateUser, heavyOperationRateLimiter, valid
     }
 
     const failures = results.filter(r => r.status === 'error').length;
+
+    // One line per run for what the response does not say: the first failed
+    // link's raw errors, and the first failure of ours (a token refresh, the
+    // database, the network) even if the public retry then rescued the link.
+    // No link and no token is logged: see safeErrorBrief.
+    const firstFailed = settled.find((entry) => entry.failure);
+    const firstOurs = settled.find((entry) => entry.authFailure && !resolveFailureKind(entry.authFailure.error));
+    if (firstFailed || firstOurs) {
+      const line = { failed: failures, total: results.length };
+      if (firstFailed) {
+        line.first = safeErrorBrief(firstFailed.failure.first);
+        if (firstFailed.failure.public) line.firstPublic = safeErrorBrief(firstFailed.failure.public.error);
+      }
+      if (firstOurs && firstOurs !== firstFailed) line.firstOwn = safeErrorBrief(firstOurs.authFailure.error);
+      logger.warn('Batch resolve: links failed', line);
+    }
+
     const resolvedTrackIds = resolvedResources
       .filter(r => r?.type === 'track' && r.id != null)
       .map(r => r.id);
