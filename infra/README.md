@@ -18,10 +18,19 @@ operator's quick reference.
 
 ```bash
 # First time: pick a strong password; it is stored in Key Vault as postgres-admin-password.
-TT_PG_ADMIN_PASSWORD='...' infra/deploy.sh
-# Later runs: read it back rather than inventing a new one.
-TT_PG_ADMIN_PASSWORD="$(az keyvault secret show --vault-name tracktoolkit-kv --name postgres-admin-password --query value -o tsv)" infra/deploy.sh
+TT_PARAMS=infra/main.bicepparam TT_PG_ADMIN_PASSWORD='...' infra/deploy.sh
+# The live app: read the password back rather than inventing a new one.
+TT_PARAMS=infra/main.cutover.bicepparam TT_PG_ADMIN_PASSWORD="$(az keyvault secret show --vault-name tracktoolkit-kv --name postgres-admin-password --query value -o tsv)" infra/deploy.sh
 ```
+
+`TT_PARAMS` is required. `main.cutover.bicepparam` holds the live app's values;
+`main.bicepparam` uses the same app name but sets no domain, so applying it to
+the live app breaks sign-in. The script prints an ARM what-if and deploys only
+after you type the host it is about to change.
+
+The template replaces the whole app-settings list. Before a run, list what is
+set by hand and not in `main.bicep`, and add it back afterwards:
+`az webapp config appsettings list -n tracktoolkit -g rg-tracktoolkit --query "[].name" -o tsv`.
 
 Optional environment: `TT_CLIENT_IP` (adds a Postgres firewall rule for your
 workstation), `TT_SECRET_*` (writes the matching Key Vault secret; see the
