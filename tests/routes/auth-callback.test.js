@@ -6,6 +6,9 @@ import request from 'supertest';
 process.env.ENCRYPTION_KEY ||= 'x'.repeat(32);
 process.env.SESSION_SECRET ||= 's'.repeat(40);
 process.env.APP_URL ||= 'https://www.soundcloudtoolkit.com';
+// The `app_url` cookie may only ever name one of these origins (or APP_URL).
+// The second entry exercises the trim and the trailing-slash normalisation.
+process.env.APP_URLS = 'https://app.example.com, http://localhost:5173/';
 
 const userUpsert = jest.fn().mockResolvedValue({
   id: 'user-1',
@@ -159,5 +162,110 @@ describe('OAuth login — PKCE challenge', () => {
     // the challenge is a hash, never the verifier itself
     const verifier = decodeURIComponent(pkce.split(';')[0].slice('pkce_verifier='.length));
     expect(target.searchParams.get('code_challenge')).not.toBe(verifier);
+  });
+});
+
+describe('OAuth redirect target — only allowlisted origins (open-redirect guard)', () => {
+  const APP_URL = () => process.env.APP_URL.replace(/\/+$/, '');
+
+  function appUrlCookie(res) {
+    const c = (res.headers['set-cookie'] || []).find((x) => x.startsWith('app_url='));
+    return c ? decodeURIComponent(c.split(';')[0].slice('app_url='.length)) : undefined;
+  }
+
+  test('/login with a cross-site Referer stores APP_URL, not the attacker origin', async () => {
+    const res = await request(app)
+      .get('/api/auth/login')
+      .set('Referer', 'https://evil.example/phish');
+
+    expect(res.status).toBe(302);
+    expect(appUrlCookie(res)).toBe(APP_URL());
+  });
+
+  test('/login with a cross-site Origin stores APP_URL', async () => {
+    const res = await request(app)
+      .get('/api/auth/login')
+      .set('Origin', 'https://evil.example');
+    expect(appUrlCookie(res)).toBe(APP_URL());
+  });
+
+  test('/login with a look-alike Origin (allowlisted host as a prefix) stores APP_URL', async () => {
+    const res = await request(app)
+      .get('/api/auth/login')
+      .set('Origin', 'https://app.example.com.evil.example');
+    expect(appUrlCookie(res)).toBe(APP_URL());
+  });
+
+  test('/login keeps an allowlisted origin (the dev-port case the cookie exists for)', async () => {
+    const res = await request(app)
+      .get('/api/auth/login')
+      .set('Referer', 'http://localhost:5173/login');
+    expect(appUrlCookie(res)).toBe('http://localhost:5173');
+  });
+
+  test('/login with an unparseable Origin stores APP_URL', async () => {
+    const res = await request(app).get('/api/auth/login').set('Origin', 'null');
+    expect(appUrlCookie(res)).toBe(APP_URL());
+  });
+
+  test('a forged app_url cookie on a successful callback lands on APP_URL', async () => {
+    const res = await request(app)
+      .get('/api/auth/callback?code=abc123')
+      .set('Cookie', ['pkce_verifier=verifier-value', 'app_url=https://evil.example']);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe(`${APP_URL()}/dashboard`);
+  });
+
+  test('a forged app_url cookie on the ?error= branch lands on APP_URL', async () => {
+    const res = await request(app)
+      .get('/api/auth/callback?error=access_denied')
+      .set('Cookie', ['app_url=https://evil.example']);
+
+    expect(res.headers.location).toBe(`${APP_URL()}/login?error=access_denied`);
+  });
+
+  test('a forged app_url cookie on the missing-verifier branch lands on APP_URL', async () => {
+    const res = await request(app)
+      .get('/api/auth/callback?code=abc123')
+      .set('Cookie', ['app_url=//evil.example']);
+
+    expect(res.headers.location).toBe(`${APP_URL()}/login?error=missing_code_or_verifier`);
+  });
+
+  test('a forged app_url cookie on the exception branch lands on APP_URL', async () => {
+    exchangeCodeForTokens.mockRejectedValueOnce(new Error('upstream down'));
+    const res = await request(app)
+      .get('/api/auth/callback?code=abc123')
+      .set('Cookie', ['pkce_verifier=verifier-value', 'app_url=https://evil.example']);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe(`${APP_URL()}/login?error=callback_failed`);
+  });
+
+  test('an app_url cookie carrying a path keeps only the allowlisted origin', async () => {
+    const res = await request(app)
+      .get('/api/auth/callback?error=access_denied')
+      .set('Cookie', ['app_url=https://app.example.com/x']);
+    expect(res.headers.location).toBe('https://app.example.com/login?error=access_denied');
+  });
+
+  test('a post_login_path with a backslash falls back to /dashboard', async () => {
+    const res = await request(app)
+      .get('/api/auth/callback?code=abc123')
+      .set('Cookie', [
+        'pkce_verifier=verifier-value',
+        'app_url=https://app.example.com',
+        `post_login_path=${encodeURIComponent('/\\evil.example')}`,
+      ]);
+    expect(res.headers.location).toBe('https://app.example.com/dashboard');
+  });
+
+  test('/login does not store a redirect_path containing a backslash', async () => {
+    const res = await request(app)
+      .get('/api/auth/login?redirect_path=' + encodeURIComponent('/\\evil.example'))
+      .set('Origin', 'https://app.example.com');
+    const cookies = res.headers['set-cookie'] || [];
+    expect(cookies.some((c) => c.startsWith('post_login_path='))).toBe(false);
   });
 });

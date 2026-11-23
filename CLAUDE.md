@@ -98,6 +98,19 @@ the session lifetime is enforced **inside the signed payload** (`iat` +
 cookie's own `maxAge`. Token refresh happens on a 401 inside
 `soundcloud-client.js` — read Account lifecycle below before touching it.
 
+**The post-login redirect target is allowlisted.** `/login` remembers where
+the user came from in the short-lived `app_url` cookie (it exists for dev
+ports, and the privacy page lists it), and `/callback` redirects to
+`${app_url}/dashboard` or `${app_url}/login?error=…`. Origin, Referer and the
+cookie are all client-controlled, so every write and every read goes through
+`safeAppOrigin()`: the parsed origin survives only if it exactly equals
+`APP_URL` or an entry of `APP_URLS` (trimmed, trailing slash dropped, never a
+prefix match); anything else, including a forged cookie and the catch block,
+lands on `APP_URL`. `post_login_path` is re-checked on the callback with
+`safePostLoginPath`, which refuses `//`, `..` and any backslash (`/\evil`
+reads as `//evil` in a browser). `tests/routes/auth-callback.test.js` pins
+all four callback branches.
+
 ### Cookie Configuration
 
 The cookie is **host-only**: `createSessionCookieOptions()` in
@@ -950,7 +963,7 @@ clone, and every bulk write.
 | `SOUNDCLOUD_REDIRECT_URI` | Yes | Must match the SoundCloud app registration. Production: `https://tracktoolkit.com/api/auth/callback` |
 | `DATABASE_URL` | Yes | PostgreSQL connection string. Production reads it from Key Vault `tracktoolkit-kv/database-url` (Azure Flexible Server, `?sslmode=require&connection_limit=10&pool_timeout=30`) |
 | `APP_URL` | Yes | Canonical origin, and the target of the legacy-host redirects. Production: `https://tracktoolkit.com` |
-| `APP_URLS` | Yes | Comma-separated CORS allowlist. Production is the single origin `https://tracktoolkit.com` — the app is same-origin, so there is nothing else to allow |
+| `APP_URLS` | Yes | Comma-separated CORS allowlist, and (with `APP_URL`) the only origins the OAuth callback will redirect to (`safeAppOrigin` in `routes/auth.js`). Production is the single origin `https://tracktoolkit.com` — the app is same-origin, so there is nothing else to allow. A dev port that is not listed still signs in, but lands on `APP_URL` |
 | `SURVEY_ENABLED` | No | Kill switch for a **future** in-app survey. It no longer affects the rebrand name vote, which is closed in code (`REBRAND_VOTE_CONCLUDED`) and cannot be switched back on from the environment |
 | `SURVEY_CAMPAIGN_ID` | No | Campaign identifier for the (closed) vote, default `2026-rebrand-name-v1`. Only the admin read paths use it now; it no longer gates any prompt |
 | `GROWTH_AUTOCHECK` | No | Set to `false` to disable the daily growth follow-back scheduler |
