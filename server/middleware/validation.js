@@ -65,6 +65,20 @@ function scalarIdField(field, message) {
 }
 
 /**
+ * The same rule for one element of a large id array checked in a `.custom()`
+ * loop (`tracks`, `remove`, from-likes `trackIds`: up to 5,000 elements, too
+ * many for a `field.*` chain each). A JSON number or a digits-only string
+ * that is a whole positive safe integer; returns the number, or null.
+ * `parseInt` is what this replaces: it accepted `"12abc"` as 12.
+ */
+function wholeIdValue(value) {
+  let n = null;
+  if (typeof value === 'number') n = value;
+  else if (typeof value === 'string' && /^[1-9]\d*$/.test(value)) n = Number(value);
+  return Number.isSafeInteger(n) && n >= 1 ? n : null;
+}
+
+/**
  * Middleware to handle validation errors
  */
 export const handleValidationErrors = (req, res, next) => {
@@ -223,10 +237,9 @@ export const validateUpdatePlaylist = [
       if (value.length > 500) {
         throw new Error('Cannot have more than 500 tracks');
       }
-      // Validate each track ID is a positive integer
+      // Validate each track ID is a whole positive integer
       for (const trackId of value) {
-        const numId = typeof trackId === 'string' ? parseInt(trackId, 10) : trackId;
-        if (!Number.isInteger(numId) || numId < 1) {
+        if (wholeIdValue(trackId) === null) {
           throw new Error('All track IDs must be positive integers');
         }
       }
@@ -240,17 +253,17 @@ export const validateUpdatePlaylist = [
     .isArray({ max: 500 })
     .withMessage('remove must be an array of at most 500 track IDs')
     .custom((value, { req }) => {
-      const toId = (v) => (typeof v === 'string' ? parseInt(v, 10) : v);
       for (const trackId of value) {
-        const numId = toId(trackId);
-        if (!Number.isInteger(numId) || numId < 1) {
+        if (wholeIdValue(trackId) === null) {
           throw new Error('All remove IDs must be positive integers');
         }
       }
+      // `tracks` has its own check above; an element that fails it maps to
+      // null here and matches nothing.
       const keep = new Set(
-        (Array.isArray(req.body.tracks) ? req.body.tracks : []).map(toId),
+        (Array.isArray(req.body.tracks) ? req.body.tracks : []).map(wholeIdValue),
       );
-      if (value.some((trackId) => keep.has(toId(trackId)))) {
+      if (value.some((trackId) => keep.has(wholeIdValue(trackId)))) {
         throw new Error('A track cannot be in both tracks and remove');
       }
       return true;
@@ -301,15 +314,17 @@ export const validateCreateFromLikes = [
       if (value.length > 5000) {
         throw new Error('Cannot have more than 5000 tracks in one request');
       }
-      // Validate each track ID is a positive integer
+      // Validate each track ID is a whole positive integer
       for (const trackId of value) {
-        const numId = typeof trackId === 'string' ? parseInt(trackId, 10) : trackId;
-        if (!Number.isInteger(numId) || numId < 1) {
+        if (wholeIdValue(trackId) === null) {
           throw new Error('All track IDs must be positive integers');
         }
       }
       return true;
-    }),
+    })
+    // The route dedupes against the playlist's numeric ids and builds URNs
+    // from these, so it gets numbers: `"5"` is the 5 already in the playlist.
+    .customSanitizer((value) => (Array.isArray(value) ? value.map((id) => wholeIdValue(id) ?? id) : value)),
   scalarIdField('targetPlaylistId', 'targetPlaylistId must be a positive integer').optional(),
   body('title')
     .optional()

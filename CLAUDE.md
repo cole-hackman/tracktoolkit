@@ -1133,9 +1133,14 @@ number, not the caller's value, in the path
 (`tests/routes/playlist-id-validation.test.js`,
 `tests/soundcloud-client.test.js`). The read paths (`/users/${id}/...`,
 `/tracks/${id}/streams`) rely on their route validators alone. `PUT
-/playlists/:id`'s `tracks`/`remove` and from-likes' `trackIds` still check
-with `parseInt`, but those ids only go into the JSON body as
-`soundcloud:tracks:N` URNs, never into a path.
+/playlists/:id`'s `tracks`/`remove` and from-likes' `trackIds` only go into
+the JSON body as `soundcloud:tracks:N` URNs, never into a path, and are up to
+5,000 elements, so they are checked in a `.custom()` loop with
+`wholeIdValue()` (a JSON number or a digits-only string that is a positive
+safe integer) rather than a `field.*` chain. from-likes also converts them to
+numbers: passed through as strings, `"5"` did not match the `5` already in
+the target and was appended again
+(`tests/routes/json-body-track-ids.test.js`).
 
 ### Error Sanitization
 
