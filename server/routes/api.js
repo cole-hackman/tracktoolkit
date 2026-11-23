@@ -44,6 +44,7 @@ import {
   duplicateTrackBetweenPlaylists,
   moveTrackBetweenPlaylists,
   readPlaylistForRewrite,
+  findUncopiedSources,
   writeGrowingPrefix,
   assertAppendable,
   PlaylistReadIncompleteError,
@@ -1926,7 +1927,16 @@ router.post('/playlists/merge', authenticateUser, heavyOperationRateLimiter, val
       // Optionally delete source playlists (never delete the target)
       let deletedPlaylistIds = [];
       let deleteErrors = [];
+      // Deleting is permanent, so first check that nothing in a source is
+      // missing from what was written (blocked tracks are never merged in).
       if (deleteAfterMerge) {
+        await sleep(SC_WRITE_PACING_MS);
+        deleteErrors = await findUncopiedSources(soundcloudClient, req.accessToken, req.refreshToken, {
+          sourceIds: sourcePlaylistIds,
+          writtenIds: [targetPlaylistId, ...overflowPlaylists.map((p) => p.id)],
+        });
+      }
+      if (deleteAfterMerge && deleteErrors.length === 0) {
         const toDelete = sourcePlaylistIds.filter(id => id !== targetPlaylistId);
         for (const id of toDelete) {
           await sleep(SC_WRITE_PACING_MS);

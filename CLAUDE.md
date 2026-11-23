@@ -892,7 +892,10 @@ made the guard refuse every playlist containing one (101 of 148 PUTs in
 production). `readPlaylistForRewrite` therefore always calls
 `getPlaylistWithTracks(..., { allAccess: true })` (`&access=playable,preview,blocked`).
 Everything else keeps the default: the merge's *source* reads still filter
-blocked tracks out of what gets merged in. A short read that survives all-access
+blocked tracks out of what gets merged in. Merge & Delete therefore re-reads
+every source and every written playlist (`findUncopiedSources`) and deletes
+nothing unless every source track is in them; the kept sources come back in
+`deleteErrors` with the reason. A short read that survives all-access
 means entries SoundCloud will not return at any level (deleted/private); that
 is still refused, and logs `[playlist-rewrite] refused short read`.
 `GET /api/playlists/:id?access=all` returns the same all-access read for the

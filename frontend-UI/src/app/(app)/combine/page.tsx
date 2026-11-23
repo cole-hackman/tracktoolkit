@@ -500,7 +500,7 @@ export default function CombinePlaylistsPage() {
       >
         <BulkReviewDetails
           action="merging and deleting"
-          warning="This cannot be undone. The merge proceeds even if some deletions fail."
+          warning="This cannot be undone. The merge proceeds even if some deletions fail. If any track was not copied, for example a blocked one, no source playlist is deleted."
           exportFilename="playlists-to-delete-after-merge.csv"
           items={selectedPlaylists.map((playlist) => ({
             id: playlist.id,
