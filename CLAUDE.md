@@ -439,7 +439,8 @@ only the ledger knew, three things:
    the follows made on the new row are rows again, so a second restart alone
    gives nothing back;
 2. a follow SoundCloud accepted whose row write failed;
-3. the cooldown of a session in which every follow failed.
+3. the cooldown of a session in which every follow failed and no like landed
+   (a like writes a row, which keeps it).
 
 No existing table can carry this: every per-user table cascades with the
 account by design (`tests/account-deletion-cascade.test.js`), and `Metric` is

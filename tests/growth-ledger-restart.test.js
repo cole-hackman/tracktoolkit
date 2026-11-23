@@ -106,7 +106,7 @@ describe('after a restart, what only the ledger knew is gone', () => {
     expect((await after.getGrowthBudget(db.prisma, 'user-a', SC_ID)).used24h).toBe(0);
   });
 
-  test('the cooldown of a session in which every follow failed is gone', async () => {
+  test('the cooldown of a session that wrote no row is gone', async () => {
     const db = table();
     const before = await boot();
     before.recordGrowthEvent(SC_ID, 'action');     // what a session start records
