@@ -17,10 +17,12 @@ import type {
   DownloadsSummary,
   DownloadsTrackFilter,
   DownloadTracksResponse,
+  ExperimentReadout,
   FeedbackFilter,
   FeedbackItem,
   FeedbackItemsResponse,
   FeedbackSummary,
+  FlagsResponse,
   PlaylistFilter,
   ReResolveResult,
   DailyPoint,
@@ -87,6 +89,8 @@ export const adminKeys = {
     ["admin", "downloads", "tracks", period, filter] as const,
   downloadsEvents: (period: Period, filter: DownloadsEventFilter) =>
     ["admin", "downloads", "events", period, filter] as const,
+  flags: () => ["admin", "experiments", "flags"] as const,
+  experimentReadout: (key: string) => ["admin", "experiments", "readout", key] as const,
   betaSurvey: () => ["admin", "feedback", "summary"] as const,
   // "feedback-items", not "feedback": `betaSurvey` above already owns the
   // ["admin","feedback",…] prefix, and invalidating one must not sweep the
@@ -446,5 +450,29 @@ export function useDownloadsEvents(period: Period, filter: DownloadsEventFilter,
     },
     enabled,
     ...live,
+  });
+}
+
+/* ── Flags and experiments ──
+   Neither polls. An exposure is written once per new account and a flag only
+   changes with an App Service setting, so a 30-second poll would re-run the
+   readout's joins to show the same numbers. The header's refresh button
+   refetches both. */
+
+export function useFlags(enabled: boolean) {
+  return useQuery({
+    queryKey: adminKeys.flags(),
+    queryFn: () => adminGet<FlagsResponse>("/api/admin/experiments"),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+export function useExperimentReadout(key: string, enabled: boolean) {
+  return useQuery({
+    queryKey: adminKeys.experimentReadout(key),
+    queryFn: () => adminGet<ExperimentReadout>(`/api/admin/experiments/${encodeURIComponent(key)}/readout`),
+    enabled,
+    staleTime: 60_000,
   });
 }

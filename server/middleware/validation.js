@@ -759,6 +759,22 @@ export const validateSurveySubmit = [
 ];
 
 /**
+ * POST /api/experiments/exposure — `{ key }`, a flag key from lib/flags.js.
+ *
+ * `.isString()` first, like every other validator here: express-validator
+ * applies a validator element-wise to an array, so `{ key: ['x'] }` would
+ * otherwise satisfy `.matches()`. An unknown key is not an error (the route
+ * answers "not enrolled"), so this only checks the shape.
+ */
+export const validateExperimentExposure = [
+  body('key')
+    .isString()
+    .matches(/^[a-z0-9-]{2,60}$/)
+    .withMessage('key must be a flag key (a-z, 0-9, dashes; 2-60 chars)'),
+  handleValidationErrors
+];
+
+/**
  * Validation for lightweight feature-usage events (POST /api/events).
  * `feature` is a short slug; the route namespaces it as `view:<feature>`.
  */

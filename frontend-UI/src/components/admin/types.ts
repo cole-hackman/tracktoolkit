@@ -384,7 +384,15 @@ export interface FeedbackFilter {
  */
 export const DEFAULT_FEEDBACK_FILTER: FeedbackFilter = { status: "new", type: "", page: 1 };
 
-export type View = "overview" | "operations" | "performance" | "catalog" | "downloads" | "feedback" | "archive";
+export type View =
+  | "overview"
+  | "operations"
+  | "performance"
+  | "catalog"
+  | "downloads"
+  | "experiments"
+  | "feedback"
+  | "archive";
 
 export const VIEWS: ReadonlyArray<{ id: View; label: string; hint: string }> = [
   { id: "overview", label: "Overview", hint: "Health, growth and what people use" },
@@ -392,6 +400,7 @@ export const VIEWS: ReadonlyArray<{ id: View; label: string; hint: string }> = [
   { id: "performance", label: "Performance", hint: "Latency by action, p95 first" },
   { id: "catalog", label: "Catalog", hint: "The harvested track catalog" },
   { id: "downloads", label: "Downloads", hint: "Which tracks are downloaded, by whom, and how" },
+  { id: "experiments", label: "Experiments", hint: "Flags, staged rollouts and experiment readouts" },
   { id: "feedback", label: "Feedback", hint: "The live in-app feedback inbox" },
   { id: "archive", label: "Archive", hint: "Closed votes and retired surveys" },
 ];
@@ -501,3 +510,88 @@ export interface DownloadsEventFilter {
 }
 
 export const DEFAULT_DOWNLOADS_EVENT_FILTER: DownloadsEventFilter = { channel: "", userId: "", page: 1 };
+
+/* ── Flags and experiments ───────────────────────────────────────────── */
+
+/** `status` of a rollout flag's gate; see rolloutGate in server/lib/experiments.js. */
+export type RolloutGateStatus = "ok" | "halt" | "insufficient-data";
+
+export interface RolloutGate {
+  status: RolloutGateStatus;
+  actions: string[];
+  windowHours: number;
+  operations: number;
+  errors: number;
+  errorRatePct: number | null;
+  maxErrorRatePct: number;
+  minOperations: number;
+}
+
+/** One flag from server/lib/flags.js, with the settings this process is running. */
+export interface FlagConfig {
+  key: string;
+  kind: "experiment" | "rollout";
+  description: string;
+  doc: string | null;
+  percent: number;
+  percentSource: "default" | "setting" | "invalid";
+  killed: boolean;
+  start: string | null;
+  end: string | null;
+  variants: { name: string; weight: number }[] | null;
+  newUsersOnly: boolean;
+  problems: string[];
+  gate?: RolloutGate | null;
+}
+
+export interface FlagsResponse {
+  generatedAt: string;
+  flags: FlagConfig[];
+}
+
+export interface ExperimentArm {
+  variant: string;
+  weight: number | null;
+  enrolled: number;
+  /** The arm's counter: includes accounts deleted since. Null before the first exposure. */
+  enrolledEver: number | null;
+  deletedSinceEnrolment: number | null;
+  windowComplete: number;
+  activated: number;
+  activationRate: number | null;
+  operations: number;
+  operationErrors: number;
+  operationErrorRate: number | null;
+  usersWithError: number;
+  usersWithErrorRate: number | null;
+  feedbackSubmissions: number;
+  feedbackUsers: number;
+  bugFeedbackUsers: number;
+  bugFeedbackUsersRate: number | null;
+}
+
+export interface ProportionTest {
+  controlRate: number;
+  treatmentRate: number;
+  difference: number;
+  z: number;
+  pValue: number;
+  ci95: [number, number];
+}
+
+export type ExperimentStatus = "not-started" | "enrolling" | "maturing" | "final" | "stopped";
+
+export interface ExperimentReadout {
+  key: string;
+  config: FlagConfig;
+  windowDays: number;
+  generatedAt: string;
+  status: ExperimentStatus;
+  /** When every window will have closed; null while no END is set. */
+  readyAt: string | null;
+  variants: ExperimentArm[];
+  srm: { basis: "enrolledEver" | "enrolled"; observed: number[]; expected: number[]; chi2: number; pValue: number } | null;
+  /** Null until `status` is "final": one look, and never for a stopped run. */
+  test: ProportionTest | null;
+  guardrailTests: { usersWithError: ProportionTest | null; bugFeedbackUsers: ProportionTest | null } | null;
+}

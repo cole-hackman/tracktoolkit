@@ -1,6 +1,14 @@
 # STATE
 
 ## Now
+**Flags, experiment 1 and staged-rollout support are built (2026-11-23):
+not merged, not live, and off by default.** One PR is open against `main`. Merging changes nothing for users except the
+privacy page's new row; the experiment starts only when Cole sets three App
+Service settings. The launch checklist is section 16 of
+`docs/experiments/2026-11-activation-guided-first-run.md`. Nothing here has
+run against production: the baseline, sample size and duration in that
+document are blanks until Cole runs its baseline query.
+
 **PR #110 (`feat/design-system`) is merged and live** (`8054e50`, deploy run
 42101143953, success 2026-11-05 20:14 UTC). It moves every `(app)` tool page
 onto one design system. Checked live 2026-11-10, signed in as Cole at about
@@ -18,6 +26,19 @@ Previously (still true): Droploud and Cobrand gates are merged and live
 `fix/extension-domain` (`6b917ca`) in the private repo.
 
 ## Just done
+- **Flags and experiments, 2026-11-23 (not merged).** `server/lib/flags.js`
+  (one registry, deterministic buckets, settings-driven percent / start / end
+  / kill), `lib/experiments.js` (exposure, readout, rollout gate),
+  `lib/experiment-stats.js`, `POST /api/experiments/exposure`, two admin
+  routes, the console's Experiments tab, the dashboard "Start here" panel
+  behind `guided-first-run`, `docs/experiments/` (pre-registration, runbook)
+  and `docs/sql/2026-11-experiment-exposures.sql`. Verified here: the SQL file
+  applied twice to a copy of `main`'s schema on PostgreSQL 16 with no drift
+  against `schema.prisma`; the document's baseline, readout, analysis and
+  audit queries run read-only on that database and match the admin route on
+  fixture rows; both arms at 1280/430/390/360 with axe. **Not verified:**
+  anything on production or on PostgreSQL 17, the App Service settings, and
+  the panel on a real account.
 - **Sort Likes multi-select, 2026-11-17 (Cole asked; merged on request).**
   "Select tracks" mode on the likes list: checkboxes, shift-click ranges,
   select all shown; bulk mark per destination, decide later, clear marks;
@@ -131,6 +152,29 @@ Previously (still true): Droploud and Cobrand gates are merged and live
   reloads itself when its files change (seen working).
 
 ## Next
+### 2026-11-23 (flags and experiment 1)
+0. **Apply `docs/sql/2026-11-experiment-exposures.sql` to Azure Postgres
+   BEFORE merging.** `schema-preflight.js` refuses to boot without the table.
+1. After the deploy: admin console → Experiments shows `guided-first-run` at
+   `0% · default`; look at `/dashboard/?first-run=preview` at your own window
+   width (it is below `lg`) and decide whether the panel is right.
+2. Then sections 8, 9 and 16 of the pre-registration: run the baseline query,
+   choose the MDE, fill the blanks, commit, set START / END / PERCENT.
+3. The privacy page is dated 2026-11-23 for the new "Feature tests" row.
+   Change `LAST_UPDATED` and the Changes entry if it merges on another day.
+4. Open calls for Cole: the three jobs on the panel and their wording; the
+   guardrail rule (two-sided p < 0.10 on accounts, section 6); whether
+   `partial` counts as a successful write; alpha 0.05 and power 0.80.
+5. Recorded, not fixed: `mobile-nav.spec.ts:95` ("every tool in NAV is one
+   tab or one sheet away") failed in both full e2e runs here (m390 once;
+   m360 and m430 once). Under load (`mobile-nav` + `mobile` specs,
+   `--repeat-each=6`) it failed 2 of 18 on this branch and 1 of 18 on `main`
+   at `fa60b3a`, and passed 20 of 20 alone. It reads the tab bar's links
+   without waiting for them, so it is a race in the test, on `main` too.
+6. Not built: an automatic halt for staged rollouts (no background error
+   monitor exists; the runbook's gate is manual), and logging for
+   `PUT /api/playlists/:id`, whose writes the activation metric cannot see.
+
 ### 2026-11-11 (README vs admin numbers, branch `fix/stats-single-source`)
 0. **Not merged, not live.** The README badges said 3,425 users and 3,139,340
    tracks while the admin console said 4,736 and 3,133,985. Users: the badge
@@ -487,6 +531,20 @@ resolver. Admin labels for `batch-resolver` stay, for old rows.
    only then may the two legacy icon files go.
 
 ## Decisions
+### From the 2026-11-23 experiments session
+- **Flags are configured by App Service settings, not a database row**: it is
+  what every other runtime switch here is, and it puts no read on the request
+  path. The cost is that `infra/deploy.sh` wipes them (see Landmines).
+- **Exposures are a table (`experiment_exposures`), not an operation-log
+  action**: the unique (user, experiment) is the once-only guarantee, and it
+  keeps exposure rows out of every `operation_logs` aggregate.
+- **The assignment unit is the SoundCloud id**, so a person who deletes and
+  re-registers keeps their arm.
+- **One look.** The readout withholds the comparison between arms until
+  enrolment has closed and every 7-day window has.
+- **Staged rollouts halt by hand.** The console computes the gate; a person
+  sets the percent to 0.
+
 ### From the 2026-11-10 downloads-usage session
 - **Gate downloads are logged server-side, via the page** (Cole, 2026-11-10):
   the extension stays server-free; the Downloads page forwards per-track gate
@@ -745,6 +803,24 @@ resolver. Admin labels for `batch-resolver` stay, for old rows.
   comes back from the resolve redirect as a non-enumerable `secretToken`.
 
 ## Landmines
+- **`infra/deploy.sh` turns every flag off.** `FLAG_*`, `FLAGS_KILL` and
+  `EXPERIMENT_EXCLUDE_IDS` are set by hand on the App Service and are not in
+  Bicep, so an infra deploy removes them: percent 0 and no start. Safe for
+  users; for a running experiment it stops enrolment and takes the panel away
+  from the guided arm until the settings are back. Do not run one mid-run.
+- **Do not edit a running experiment's key, variants or weights.** All three
+  are inputs to the hash; changing any reassigns every account. The recorded
+  exposure still wins for accounts already enrolled, but new ones would split
+  differently and the arms would stop being comparable.
+- **A flag's settings fail closed.** `50%` is 0, a date with no zone is no
+  start, an unparseable or impossible end closes enrolment, one bad entry in
+  `EXPERIMENT_EXCLUDE_IDS` stops every experiment enrolling, and an unknown
+  name in `FLAGS_KILL` kills every flag. After changing a setting, read the
+  Experiments tab or the `[flags]` boot line; do not assume it took.
+- **An exposure is only written from the dashboard.** `/api/auth/me` lists
+  candidates and writes nothing. If another page ever needs an experiment's
+  arm, it must call the exposure route itself, at the point it renders the
+  difference, or its users will see a variant with no row.
 - **Gate pages differ from guesses; capture before building** (2026-11-04).
   Droploud serves two layouts (v1 `dtr-`, v2 `dltg-`) with different button
   text; SoundCloud's track page is a same-origin iframe whose Repost state is

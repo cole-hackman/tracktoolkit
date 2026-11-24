@@ -48,9 +48,15 @@ dependency list. What they do not tell you:
   MIGRATION.md, ANALYSIS.md, DATA-COLLECTION.md, NOTES.md, TERMS-CHECK.md,
   DESIGN-SYSTEM.md (page structure, results, picker and search rules for
   every tool page) and TOOL-CONSOLIDATION.md.
-- `server/routes/` is **six** files, not one: `api.js`, `growth.js`,
+- `server/routes/` is **seven** files, not one: `api.js`, `growth.js`,
   `admin.js`, `auth.js`, `feedback.js` (which also holds the retired rebrand
-  vote) and `stats.js` (the public README-badge figures).
+  vote), `stats.js` (the public README-badge figures) and `experiments.js`
+  (the exposure route).
+- `server/lib/flags.js` — the one place a feature flag or experiment is
+  defined, and the pure decision for a user. `server/lib/experiments.js`
+  records exposures and builds the readout. `docs/experiments/` holds each
+  experiment's pre-registration and the staged-rollout runbook. See Flags &
+  experiments under API Endpoints.
 - `server/lib/pacing.js` — shared `sleep()` + `SC_WRITE_PACING_MS` (300ms), the
   single source for write pacing.
 - `server/lib/auth-cache.js` — 30s memo of user + **decrypted** tokens (see
@@ -137,7 +143,7 @@ expires.
 
 ## Data Model
 
-The schema (`prisma/schema.prisma`) has **18 models**, not two:
+The schema (`prisma/schema.prisma`) has **19 models**, not two:
 
 | Model | Purpose |
 |-------|---------|
@@ -147,13 +153,14 @@ The schema (`prisma/schema.prisma`) has **18 models**, not two:
 | `Track` / `Playlist` | Harvested music catalog (populated opportunistically from resolved/browsed content) |
 | `GrowthAction` | Follow/like actions taken by the growth suite, plus follow-back outcomes |
 | `Feedback` | In-app feedback form submissions — login-required, stored only here (no email, no webhook). `messageHash` (sha256 of the normalized message) backs a 24-hour per-user duplicate check; `status` is `new\|seen\|done\|spam` and `adminNote` is admin-only |
+| `ExperimentExposure` | One row per (user, experiment): the arm the account was assigned, written the first time it could see a difference. `@@unique([userId, experimentKey])` is what makes it once-only. Kept while the account exists and deleted with it, like `OperationLog`; in the export |
 | `RebrandVote` | Rebrand name-vote responses — the vote is closed, rows retained read-only (`@@unique([userId, campaignId])`) |
 | `BetaSignup` | The retired SongSwipe beta survey — retained read-only for history |
 | `SurveyResponse` | The retired monetization survey — retained read-only for history |
 | `chat_conversations` / `chat_messages` | AI library chat (owned by `feature/ai-library-chat`; declared here so `prisma db push` does not drop them) |
 | `indexed_likes` / `indexed_playlist_tracks` / `library_snapshots` | Library indexing for that same feature — same db-push caveat |
 | `LibraryCachePage` / `LibraryCacheState` | Persistent tier of the library cache — one row per 200-item page plus a sync-state row. **Not** the same thing as `library_snapshots` above |
-| `Metric` | Counters that must outlive the rows they were computed from. `lifetime_registered_users` and `lifetime_tracks_processed`, each a running total with its own cursor (`…_through`, the createdAt counted up to), all written at the start of every retention run — before any delete in that run. Deliberately **not** per-user, so it is absent from the deletion cascade by design. `lifetime_distinct_users` is the retired predecessor (people who ran an operation); nothing reads it |
+| `Metric` | Counters that must outlive the rows they were computed from. `lifetime_registered_users` and `lifetime_tracks_processed`, each a running total with its own cursor (`…_through`, the createdAt counted up to), all written at the start of every retention run — before any delete in that run. Deliberately **not** per-user, so it is absent from the deletion cascade by design. `lifetime_distinct_users` is the retired predecessor (people who ran an operation); nothing reads it. `experiment_enrolled:<experiment>:<variant>` is the exception to "written by the retention job": `resolveExposure` adds one in the same transaction as each exposure row, so the readout can show how many enrolled accounts have since been deleted |
 
 `User.lastLoginAt` (stamped by the OAuth callback on every login; null on rows
 predating the column, which fall back to `updatedAt`) drives the dormant-account
@@ -202,6 +209,73 @@ total and cursor in one transaction (`accumulateSince` in `lib/retention.js`).
 `POST /api/auth/disconnect` takes **no body**, so the empty-body fail-closed
 CSRF layer has nothing to act on — `rejectUntrustedOrigin` is the whole guard.
 `tests/routes/account-deletion.test.js` asserts a cross-site POST gets 403.
+
+### Flags & experiments (`lib/flags.js`, `lib/experiments.js`, `routes/experiments.js`)
+
+First-party, no SDK, no third-party script. A flag is one entry in `FLAGS`
+(`server/lib/flags.js`): `rollout` (a feature released in stages) or
+`experiment` (a rollout plus a variant split, eligibility and an exposure
+row). Everything ships at 0%.
+
+- **Assignment** is `sha256("<flag>:<SoundCloud id>")` mod 100, so it is the
+  same on every request and deploy, and raising the percent only adds
+  accounts. The variant uses a second hash (`"<flag>:variant:<id>"`); with one
+  hash a 10% rollout would put everyone in the first variant. The unit is the
+  SoundCloud id, not the `users` row: delete and re-register and you keep
+  your arm. **Changing a key, or an experiment's variants or weights,
+  reassigns everybody** — make a new flag instead.
+- **Configuration is App Service settings read on every evaluation**
+  (`FLAG_<KEY>_PERCENT`, `_START`, `_END`, `FLAGS_KILL`,
+  `EXPERIMENT_EXCLUDE_IDS`; see Environment Variables). No deploy, and no
+  database read on the request path. **Every misread fails towards off**: a
+  bad percent is 0, a bad start is no start, a bad end closes enrolment
+  (impossible dates such as February 30th are refused, not rolled over), an
+  `EXPERIMENT_EXCLUDE_IDS` entry that is not an id stops every experiment
+  enrolling, and a `FLAGS_KILL` entry that names no flag kills them all. Each is reported in
+  the boot log (`[flags] …`) and the admin console.
+- **Admins** are never enrolled in an experiment, and have a rollout flag at
+  any percent including 0 (the internal stage). A kill beats both.
+- `/api/auth/me` returns `flags` (rollout flags this account has) and
+  `experiments` (keys worth asking about). Both are a pure decision and both
+  are empty at 0%, so an unflagged user makes no extra request.
+- `POST /api/experiments/exposure` — `authenticateUser,
+  validateExperimentExposure`, body `{ key }`. The page calls it when it is
+  about to render the part that differs and renders the arm it is told; the
+  first call for an eligible account writes the exposure. A new exposure
+  needs: flag on for the account, within 7 days of first login
+  (`users."createdAt"`), and no successful write yet (`WRITE_ACTIONS`).
+  Anyone else, and any failure, is control with nothing written. The row and
+  the arm's `metrics` counter go in one transaction; a `P2002` from a racing
+  request reads the row that won.
+- **Why a table and not an operation-log action:** `logOperation` is
+  fire-and-forget with no uniqueness, so it cannot guarantee once-per-user or
+  that a user who saw the variant is in the data, and an `exposure:*` action
+  would have to be excluded by hand from every aggregate over
+  `operation_logs`, which is also where the metric comes from.
+- **Retention:** exposure rows cascade with the user and nothing ages them
+  out. The 6-day disconnect sweep can delete an enrolled account inside its
+  7-day window; the per-arm counter is how the readout shows that.
+- `GET /api/admin/experiments` lists every flag with the configuration the
+  process is running; `GET /api/admin/experiments/:key/readout` gives, per
+  arm, enrolled / window complete / activated / rate and the guardrails. The
+  test between arms is `null` until the readout is `final`: a valid END has
+  passed, END + 7 days has passed (an account first seen just before END can
+  be enrolled until then), and every window has closed. A run that ended any
+  other way (a kill, percent 0, settings gone) is `stopped` and never shows
+  a test. The same numbers come from the `-- name:
+  readout` SQL in the experiment's document;
+  `tests/routes/experiment-readout.integration.test.js` runs both on a real
+  Postgres (`TT_TEST_DATABASE_URL`, `--runInBand` if the downloads
+  integration suite runs too) and `tests/experiment-docs.test.js` fails if
+  the document's action list drifts from `WRITE_ACTIONS`.
+- **Staged rollouts halt by hand.** There is no background error monitor, so
+  nothing turns a flag off automatically; a rollout flag's `guard` makes the
+  console print its actions' error rate against a threshold
+  (`rolloutGate`). `docs/experiments/staged-rollout-runbook.md`.
+- The first experiment is `guided-first-run` (the dashboard's "Start here"
+  panel, `components/FirstRunGuide.tsx`; `/dashboard/?first-run=preview`
+  shows it to an admin without enrolling them). Its steps name controls on
+  three tool pages; `e2e/first-run.spec.ts` checks those labels still exist.
 
 ### Set → Playlist (`/set-to-playlist`)
 
@@ -529,8 +603,9 @@ strip, KPI tiles, activity trend, outcome bar, feature usage/reach, errors),
 **Operations** (the searchable log with an inspector drawer), **Performance**
 (the `readLatency` p95 ranking and write health), **Catalog**, **Feedback**
 (the live in-app inbox) and **Archive** (closed rebrand vote, retired beta
-survey), with **Downloads** between Catalog and Feedback. The active view is
-the URL hash (`/admin#operations`); keys 1–7 switch views. Catalog has its own sub-views
+survey), with **Downloads** and then **Experiments** between Catalog and
+Feedback. The active view is the URL hash (`/admin#operations`); keys 1–8
+switch views. Catalog has its own sub-views
 in the hash (`#catalog/tracks|playlists|artists|health`): the touches
 time-series, genre/access bars that filter, Tracks with optional
 duration/first-seen/last-seen columns and CSV export, Playlists, the Artists
@@ -560,6 +635,14 @@ CSV export; title/artist from the catalog, else from the gate report), people
 account, ever) and a recent-events trail. `tests/routes/downloads-usage.integration.test.js`
 runs the SQL against a real Postgres when `TT_TEST_DATABASE_URL` points at a
 throwaway database; without it the suite skips.
+
+**Experiments is read-only and takes no period** (`views/ExperimentsView.tsx`,
+`/api/admin/experiments` and `…/:key/readout`): the flag list with the
+settings in force and any that were refused, each rollout flag's gate, and
+one readout panel per experiment. It does not poll. A flag is changed in App
+Service settings, never from the console. Its two tables have nothing
+focusable in them, so `TableShell label=` makes the scroll container a named,
+focusable region (axe `scrollable-region-focusable` at phone widths).
 
 **Feedback is a view, not a panel in Archive.** `views/FeedbackView.tsx` reads
 the four `/api/admin/feedback-items*` routes: status tabs (with counts from
@@ -742,7 +825,7 @@ model list from `prisma/schema.prisma` the way
 is neither queried nor on the explicit `EXPORT_EXCEPTIONS` list (today: `Token`,
 which is exported as expiry only). A model whose delegate is absent from the
 generated client contributes an empty array rather than a 500. `schemaVersion`
-is `2` since those four were added.
+is `2` since those four were added and `3` since `experimentExposures` was.
 
 > `docs/api.json` is **SoundCloud's own OpenAPI spec** (68 upstream paths under
 > `https://api.soundcloud.com`), kept as a reference for what the upstream API
@@ -960,6 +1043,10 @@ clone, and every bulk write.
 | `CHROME_EXTENSION_IDS` | No | Comma-separated extension IDs allowed as credentialed origins (CORS + `rejectUntrustedOrigin`) |
 | `SESSION_COOKIE_SAMESITE` | No | `lax`, `none` or `strict` for the session cookie. Unset keeps the historical default (`none` in production). Same-origin hosting sets `lax` |
 | `LEGACY_REDIRECT_HOSTS` | No | Comma-separated hostnames Express redirects to `APP_URL` (301 GET/HEAD, 308 otherwise). Unset disables the middleware |
+| `FLAG_<KEY>_PERCENT` | No | Rollout percent for a flag in `server/lib/flags.js`, a whole number 0–100 (`guided-first-run` → `FLAG_GUIDED_FIRST_RUN_PERCENT`). Unset means the flag's default, which is 0. Anything else (`50%`, `0.5`) is refused and read as 0. Read per request; saving it restarts the app, no deploy. **Not in Bicep, so `infra/deploy.sh` removes it** and the flag falls back to 0 |
+| `FLAG_<KEY>_START` / `FLAG_<KEY>_END` | No | An experiment's cohort: accounts whose first login (`users."createdAt"`) is in `[START, END)`. ISO-8601 **with a zone** (`2026-12-01T00:00:00Z`); a bare date is refused. An experiment limited to new users enrols nobody without a valid START. An END that does not parse closes enrolment rather than leaving it open |
+| `FLAGS_KILL` | No | The kill switch: `all`, or comma-separated flag keys. A killed flag is off for everyone, admins and already-enrolled accounts included. An entry that is not a flag key kills every flag, on purpose: a typo must stop more, not less |
+| `EXPERIMENT_EXCLUDE_IDS` | No | Comma-separated SoundCloud ids never enrolled in any experiment (the owner's other accounts, testers). Admins are excluded already. Numbers and commas only: one entry that is not an id (`900;901`, a username) stops every experiment enrolling until it is fixed, because dropping it would enrol the account it was meant to keep out |
 | `RETENTION_ENABLED` | No | Set to `false` to disable the daily retention purge. **Defaults to on** — a retention policy that is off by default is not a policy. Do not use this to preview a sweep: it schedules nothing, so it logs nothing, and the silence is indistinguishable from "nothing to delete". Use `RETENTION_DRY_RUN` |
 | `RETENTION_DRY_RUN` | No | Exactly `true` (case-insensitive, trimmed; `1` and `yes` are deliberately **not** accepted) makes each scheduled run count everything and write nothing — every step logs `would remove N`, the user sweeps still log `will remove N users`, and no delete, update or upsert is issued. Intended for the first deploy after a retention change: read the counts, satisfy yourself, then remove the variable. **Set it in the App Service configuration, not in Bicep** — `infra/main.bicep` declares `appSettings` as a complete list with no parameter for this flag, and ARM replaces the whole list, so any `infra/deploy.sh` run silently ends the dry run. Code deploys are safe: the GitHub workflow is a zip deploy and does not touch settings |
 | `RETENTION_INTERVAL_MS` | No | Sweep period (default 24h), **clamped to a 24h maximum in code** (`resolveIntervalMs`) and logged when a larger value is refused. First run is always 10 min after boot. Compliance-relevant, not a tuning knob: a longer period would eat the day of margin the 6-day disconnect window buys against the terms' 7-day deletion deadline, so it is enforced rather than documented. Lowering it is always allowed |

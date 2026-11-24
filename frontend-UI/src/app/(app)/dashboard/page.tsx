@@ -40,6 +40,7 @@ import {
   Skeleton,
 } from "@/components/ui";
 import { SupportLink } from "@/components/SupportLink";
+import { FirstRunGuide } from "@/components/FirstRunGuide";
 import { WhatsNewModal } from "@/components/WhatsNewModal";
 import {
   dismissWhatsNew,
@@ -49,6 +50,7 @@ import {
 import { isRebrandAcknowledged } from "@/lib/rebrand";
 import { dashboardSummaryQueryOptions } from "@/lib/queries";
 import { rankByUsage } from "@/lib/tool-ranking";
+import { FIRST_RUN_HIDDEN_KEY, GUIDED_FIRST_RUN, useExperiment } from "@/lib/experiments";
 
 const LAST_TOOLS_KEY = "sc-toolkit-last-tools";
 
@@ -386,6 +388,36 @@ export default function DashboardPage() {
   const [toolQuery, setToolQuery] = useState("");
   const [showWhatsNew, setShowWhatsNew] = useState(false);
 
+  // The activation experiment (docs/experiments/). `useExperiment` asks the
+  // server for this account's arm, which is also what records the exposure,
+  // so it lives on the page that shows the difference. It asks nothing, and
+  // returns control, for anyone /api/auth/me did not list as a candidate.
+  const firstRun = useExperiment(GUIDED_FIRST_RUN);
+  const [firstRunHidden, setFirstRunHidden] = useState(false);
+  // `?first-run=preview` shows the panel to an admin without enrolling them
+  // (admins are never in the experiment). Read from the location rather than
+  // `useSearchParams`, which would need a Suspense boundary in a static export.
+  const [firstRunPreview, setFirstRunPreview] = useState(false);
+  useEffect(() => {
+    try {
+      setFirstRunHidden(localStorage.getItem(FIRST_RUN_HIDDEN_KEY) === "1");
+    } catch {
+      // Storage blocked: the panel simply cannot be hidden for good.
+    }
+    setFirstRunPreview(new URLSearchParams(window.location.search).get("first-run") === "preview");
+  }, []);
+  const hideFirstRun = () => {
+    setFirstRunHidden(true);
+    try {
+      localStorage.setItem(FIRST_RUN_HIDDEN_KEY, "1");
+    } catch {
+      // Hidden for this visit only.
+    }
+  };
+  const showFirstRun =
+    (firstRunPreview && !!user?.isAdmin) ||
+    (firstRun.variant === "guided" && !firstRun.activated && !firstRunHidden);
+
   // The rebrand announcement comes first and is mounted by the route group's
   // layout, so this yields to it: while it is still unacknowledged, "What's
   // new" waits for the next visit rather than stacking a second dialog on top
@@ -464,6 +496,10 @@ export default function DashboardPage() {
       />
 
       <div className="space-y-6">
+
+      {/* The guided arm of the activation experiment. Control renders nothing
+          here, so the page is exactly what it was. */}
+      {showFirstRun && <FirstRunGuide onHide={hideFirstRun} />}
 
       {/* Link Resolver Quick Input */}
       <Card variant="glass" className="p-4">

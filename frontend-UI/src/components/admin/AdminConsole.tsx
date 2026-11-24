@@ -16,6 +16,7 @@ import { DEFAULT_OPS_FILTER, PERIODS, VIEWS, type OperationsFilter, type Period,
 import { ArchiveView } from "./views/ArchiveView";
 import { CatalogView } from "./views/catalog/CatalogView";
 import { DownloadsView } from "./views/DownloadsView";
+import { ExperimentsView } from "./views/ExperimentsView";
 import { FeedbackView } from "./views/FeedbackView";
 import { OperationsView } from "./views/OperationsView";
 import { OverviewView } from "./views/OverviewView";
@@ -270,6 +271,8 @@ export function AdminConsole() {
           {view === "performance" && <PerformanceView period={period} enabled={enabled} onInspectAction={inspectAction} />}
           {view === "catalog" && <CatalogView period={period} enabled={enabled} />}
           {view === "downloads" && <DownloadsView period={period} enabled={enabled} />}
+          {/* No period: an experiment is read over its own cohort and window. */}
+          {view === "experiments" && <ExperimentsView enabled={enabled} />}
           {/* The inbox takes no period: it is a queue, not a time series. */}
           {view === "feedback" && <FeedbackView enabled={enabled} />}
           {view === "archive" && <ArchiveView enabled={enabled} />}

@@ -34,6 +34,7 @@ model User {
   betaSignups           BetaSignup[]
   rebrandVotes          RebrandVote[]
   feedback              Feedback[]
+  experimentExposures   ExperimentExposure[]
   // Tables owned by other feature branches (AI library chat, library indexing).
   // Declared here so `prisma db push` from this branch does not drop live
   // production data. Keep in sync when those branches change their schema.
@@ -49,12 +50,17 @@ model User {
   @@map("users")
 }
 
-/// Counters that must outlive the rows they were computed from.
+/// Counters that must outlive the rows they were computed from. Never keyed
+/// to a user, so nothing here is in the account-deletion cascade.
 ///
-/// The only entry today is `lifetime_distinct_users`: the retention job
-/// snapshots `COUNT(DISTINCT userId)` over operation_logs before it purges
-/// rows older than the retention window, so the all-time figure survives the
-/// purge. Values are monotonic — a run only ever raises them.
+/// `lifetime_registered_users` and `lifetime_tracks_processed` (each with a
+/// `…_through` cursor) are running totals the retention job extends before it
+/// deletes anything; `lifetime_distinct_users` is their retired predecessor.
+///
+/// `experiment_enrolled:<experiment>:<variant>` counts every exposure ever
+/// recorded for that arm (server/lib/experiments.js). The exposure rows leave
+/// with their account, so this is what shows how many enrolled users have
+/// since been deleted from each arm.
 model Metric {
   key       String   @id
   value     BigInt
@@ -141,6 +147,29 @@ model Feedback {
   @@index([userId, createdAt])
   @@index([userId, messageHash, createdAt])
   @@map("feedback")
+}
+
+/// One row per (user, experiment): the arm the user was assigned to, written
+/// the first time they could see a difference between the arms and never
+/// again (server/lib/experiments.js). The unique pair is what makes "once per
+/// user per experiment" a property of the database rather than of the code
+/// that writes it.
+///
+/// Kept while the account exists and deleted with it, like `OperationLog`:
+/// there is no purge by age. `createdAt` is the exposure time; the user's
+/// first login is `users."createdAt"`.
+model ExperimentExposure {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Flag key from server/lib/flags.js, e.g. "guided-first-run".
+  experimentKey String
+  variant       String
+  createdAt     DateTime @default(now())
+
+  @@unique([userId, experimentKey])
+  @@index([experimentKey, variant])
+  @@map("experiment_exposures")
 }
 
 model BetaSignup {

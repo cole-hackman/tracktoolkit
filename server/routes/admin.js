@@ -15,6 +15,8 @@ import { getAnalyticsWriteHealth, logOperation } from '../lib/analytics.js';
 import { USERS_METRIC_KEY, TRACKS_METRIC_KEY } from '../lib/retention.js';
 import { heavyOperationRateLimiter } from '../middleware/rateLimiter.js';
 import { enrichTrackIds } from '../lib/enrichment.js';
+import { describeFlags } from '../lib/flags.js';
+import { experimentReadout, rolloutGate, serializeFlagConfig } from '../lib/experiments.js';
 
 const router = express.Router();
 
@@ -1812,6 +1814,56 @@ router.get('/downloads/events', authenticateUser, adminAuth, async (req, res) =>
   } catch (err) {
     logger.error('[admin/downloads/events] Error:', safeError(err));
     res.status(500).json({ error: 'Failed to fetch download events' });
+  }
+});
+
+// ─── Flags and experiments ───────────────────────────────────────────────────
+
+/**
+ * GET /api/admin/experiments
+ *
+ * Every flag in lib/flags.js with the configuration this process is actually
+ * running: the percent and where it came from (the default, or the App
+ * Service setting), start, end, whether it is killed, and any setting that
+ * was refused. A rollout flag that declares a guard also carries its gate
+ * reading (lib/experiments.js, rolloutGate).
+ *
+ * Read-only. A flag is changed in App Service settings, never from here.
+ */
+router.get('/experiments', authenticateUser, adminAuth, async (req, res) => {
+  try {
+    const now = new Date();
+    const flags = await Promise.all(
+      describeFlags().map(async (config) => ({
+        ...serializeFlagConfig(config),
+        gate: config.kind === 'rollout' ? await rolloutGate(config, { now }) : null,
+      })),
+    );
+    res.json({ generatedAt: now.toISOString(), flags });
+  } catch (err) {
+    logger.error('[admin/experiments] Error:', safeError(err));
+    res.status(500).json({ error: 'Failed to fetch flags' });
+  }
+});
+
+/**
+ * GET /api/admin/experiments/:key/readout
+ *
+ * One experiment, per arm: enrolled, window complete, activated, the rate,
+ * and the guardrails (operation errors, feedback). The same numbers come out
+ * of the `-- name: readout` query in the experiment's pre-registration
+ * document. The test between the arms is null until the experiment is final;
+ * see experimentReadout for the rule.
+ */
+router.get('/experiments/:key/readout', authenticateUser, adminAuth, async (req, res) => {
+  try {
+    const key = typeof req.params.key === 'string' ? req.params.key : '';
+    const readout = /^[a-z0-9-]{2,60}$/.test(key) ? await experimentReadout(key) : null;
+    if (!readout) return res.status(404).json({ error: 'No such experiment' });
+    res.json(readout);
+  } catch (err) {
+    logger.error('[admin/experiments/readout] Error:', safeError(err));
+    res.status(500).json({ error: 'Failed to fetch the experiment readout' });
   }
 });
 

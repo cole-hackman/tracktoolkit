@@ -12,7 +12,18 @@ interface User {
   canDownload?: boolean;
   /** On the ADMIN_IDS list — unlocks the /admin console link and page. */
   isAdmin?: boolean;
+  /** Rollout flags that are on for this account (`server/lib/flags.js`). */
+  flags?: string[];
+  /**
+   * Experiments this account could be in. The page asks for its arm only for
+   * a key listed here (`lib/experiments.ts`); empty while every flag is off.
+   */
+  experiments?: string[];
 }
+
+/** A list of strings from the server, or an empty one for anything else. */
+const stringList = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 
 interface AuthContextType {
   isAuthenticated: boolean;
@@ -69,6 +80,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           soundcloudId: userData.soundcloudId,
           canDownload: !!userData.canDownload,
           isAdmin: !!userData.isAdmin,
+          flags: stringList(userData.flags),
+          experiments: stringList(userData.experiments),
         });
         setIsAuthenticated(true);
       } else {

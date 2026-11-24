@@ -136,6 +136,8 @@ import growthRoutes from './routes/growth.js';
 import adminRoutes from './routes/admin.js';
 import feedbackRoutes from './routes/feedback.js';
 import statsRoutes from './routes/stats.js';
+import experimentRoutes from './routes/experiments.js';
+import { logFlagConfig } from './lib/flags.js';
 
 // Stricter OAuth rate limiting only where brute-force matters (/login + /callback).
 // /auth/me runs on every app load; coupling it to the OAuth limit broke sessions for heavy users.
@@ -154,6 +156,7 @@ app.use('/api/auth', authRoutes);
 // Public and unauthenticated (README badges). Mounted ahead of the `/api`
 // routers so nothing they register can shadow it.
 app.use('/api/stats', statsRoutes);
+app.use('/api/experiments', experimentRoutes);
 app.use('/api', apiRoutes);
 app.use('/api', growthRoutes);
 app.use('/api/admin', adminRoutes);
@@ -209,6 +212,10 @@ await verifySchema();
 app.listen(PORT, () => {
   logger.info(`Server running on port ${PORT}`);
   logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  // What every flag is set to for this boot (percent, start, end, killed), and
+  // any setting that was refused. A settings change restarts the app, so these
+  // lines are also the record of each value a flag has had.
+  logFlagConfig();
   startGrowthScheduler(soundcloudClient);
   // Enforces the stated retention windows (library cache, disconnected and
   // dormant accounts, operation logs, growth history, feedback, catalog
